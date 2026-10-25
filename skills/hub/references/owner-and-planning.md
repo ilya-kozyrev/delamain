@@ -114,8 +114,9 @@ This recipe applies to Claude and Codex, in the console and app.
    approved plan with the owner's words and where they said them: `ask plan --stage <S> --words "<the owner's words>"
    --source "<chat, session or URL>" "<plan in one line>"` (`agent spawn` warns when the stage has none). The owner
    approves a stage's business result once: a successor or a new shift continues it and records no plan, and `ask
-   plan` refuses without the owner's words or with an agent's file as the source. A choice of how to go on is the
-   hub's: `ask decided` — the owner sees it in the digest as information, not as a question.
+   plan` refuses without the owner's words or with a source that names a file. Routine choices of a shift (which
+   executor, which reviewer, the order of work) go to the journal; `ask decided` is for a decision on a matter the
+   owner normally decides — the owner sees it in the digest as information, not as a question.
 5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification
    and stop/permission conditions separate. Later executors and hub shifts carry the same result through handoffs;
    they choose details independently and raise only new ambiguity that materially changes the business result.

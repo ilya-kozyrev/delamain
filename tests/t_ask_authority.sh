@@ -55,11 +55,17 @@ check $? 1 "ask plan without the owner's words is refused"
 grep -q 'Nothing to record' $R/p1.err && grep -q 'ask decided' $R/p1.err; check $? 0 "…and points to: nothing to record, or ask decided"
 $B/ask plan --stage stage-a --words "продолжай" --source "$R/stage-a/coordinator/HANDOFF-hub-2.md" "Continue" > /dev/null 2> $R/p2.err
 check $? 1 "an agent's file as the source is refused even with words"
-grep -q 'is a file' $R/p2.err; check $? 0 "…and says why"
+grep -q 'names a file' $R/p2.err; check $? 0 "…and says why"
 $B/ask plan --stage stage-a --words "продолжай" --source "~/agent-hub/stage-a/REPORT.md" "Continue" > /dev/null 2>&1; check $? 1 "a ~ path is a file too"
+for src in "templates/HANDOFF-template.md" "HANDOFF-hub-2.md" "see coordinator/work/plan for it" \
+           "https://github.com/o/r/blob/main/docs/plan.md" "file:///tmp/plan"; do
+  $B/ask plan --stage stage-a --words "continue it" --source "$src" "Continue inherited DoD" > /dev/null 2>&1
+  check $? 1 "a source naming a file without a leading / is refused too: $src"
+done
 $B/ask plan --stage stage-a --words "продолжай" "Continue" > /dev/null 2>&1; check $? 1 "no source is refused"
 grep -q '^## P-' $F; check $? 1 "…none of the refusals recorded a plan"
 check "$($B/ask plan --stage stage-a --words "запускай" --source "owner chat 25.10 19:20" --print-id "Build X, then ship")" "P-A-001" "an owner-quoted plan is approved"
+check "$($B/ask plan --stage stage-a --words "ok" --source "https://github.com/o/r/pull/12#issuecomment-1" --print-id "Ship Y")" "P-A-002" "control: a URL to a conversation is a valid source"
 grep -q '^- words: запускай$' $F; check $? 0 "…with the owner's words on record"
 $B/ask check P-A-001 > /dev/null; check $? 0 "…and counts"
 # older records: no reinterpretation, except a plan an agent took from its own file with no words
@@ -87,6 +93,9 @@ PY
 }
 check "$(has_plan stage-b)" "False" "an old agent-file plan without words does not count"
 $B/ask check P-B-001 > /dev/null; check $? 4 "…and check says it is not an approval"
+$B/ask search inherited | grep -q "^P-B-001 \[stage-b\] approved, not an owner approval"; check $? 0 "…search shows it as not an owner approval"
+$B/ask list --stage stage-b --all | grep -q '^P-B-001 .*NOT AN OWNER APPROVAL'; check $? 0 "…and so does list --all"
+$B/ask search "build x" | grep -q 'not an owner approval'; check $? 1 "control: an owner-approved plan is not marked"
 printf '\n## P-B-002 — Old plan\n- kind: plan\n- status: approved\n- asked: 2026-10-01\n- by: agent\n- source: not set\n' >> $R/stage-b/questions.md
 check "$(has_plan stage-b)" "True" "an old plan without a file source still counts (no reinterpretation)"
 
@@ -96,22 +105,25 @@ W=$R/w; mkdir -p $W; printf '# Brief: parser change\n\nbody\n' > $W/b.md
 # the first hub, earlier: the owner approved the stage's result and allowed merges
 $B/ask plan --stage walk --by hub-1 --words "запускай парсер" --source "owner chat, hub-1" "Parser rewrite" > /dev/null
 $B/ask allow --stage walk --scope stage --class merge --words "мержи в main сам после ревью" "merge to main" > /dev/null
-before=$(grep -c '^## ' $R/walk/questions.md)
-# the successor takes over: continues the DoD (no plan to record), spawns, orders a review, merges under the permission
-$B/agent spawn --role exec-1 --stage walk --cwd $W --brief $W/b.md --model haiku > /dev/null 2> $R/w1.err; check $? 0 "walk: spawn"
-grep -q 'no owner-approved plan' $R/w1.err; check $? 1 "walk: spawn does not warn — the inherited plan counts"
-for i in $(seq 1 60); do $B/agent status exec-1 --stage walk 2>/dev/null | grep -q 'ALIVE' || break; sleep 0.25; done
-$B/ask decided --stage walk --by hub-2 "Review by Codex Astra (author is Claude)" > /dev/null; check $? 0 "walk: the review choice is the hub's decision"
-$B/ask add --stage walk --by hub-2 --class merge "Merge PR 12 to main?" > /dev/null 2>&1; check $? 3 "walk: the merge is covered, no question"
-$B/ask check A-WALK-001 > /dev/null; check $? 0 "walk: the merge rests on the permission"
-grep -c '^## Q-' $R/walk/questions.md | grep -qx 0; check $? 0 "walk: zero owner questions in the register"
-check "$(grep -c '^## ' $R/walk/questions.md)" "$((before + 1))" "walk: the only new entry is the hub's decision"
-$B/ask inbox --stage walk --json --since 2000-01-01 | python3 -c '
+inbox(){ $B/ask inbox --stage walk --json --since 2000-01-01 | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 s = [x for x in d["stages"] if x["stage"] == "walk"]
-assert s and s[0]["waiting"] == [], s
-assert [x["title"] for x in s[0]["decided"]] == ["Review by Codex Astra (author is Claude)"], s
-'; check $? 0 "walk: the owner digest has nothing waiting for the owner; the decision is information"
-$B/ask list --stage walk | grep -q '^Q-'; check $? 1 "walk: nothing unresolved for the owner"
+print(json.dumps({"waiting": s[0]["waiting"] if s else [], "decided": s[0]["decided"] if s else []}, sort_keys=True))
+'; }
+before=$(grep -c '^## ' $R/walk/questions.md); inbox_before=$(inbox)
+# the successor takes over: continues the DoD (no plan to record), spawns, picks a reviewer, merges under the permission
+$B/agent spawn --role exec-1 --stage walk --cwd $W --brief $W/b.md --model haiku > /dev/null 2> $R/w1.err; check $? 0 "walk: spawn"
+grep -q 'no owner-approved plan' $R/w1.err; check $? 1 "walk: spawn does not warn — the inherited plan counts"
+for i in $(seq 1 60); do $B/agent status exec-1 --stage walk 2>/dev/null | grep -q 'ALIVE' || break; sleep 0.25; done
+$B/jlog --stage walk --tag hub-2 "review of PR 12 by Codex Astra (author is Claude)" > /dev/null; check $? 0 "walk: the routine review choice goes to the journal"
+$B/ask add --stage walk --by hub-2 --class merge "Merge PR 12 to main?" > /dev/null 2>&1; check $? 3 "walk: the merge is covered, no question"
+$B/ask check A-WALK-001 > /dev/null; check $? 0 "walk: the merge rests on the permission"
+grep -c '^## Q-' $R/walk/questions.md | grep -qx 0; check $? 0 "walk: zero owner questions in the register"
+check "$(grep -c '^## ' $R/walk/questions.md)" "$before" "walk: the shift added no register entry at all"
+inbox_after=$(inbox)
+check "$inbox_after" "$inbox_before" "walk: zero new owner inbox items (nothing waiting, no decision)"
+check "$inbox_after" '{"decided": [], "waiting": []}' "walk: …and the inbox holds none at all"
+$B/ask decided --stage walk --by hub-2 "control decision" > /dev/null
+check "$(inbox | grep -c 'control decision')" "1" "control: the inbox check does see a recorded decision"
 exit $fail

@@ -864,16 +864,39 @@ def permissions_digest(stage: str, budget: int = DIGEST_PERMS_BYTES, width: int 
     return "\n".join([head] + lines[:shown] + rest + tail)
 
 
-def agent_file(source: str) -> bool:
-    """A source that is a local file (a handoff, a report, a brief): agents write those, so it is no evidence of the
-    owner's word. The owner's word comes from a conversation (a chat, a session) or a URL."""
-    return bool(re.match(r"(?:~|\.{1,2})?/|file://", (source or "").strip()))
+FILE_EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,7}$")   # «.md», «.json»; not «25.10» or «v2.0.128»
+
+
+def names_file(token: str) -> bool:
+    """A word of a source that names a file: anything path-like (a `/`, a leading `~`, `file://`) or with a file
+    extension, absolute or relative; an http(s) URL only when it points at a file (a repository blob)."""
+    t = token.strip("«»\"'()[]{}<>,;:.!?")
+    if re.match(r"https?://", t):
+        return bool(FILE_EXT_RE.search(urllib.parse.urlsplit(t).path.rsplit("/", 1)[-1]))
+    return "/" in t or t.startswith("~") or bool(FILE_EXT_RE.search(t))
+
+
+def cites_file(source: str) -> bool:
+    """A source that names a file anywhere (a handoff, a report, a brief, a template): agents write files, so it is no
+    evidence of the owner's word. The owner's word comes from a conversation (a chat, a session) or a URL."""
+    return any(names_file(w) for w in (source or "").split())
+
+
+def is_file_source(source: str) -> bool:
+    """A source that is nothing but a file reference (the shape of an agent's own continuation plan); a source that
+    also names a conversation is left as it was recorded."""
+    words = (source or "").split()
+    return len(words) == 1 and names_file(words[0])
 
 
 def owner_plan(e: Entry) -> bool:
     """An approved plan that counts: every `P-` entry except one an agent recorded from its own file, with no owner's
     words (a successor's continuation plan, recorded as approved before `ask plan` asked for the words)."""
-    return e.kind_letter == "P" and not (e.fields.get("words", "") in NO_VALUE and agent_file(e.fields.get("source", "")))
+    return e.kind_letter == "P" and not (e.fields.get("words", "") in NO_VALUE
+                                         and is_file_source(e.fields.get("source", "")))
+
+
+NOT_APPROVAL = "not an owner approval (an agent's file, no owner's words)"
 
 
 def has_plan(stage: str) -> bool:
@@ -882,8 +905,9 @@ def has_plan(stage: str) -> bool:
 
 
 PLAN_ELSEWHERE = ("Nothing to record when you continue a stage whose business result the owner already approved (a "
-                  "successor continues it); your own choice of how to go on is `ask decided \"…\"`, which the owner "
-                  "sees in the digest as information, not as a question")
+                  "successor continues it); a routine choice of how to go on goes to the journal (`jlog`), and a "
+                  "decision on a matter the owner normally decides is `ask decided \"…\"`, which the owner sees in the "
+                  "digest as information, not as a question")
 
 
 def cmd_plan(args) -> int:
@@ -893,8 +917,8 @@ def cmd_plan(args) -> int:
     source = one_line(args.source)
     if source in NO_VALUE:
         raise SystemExit("ask: plan needs --source — where the owner said it (a chat, a session, a URL). " + PLAN_ELSEWHERE)
-    if agent_file(source):
-        raise SystemExit(f"ask: --source {source!r} is a file, and agents write files: it is not the owner's approval. "
+    if cites_file(source):
+        raise SystemExit(f"ask: --source {source!r} names a file, and agents write files: it is not the owner's approval. "
                          "Name where the owner said it (a chat, a session, a URL). " + PLAN_ELSEWHERE)
     return cmd_add(args, "P")
 
@@ -1001,6 +1025,8 @@ def set_fields(entry_id: str, updates: dict[str, str], require_unresolved: bool 
 def fmt_entry(e: Entry, now: dt.datetime) -> str:
     f = e.fields
     flag = " OVERDUE" if e.overdue(now) else " SPENT" if e.spent else ""
+    if e.kind_letter == "P" and not owner_plan(e):
+        flag = f" — {NOT_APPROVAL.upper()}"
     out = [f"{e.id} [{e.stage}] {e.status}{flag} — {e.title}"]
     if e.kind_letter == "Q":
         out.append(f"    blocks: {f.get('blocks', '—')}; default by {f.get('due', '—')}: {f.get('default', '—')}")
@@ -1082,7 +1108,9 @@ def fmt_brief(e: Entry) -> str:
     date, time_ = entry_when(e)
     head = one_line(e.title)
     cut_title, rest = head[:140], head[140:]
-    label = " ".join(x for x in (e.id, f"[{e.stage}]", "answered, spent" if e.spent else e.state, date, time_) if x)
+    state = ("answered, spent" if e.spent else f"{e.state}, {NOT_APPROVAL}" if e.kind_letter == "P" and not owner_plan(e)
+             else e.state)
+    label = " ".join(x for x in (e.id, f"[{e.stage}]", state, date, time_) if x)
     out = [f"{label} — {cut_title}{'…' if rest else ''}"]
     if e.kind_letter == "D" and not status_parts(e)[0]:
         if rest:
