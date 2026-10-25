@@ -75,12 +75,9 @@ $B/ask allow --stage stage-a --scope stage --class plan --words "планы по
 check "$($B/ask plan --stage stage-a --words "планы по паркету одобряю" --source "A-A-002" --print-id "Plan Z")" "P-A-003" "a permission in force is accepted"
 grep -q '^- words: запускай$' $F; check $? 0 "…with the owner's words on record"
 $B/ask check P-A-001 > /dev/null; check $? 0 "…and counts"
-# older records (no words): they count unless the whole source, less :line / #anchor, is a file that exists
-mkdir -p $R/stage-b/coordinator "$R/Agent Hub"
-echo "handoff" > $R/stage-b/coordinator/HANDOFF-hub-1.md; echo "handoff" > "$R/Agent Hub/HANDOFF.md"
+# older records (no words) count as on main whatever their source says; the one exclusion is `ask withdraw P-… --why`
+mkdir -p $R/stage-b/coordinator; echo "handoff" > $R/stage-b/coordinator/HANDOFF-hub-1.md
 old_plan(){ printf '\n## %s — %s\n- kind: plan\n- status: approved\n- asked: 2026-10-01\n- by: agent\n- source: %s\n' "$1" "$2" "$3" >> $R/stage-b/questions.md; }
-printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
-old_plan P-B-001 "Continue the inherited DoD" "$R/stage-b/coordinator/HANDOFF-hub-1.md"
 has_plan(){ python3 - "$B" "$1" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("ask_t", sys.argv[1] + "/ask")
@@ -90,23 +87,47 @@ loader.exec_module(mod)
 print(mod.has_plan(sys.argv[2]))
 PY
 }
-check "$(has_plan stage-b)" "False" "an old plan whose source is an existing agent file does not count"
-$B/ask check P-B-001 > /dev/null; check $? 4 "…and check says it is not an approval"
-$B/ask search inherited | grep -q "^P-B-001 \[stage-b\] approved, not an owner approval"; check $? 0 "…search shows it as not an owner approval"
-$B/ask list --stage stage-b --all | grep -q '^P-B-001 .*NOT AN OWNER APPROVAL'; check $? 0 "…and so does list --all"
+for src in "not set" "owner chat 06.10 «запускай волну A»" "$R/stage-b/coordinator/HANDOFF-hub-1.md" \
+           "$R/stage-b/coordinator/HANDOFF-gone.md" "/tmp/Agent Hub/HANDOFF.md"; do
+  printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
+  old_plan P-B-001 "Old plan" "$src"
+  check "$(has_plan stage-b)" "True" "an old plan counts as on main, nothing read into its source: $src"
+done
+rm $R/stage-b/coordinator/HANDOFF-hub-1.md
+check "$(has_plan stage-b)" "True" "…and the file system changes nothing"
+printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
+old_plan P-B-001 "Continue the inherited DoD" "$R/stage-b/coordinator/HANDOFF-hub-1.md"
+$B/ask withdraw P-B-001 > /dev/null 2> $R/w0.err; check $? 1 "withdrawing a plan needs --why"
+grep -q -- '--why' $R/w0.err; check $? 0 "…and says so"
+$B/ask withdraw P-B-001 --why "a successor's own continuation plan, not the owner's approval" > /dev/null; check $? 0 "ask withdraw P-… --why"
+grep -q "^- status: withdrawn: a successor's own continuation plan" $R/stage-b/questions.md; check $? 0 "…writes the status with the reason"
+check "$(has_plan stage-b)" "False" "a withdrawn plan does not count"
+$B/ask check P-B-001 > $R/c4.out; check $? 4 "…and check says it is not an approval"
+grep -q 'not an owner approval now: withdrawn' $R/c4.out; check $? 0 "…naming why"
+$B/ask search inherited | grep -q "^P-B-001 \[stage-b\] withdrawn"; check $? 0 "…search shows it withdrawn"
+$B/ask list --stage stage-b --all | grep -q '^P-B-001 .*NOT AN OWNER APPROVAL NOW (withdrawn)'; check $? 0 "…and so does list --all"
 $B/ask search "build x" | grep -q 'not an owner approval'; check $? 1 "control: an owner-approved plan is not marked"
-for src in "$R/stage-b/coordinator/HANDOFF-hub-1.md:17" "$R/stage-b/coordinator/HANDOFF-hub-1.md#approval" \
-           "$R/Agent Hub/HANDOFF.md" "coordinator/HANDOFF-hub-1.md"; do
-  printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
-  old_plan P-B-001 "Old plan" "$src"
-  check "$(has_plan stage-b)" "False" "an old plan from an existing file does not count: $src"
-done
-for src in "not set" "owner chat 06.10 «запускай волну A»" "$R/stage-b/coordinator/HANDOFF-gone.md" \
-           "владелец 07.10: «начни хаб» + $R/stage-b/coordinator/HANDOFF-hub-1.md"; do
-  printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
-  old_plan P-B-001 "Old plan" "$src"
-  check "$(has_plan stage-b)" "True" "an old plan keeps counting (no reinterpretation): $src"
-done
+$B/ask withdraw P-B-001 --why again > /dev/null 2>&1; check $? 1 "withdrawing twice is refused"
+# a plan approved through an owner's answer or a permission counts only while that source is in force
+$B/ask add --stage stage-c --print-id "Ship Friday?" > /dev/null; $B/ask close Q-C-001 --answer yes > /dev/null
+$B/ask plan --stage stage-c --words "yes" --source Q-C-001 "Ship Friday release" > /dev/null
+$B/ask check P-C-001 > /dev/null; check $? 0 "a plan through an answer not yet done counts"
+$B/ask done Q-C-001 --evidence "Friday release shipped" > /dev/null
+$B/ask check P-C-001 > $R/c5.out; check $? 4 "…after ask done on that answer it no longer counts (reviewer's sequence)"
+grep -q 'approved through Q-C-001, which is no longer in force' $R/c5.out; check $? 0 "…and check says why"
+check "$(has_plan stage-c)" "False" "…has_plan agrees"
+$B/ask search friday | grep -q '^P-C-001 \[stage-c\] approved, not an owner approval now'; check $? 0 "…search shows it"
+$B/ask allow --stage stage-d --scope stage --class plan --until 2099-01-01 --words "планы одобряю" "plans" > /dev/null
+$B/ask plan --stage stage-d --words "планы одобряю" --source A-D-001 "Plan through a permission" > /dev/null
+check "$(has_plan stage-d)" "True" "a plan through a permission in force counts"
+$B/ask revoke A-D-001 --reason "test" > /dev/null
+check "$(has_plan stage-d)" "False" "…a revoked permission takes it away"
+$B/ask check P-D-001 > /dev/null; check $? 4 "…and check agrees"
+$B/ask allow --stage stage-e --scope stage --class plan --until 2099-01-01 --words "планы одобряю" "plans" > /dev/null
+$B/ask plan --stage stage-e --words "планы одобряю" --source A-E-001 "Plan until a date" > /dev/null
+check "$(has_plan stage-e)" "True" "a plan through a permission with an end counts before it"
+subst $R/stage-e/questions.md "until: 2099-01-01" "until: 2000-01-01"
+check "$(has_plan stage-e)" "False" "…and stops counting once the permission has ended"
 
 # ---- 4. a normal autopilot shift adds zero owner questions and zero inbox items
 export CLAUDE_BIN=$T/fake_claude.py HUB_TAG=hub-2

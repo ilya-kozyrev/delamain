@@ -10,9 +10,11 @@
   wording of the owner's answer is parsed; `ask allow --until` is unchanged. `ask plan` now needs `--words` (the
   owner's words) and an owner reference as `--source` — `chat <where> YYYY-MM-DD HH:MM` or the id of an owner's
   answer not yet done / a permission in force; anything else is refused with a pointer: a successor records nothing,
-  a routine choice goes to the journal, a decision on the owner's matter is `ask decided`. Older plans keep counting,
-  except one without words whose whole source is an existing file (an agent's handoff); `ask search` and `ask list
-  --all` show it as not an owner approval. Price: if that file is deleted, the old plan counts again. A normal autopilot shift adds no owner question (`tests/t_ask_authority.sh` walks one).
+  a routine choice goes to the journal, a decision on the owner's matter is `ask decided`. A plan approved through
+  an answer or a permission counts only while that source is in force (after `ask done`, a revocation or the end it
+  stops). Older plans keep counting as before; the one exclusion is the new `ask withdraw P-… --why "…"`, and `ask
+  search` / `ask list --all` / `ask check` show such a plan as not an owner approval now. A normal autopilot shift
+  adds no owner question (`tests/t_ask_authority.sh` walks one).
 
 ## 1.0.18 — 2026-10-25
 

@@ -116,8 +116,10 @@ This recipe applies to Claude and Codex, in the console and app.
    The source is an owner reference in one of two forms: `chat <where> YYYY-MM-DD HH:MM` (`<where>` one word — the
    stage, session or app where the owner said it, e.g. `chat hub-dolya 2026-10-25 21:30`), or the id of the owner's
    answer not yet done or a permission in force (`Q-…`, `A-…`); anything else — a file, a note, a URL — is refused.
-   The owner approves a stage's business result once: a successor or a new shift continues it and records no plan. Routine choices of a shift (which
-   executor, which reviewer, the order of work) go to the journal; `ask decided` is for a decision on a matter the
+   A plan approved through such an id counts only while that answer is not done and that permission is in force. A
+   plan recorded without the owner's approval is taken back with `ask withdraw P-… --why "…"`. The owner approves a
+   stage's business result once: a successor or a new shift continues it and records no plan. Routine choices of a
+   shift (which executor, which reviewer, the order of work) go to the journal; `ask decided` is for a decision on a matter the
    owner normally decides — the owner sees it in the digest as information, not as a question.
 5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification
    and stop/permission conditions separate. Later executors and hub shifts carry the same result through handoffs;

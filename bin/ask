@@ -40,7 +40,7 @@ Usage:
   ask plan --stage stage-a --words "the owner's words" --source "chat <where> YYYY-MM-DD HH:MM" | Q-…/A-… [--by …]
            [--at HH:MM] "the owner-approved plan in one line"
   ask close Q-A-001 --answer "…" [--at HH:MM] [--date YYYY-MM-DD]
-  ask withdraw Q-A-001 [--reason "…"]
+  ask withdraw Q-A-001 [--reason "…"]                 (a plan: ask withdraw P-A-001 --why "…" — it stops counting)
   ask default-taken Q-A-001 [--note "…"]
   ask done Q-A-001 --evidence "…" [--at HH:MM]        (the owner's answer was executed: it is spent; repeat to append)
   ask check Q-A-001                                    (may an action rest on this entry now? exit 0 yes, 4 no)
@@ -895,27 +895,22 @@ def reference_problem(source: str) -> str:
     return f"--source {e.id} is not in force (`ask check {e.id}` says why)"
 
 
-def existing_file(source: str, stage: str) -> bool:
-    """The whole source, less a trailing `:line[:col]` or `#anchor`, is a file that exists now (absolute, `~`, or
-    relative to the stage directory or the hub home). A fact checked on disk, not a guess from the text's shape."""
-    path = re.sub(r"(?::\d+(?::\d+)?|#[^/#]*)$", "", (source or "").strip())
-    if not path:
-        return False
-    p = Path(path).expanduser()
-    return any(c.is_file() for c in ([p] if p.is_absolute() else [ROOT / stage / p, ROOT / p]))
+def plan_problem(e: Entry) -> str:
+    """Why plan `e` is not an owner approval now ("" when it is), read afresh every time authority is determined:
+    withdrawn (`ask withdraw P-…`), or approved through an owner's answer / a permission that is no longer in force —
+    the answer was executed (`ask done`), the permission was revoked or ended. Any other plan counts, old ones without
+    the owner's words included: nothing is read into a source's text and nothing depends on the file system."""
+    if e.state == "withdrawn":
+        return "withdrawn"
+    source = e.fields.get("source", "").strip()
+    if ID_REF_RE.fullmatch(source) and reference_problem(source):
+        return f"approved through {source}, which is no longer in force"
+    return ""
 
 
 def owner_plan(e: Entry) -> bool:
-    """An approved plan that counts: one with the owner's words (`ask plan` takes no other since it asks for them), or
-    an older one without words unless its whole source is an existing file — an agent's own handoff or report, the
-    shape of a successor recording its continuation as approved. Price: once that file is deleted (handoffs are
-    deleted when their wave closes) such an old plan counts again; new plans cannot be recorded that way."""
-    if e.kind_letter != "P":
-        return False
-    return e.fields.get("words", "") not in NO_VALUE or not existing_file(e.fields.get("source", ""), e.stage)
-
-
-NOT_APPROVAL = "not an owner approval (no owner's words, the source is an agent's file)"
+    """A plan that counts as the owner's approval now (`plan_problem` says why not)."""
+    return e.kind_letter == "P" and not plan_problem(e)
 
 
 def has_plan(stage: str) -> bool:
@@ -937,6 +932,18 @@ def cmd_plan(args) -> int:
     if problem:
         raise SystemExit(f"ask: {problem}. " + PLAN_ELSEWHERE)
     return cmd_add(args, "P")
+
+
+def withdraw_plan(entry_id: str, why: str, today: str) -> int:
+    """`ask withdraw P-… --why "…"`: a recorded plan that is not the owner's approval (a successor's own continuation
+    plan recorded as approved) stops counting; the entry stays in the register with the reason."""
+    why = one_line(why)
+    if why in ("", "withdrawn"):
+        raise SystemExit("ask: withdrawing a plan needs --why \"…\" — why it is not the owner's approval")
+    e = find_entry(entry_id)
+    if e.state == "withdrawn":
+        raise SystemExit(f"ask: {entry_id} is already {e.status!r}")
+    return set_fields(entry_id, {"status": f"withdrawn: {why} ({today})"}, require_unresolved=False)
 
 
 CHECK_NO = 4   # `ask check`: the entry authorises nothing now
@@ -970,8 +977,7 @@ def cmd_check(entry_id: str) -> int:
         if owner_plan(e):
             print(f"{e.id} is a plan the owner approved — {e.title}")
             return 0
-        print(f"{e.id} has no owner's words and its source is an agent's file: not an approval. "
-              f"{PLAN_ELSEWHERE}.")
+        print(f"{e.id} is not an owner approval now: {plan_problem(e)} — {e.title}. {PLAN_ELSEWHERE}.")
         return CHECK_NO
     print(f"{e.id} is an agent's decision ({e.status}): it records the hub's choice, not the owner's word — {e.title}")
     return CHECK_NO
@@ -1041,8 +1047,8 @@ def set_fields(entry_id: str, updates: dict[str, str], require_unresolved: bool 
 def fmt_entry(e: Entry, now: dt.datetime) -> str:
     f = e.fields
     flag = " OVERDUE" if e.overdue(now) else " SPENT" if e.spent else ""
-    if e.kind_letter == "P" and not owner_plan(e):
-        flag = f" — {NOT_APPROVAL.upper()}"
+    if e.kind_letter == "P" and plan_problem(e):
+        flag = f" — NOT AN OWNER APPROVAL NOW ({plan_problem(e)})"
     out = [f"{e.id} [{e.stage}] {e.status}{flag} — {e.title}"]
     if e.kind_letter == "Q":
         out.append(f"    blocks: {f.get('blocks', '—')}; default by {f.get('due', '—')}: {f.get('default', '—')}")
@@ -1124,8 +1130,8 @@ def fmt_brief(e: Entry) -> str:
     date, time_ = entry_when(e)
     head = one_line(e.title)
     cut_title, rest = head[:140], head[140:]
-    state = ("answered, spent" if e.spent else f"{e.state}, {NOT_APPROVAL}" if e.kind_letter == "P" and not owner_plan(e)
-             else e.state)
+    state = ("answered, spent" if e.spent else f"{e.state}, not an owner approval now ({plan_problem(e)})"
+             if e.kind_letter == "P" and plan_problem(e) and e.state != "withdrawn" else e.state)
     label = " ".join(x for x in (e.id, f"[{e.stage}]", state, date, time_) if x)
     out = [f"{label} — {cut_title}{'…' if rest else ''}"]
     if e.kind_letter == "D" and not status_parts(e)[0]:
@@ -1665,10 +1671,11 @@ def main(argv: list[str]) -> int:
     c.add_argument("--date", default="", help="YYYY-MM-DD to backfill another day (date only unless --at is given)")
     c.add_argument("--at", default="", help="HH:MM, default now")
 
-    w = sub.add_parser("withdraw", help="the owner withdrew the question, or it lost its point")
+    w = sub.add_parser("withdraw", help="the owner withdrew the question, or it lost its point; for a plan (P-…, "
+                                        "--why required): it is not an owner approval and stops counting")
     w.add_argument("id")
     w.add_argument("--stage", help="optional check: the entry must be in this stage")
-    w.add_argument("--reason", default="withdrawn")
+    w.add_argument("--reason", "--why", dest="reason", default="withdrawn")
 
     t = sub.add_parser("default-taken", help="due passed, the default action was done; still waiting for the owner")
     t.add_argument("id")
@@ -1753,6 +1760,8 @@ def main(argv: list[str]) -> int:
     if args.cmd == "digest":
         return cmd_digest(args)
     if args.cmd == "withdraw":
+        if args.id.startswith("P-"):
+            return withdraw_plan(args.id, args.reason, today)
         return set_fields(args.id, {"status": f"withdrawn: {one_line(args.reason)} ({today})"})
     if args.cmd == "default-taken":
         note = f" — {one_line(args.note)}" if args.note else ""
