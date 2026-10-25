@@ -127,7 +127,8 @@ unless the owner supplied them.
    branches go to the owner and the register.
 4. Put the agreed Business DoD, with its source, in the plan or brief; a clear owner request can itself be the DoD.
    Before spawning, have a plan the owner said yes to (a clear, detailed request counts; honor an explicit request to
-   approve first) and record it with the owner's words: `ask plan --stage <S> --words "…" --source "<chat>" "<plan>"`.
+   approve first) and record it with the owner's words:
+   `ask plan --stage <S> --words "…" --source "chat <where> YYYY-MM-DD HH:MM" "<plan>"`.
    A proposal that materially changes the business scope or result needs the owner's agreement first.
 5. Brief executors with that result; keep implementation steps, technical verification and stop/permission
    conditions separate.

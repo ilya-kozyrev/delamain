@@ -178,8 +178,10 @@ An answer authorises the action its question asked, once: a `done:` line makes i
 `ask search` and the takeover digest treat a spent answer as authorising nothing more.
 
 `D-…` entries (`ask decided`) record a decision an agent took itself, with `alternative:` and status `standing`.
-`P-…` entries (`ask plan`) record a plan the owner approved, with the owner's `words:` and a `source:` that names no file;
-an older `P-` entry without words whose source is a file an agent wrote does not count as an approval.
+`P-…` entries (`ask plan`) record a plan the owner approved, with the owner's `words:` and a `source:` that is an owner reference
+(`chat <where> YYYY-MM-DD HH:MM`, or the id of an owner's answer not yet done / a permission in force); an older `P-`
+entry without words counts unless its whole source (less `:line` / `#anchor`) is an existing file — an agent's own
+handoff or report. Once that file is deleted such an entry counts again; new entries cannot be recorded that way.
 `A-…` entries (`ask allow`) are standing permissions — `scope:`, `repo:`, `class:`, `words:`, `until:`, status `allowed`
 or `revoked: …`; every stage's register is read for them ([format](standing-permissions.md)).
 

@@ -50,38 +50,37 @@ $B/ask revoke A-A-001 --reason "test" > /dev/null
 $B/ask check A-A-001 > /dev/null; check $? 4 "a revoked permission authorises nothing"
 
 # ---- 3. a hub never records an approval it did not receive
-$B/ask plan --stage stage-a --by hub-2 --source "$R/stage-a/coordinator/HANDOFF-hub-2.md" "Continue the DoD" > /dev/null 2> $R/p1.err
+# new approvals: --source is an owner reference — `chat <where> YYYY-MM-DD HH:MM` or a Q-/A- id in force — nothing else
+mkdir -p $R/stage-a/coordinator; echo "handoff" > $R/stage-a/coordinator/HANDOFF-hub-2.md
+$B/ask plan --stage stage-a --by hub-2 --source "chat hub-2 2026-10-25 21:30" "Continue the DoD" > /dev/null 2> $R/p1.err
 check $? 1 "ask plan without the owner's words is refused"
-grep -q 'Nothing to record' $R/p1.err && grep -q 'ask decided' $R/p1.err; check $? 0 "…and points to: nothing to record, or ask decided"
+grep -q 'Nothing to record' $R/p1.err && grep -q 'jlog' $R/p1.err && grep -q 'ask decided' $R/p1.err
+check $? 0 "…and points to: nothing to record, the journal, or ask decided"
 $B/ask plan --stage stage-a --words "продолжай" --source "$R/stage-a/coordinator/HANDOFF-hub-2.md" "Continue" > /dev/null 2> $R/p2.err
 check $? 1 "an agent's file as the source is refused even with words"
-grep -q 'names a file' $R/p2.err; check $? 0 "…and says why"
-$B/ask plan --stage stage-a --words "продолжай" --source "~/agent-hub/stage-a/REPORT.md" "Continue" > /dev/null 2>&1; check $? 1 "a ~ path is a file too"
-for src in "templates/HANDOFF-template.md" "HANDOFF-hub-2.md" "see coordinator/work/plan for it" \
-           "https://github.com/o/r/blob/main/docs/plan.md" "file:///tmp/plan"; do
+grep -q 'not an owner reference' $R/p2.err && grep -q 'chat <where> YYYY-MM-DD HH:MM' $R/p2.err; check $? 0 "…and names the accepted forms"
+for src in "HANDOFF-hub-2.md:17" "HANDOFF-hub-2.md#approval" "/tmp/Agent Hub/HANDOFF.md" "templates/HANDOFF-template.md" \
+           "~/agent-hub/stage-a/REPORT.md" "owner chat 25.10 19:20" "https://github.com/o/r/pull/12#issuecomment-1" \
+           "chat hub-2 25.10 19:20" "chat HANDOFF.md 2026-10-25 21:30" "chat hub-2 2026-10-25 21:30 and a note" \
+           "Q-A-001" "Q-A-003" "A-A-001" "Q-ZZ-999" "D-A-001"; do
   $B/ask plan --stage stage-a --words "continue it" --source "$src" "Continue inherited DoD" > /dev/null 2>&1
-  check $? 1 "a source naming a file without a leading / is refused too: $src"
+  check $? 1 "a source that is no owner reference (or not in force) is refused: $src"
 done
 $B/ask plan --stage stage-a --words "продолжай" "Continue" > /dev/null 2>&1; check $? 1 "no source is refused"
 grep -q '^## P-' $F; check $? 1 "…none of the refusals recorded a plan"
-check "$($B/ask plan --stage stage-a --words "запускай" --source "owner chat 25.10 19:20" --print-id "Build X, then ship")" "P-A-001" "an owner-quoted plan is approved"
-check "$($B/ask plan --stage stage-a --words "ok" --source "https://github.com/o/r/pull/12#issuecomment-1" --print-id "Ship Y")" "P-A-002" "control: a URL to a conversation is a valid source"
+check "$($B/ask plan --stage stage-a --words "запускай" --source "chat hub-2 2026-10-25 19:20" --print-id "Build X, then ship")" "P-A-001" "the chat form is accepted"
+$B/ask add --stage stage-a --print-id "Approve plan Y?" > /dev/null; $B/ask close Q-A-004 --answer "да, план Y" > /dev/null
+check "$($B/ask plan --stage stage-a --words "да, план Y" --source "Q-A-004" --print-id "Plan Y")" "P-A-002" "an owner's answer not yet done is accepted"
+$B/ask allow --stage stage-a --scope stage --class plan --words "планы по паркету одобряю" "parquet plans" > /dev/null
+check "$($B/ask plan --stage stage-a --words "планы по паркету одобряю" --source "A-A-002" --print-id "Plan Z")" "P-A-003" "a permission in force is accepted"
 grep -q '^- words: запускай$' $F; check $? 0 "…with the owner's words on record"
 $B/ask check P-A-001 > /dev/null; check $? 0 "…and counts"
-# older records: no reinterpretation, except a plan an agent took from its own file with no words
-mkdir -p $R/stage-b
-cat > $R/stage-b/questions.md <<EOF
-# Owner questions — stage-b
-
-<!-- ask:v1 prefix=B -->
-
-## P-B-001 — Continue the inherited DoD
-- kind: plan
-- status: approved
-- asked: 2026-10-25 21:32
-- by: agent
-- source: $R/stage-b/coordinator/HANDOFF-hub-1.md
-EOF
+# older records (no words): they count unless the whole source, less :line / #anchor, is a file that exists
+mkdir -p $R/stage-b/coordinator "$R/Agent Hub"
+echo "handoff" > $R/stage-b/coordinator/HANDOFF-hub-1.md; echo "handoff" > "$R/Agent Hub/HANDOFF.md"
+old_plan(){ printf '\n## %s — %s\n- kind: plan\n- status: approved\n- asked: 2026-10-01\n- by: agent\n- source: %s\n' "$1" "$2" "$3" >> $R/stage-b/questions.md; }
+printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
+old_plan P-B-001 "Continue the inherited DoD" "$R/stage-b/coordinator/HANDOFF-hub-1.md"
 has_plan(){ python3 - "$B" "$1" <<'PY'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("ask_t", sys.argv[1] + "/ask")
@@ -91,19 +90,29 @@ loader.exec_module(mod)
 print(mod.has_plan(sys.argv[2]))
 PY
 }
-check "$(has_plan stage-b)" "False" "an old agent-file plan without words does not count"
+check "$(has_plan stage-b)" "False" "an old plan whose source is an existing agent file does not count"
 $B/ask check P-B-001 > /dev/null; check $? 4 "…and check says it is not an approval"
 $B/ask search inherited | grep -q "^P-B-001 \[stage-b\] approved, not an owner approval"; check $? 0 "…search shows it as not an owner approval"
 $B/ask list --stage stage-b --all | grep -q '^P-B-001 .*NOT AN OWNER APPROVAL'; check $? 0 "…and so does list --all"
 $B/ask search "build x" | grep -q 'not an owner approval'; check $? 1 "control: an owner-approved plan is not marked"
-printf '\n## P-B-002 — Old plan\n- kind: plan\n- status: approved\n- asked: 2026-10-01\n- by: agent\n- source: not set\n' >> $R/stage-b/questions.md
-check "$(has_plan stage-b)" "True" "an old plan without a file source still counts (no reinterpretation)"
+for src in "$R/stage-b/coordinator/HANDOFF-hub-1.md:17" "$R/stage-b/coordinator/HANDOFF-hub-1.md#approval" \
+           "$R/Agent Hub/HANDOFF.md" "coordinator/HANDOFF-hub-1.md"; do
+  printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
+  old_plan P-B-001 "Old plan" "$src"
+  check "$(has_plan stage-b)" "False" "an old plan from an existing file does not count: $src"
+done
+for src in "not set" "owner chat 06.10 «запускай волну A»" "$R/stage-b/coordinator/HANDOFF-gone.md" \
+           "владелец 07.10: «начни хаб» + $R/stage-b/coordinator/HANDOFF-hub-1.md"; do
+  printf '# Owner questions — stage-b\n\n<!-- ask:v1 prefix=B -->\n' > $R/stage-b/questions.md
+  old_plan P-B-001 "Old plan" "$src"
+  check "$(has_plan stage-b)" "True" "an old plan keeps counting (no reinterpretation): $src"
+done
 
 # ---- 4. a normal autopilot shift adds zero owner questions and zero inbox items
 export CLAUDE_BIN=$T/fake_claude.py HUB_TAG=hub-2
 W=$R/w; mkdir -p $W; printf '# Brief: parser change\n\nbody\n' > $W/b.md
 # the first hub, earlier: the owner approved the stage's result and allowed merges
-$B/ask plan --stage walk --by hub-1 --words "запускай парсер" --source "owner chat, hub-1" "Parser rewrite" > /dev/null
+$B/ask plan --stage walk --by hub-1 --words "запускай парсер" --source "chat hub-1 2026-10-25 09:00" "Parser rewrite" > /dev/null
 $B/ask allow --stage walk --scope stage --class merge --words "мержи в main сам после ревью" "merge to main" > /dev/null
 inbox(){ $B/ask inbox --stage walk --json --since 2000-01-01 | python3 -c '
 import json, sys

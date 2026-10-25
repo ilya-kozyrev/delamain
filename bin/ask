@@ -895,16 +895,27 @@ def reference_problem(source: str) -> str:
     return f"--source {e.id} is not in force (`ask check {e.id}` says why)"
 
 
+def existing_file(source: str, stage: str) -> bool:
+    """The whole source, less a trailing `:line[:col]` or `#anchor`, is a file that exists now (absolute, `~`, or
+    relative to the stage directory or the hub home). A fact checked on disk, not a guess from the text's shape."""
+    path = re.sub(r"(?::\d+(?::\d+)?|#[^/#]*)$", "", (source or "").strip())
+    if not path:
+        return False
+    p = Path(path).expanduser()
+    return any(c.is_file() for c in ([p] if p.is_absolute() else [ROOT / stage / p, ROOT / p]))
+
+
 def owner_plan(e: Entry) -> bool:
-    """An approved plan that counts: one with the owner's words, or an older one without them whose source is empty or
-    an owner reference. Any other source text (a file, a note) is no evidence that the owner approved it."""
+    """An approved plan that counts: one with the owner's words (`ask plan` takes no other since it asks for them), or
+    an older one without words unless its whole source is an existing file — an agent's own handoff or report, the
+    shape of a successor recording its continuation as approved. Price: once that file is deleted (handoffs are
+    deleted when their wave closes) such an old plan counts again; new plans cannot be recorded that way."""
     if e.kind_letter != "P":
         return False
-    source = e.fields.get("source", "")
-    return e.fields.get("words", "") not in NO_VALUE or source.strip() in NO_VALUE or owner_reference(source)
+    return e.fields.get("words", "") not in NO_VALUE or not existing_file(e.fields.get("source", ""), e.stage)
 
 
-NOT_APPROVAL = "not an owner approval (no owner's words, the source is no owner reference)"
+NOT_APPROVAL = "not an owner approval (no owner's words, the source is an agent's file)"
 
 
 def has_plan(stage: str) -> bool:
@@ -959,7 +970,7 @@ def cmd_check(entry_id: str) -> int:
         if owner_plan(e):
             print(f"{e.id} is a plan the owner approved — {e.title}")
             return 0
-        print(f"{e.id} has no owner's words and its source is no owner reference: not an approval. "
+        print(f"{e.id} has no owner's words and its source is an agent's file: not an approval. "
               f"{PLAN_ELSEWHERE}.")
         return CHECK_NO
     print(f"{e.id} is an agent's decision ({e.status}): it records the hub's choice, not the owner's word — {e.title}")

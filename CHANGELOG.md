@@ -8,10 +8,11 @@
   `ask search`, `ask list --all` and the takeover digest mark it, and the new `ask check <id>` exits 4 for it (0 for an
   answer not yet done, a permission in force, an owner-approved plan) and points to `ask allow` or a new question. No
   wording of the owner's answer is parsed; `ask allow --until` is unchanged. `ask plan` now needs `--words` (the
-  owner's words) and a `--source` that names no file (relative or absolute); without them it refuses and says
-  that a successor records nothing, a routine choice goes to the journal and a decision on the owner's matter is
-  `ask decided`. Older plans keep counting, except one recorded from an agent's file with no words, which `ask search`
-  and `ask list --all` now show as not an owner approval. A normal autopilot shift adds no owner question (`tests/t_ask_authority.sh` walks one).
+  owner's words) and an owner reference as `--source` — `chat <where> YYYY-MM-DD HH:MM` or the id of an owner's
+  answer not yet done / a permission in force; anything else is refused with a pointer: a successor records nothing,
+  a routine choice goes to the journal, a decision on the owner's matter is `ask decided`. Older plans keep counting,
+  except one without words whose whole source is an existing file (an agent's handoff); `ask search` and `ask list
+  --all` show it as not an owner approval. Price: if that file is deleted, the old plan counts again. A normal autopilot shift adds no owner question (`tests/t_ask_authority.sh` walks one).
 
 ## 1.0.18 — 2026-10-25
 
