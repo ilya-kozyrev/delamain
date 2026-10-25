@@ -176,7 +176,9 @@ handoffs; procedure and rules in `skills/handoff/references/lessons.md`):
 
 `D-…` entries (`ask decided`) record a decision an agent took itself, with `alternative:` and status `standing`.
 `A-…` entries (`ask allow`) are standing permissions — `scope:`, `repo:`, `class:`, `words:`, `until:`, status `allowed`
-or `revoked: …`; every stage's register is read for them ([format](standing-permissions.md)).
+or `revoked: …`; every stage's register is read for them ([format](standing-permissions.md)). An answered question may
+carry `until:` too (its words named a day). `P-…` entries (`ask plan`) carry `words:` and status `approved` only with the
+owner's evidence, else `proposed` until `ask approve` adds `words:`, `source:` and `approved:`.
 
 **Lock record** (`board.md`, inside a fenced `locks` block, one JSON object per line):
 `{"kind": "main-merge", "repo": "webapp", "owner_name": "Hub stage-a #3", "session_id": "…", "until": "…", "why": "…"}`.

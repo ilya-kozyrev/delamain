@@ -70,7 +70,14 @@ it invalid. An invalid entry covers nothing; `ask add` names it on stderr, `ask 
 every filter.
 
 **Revocation and expiry.** `ask revoke A-… --reason "…"` sets `revoked: <reason> (<stamp>)`; `--until` on `ask allow`
-sets an end. No expiry by default (D-09-004). `ask allow --list [--repo R | --stage S] [--all]` shows the
+sets an end. No expiry by default (D-09-004) — except for words bound to a day: when the title or the owner's words say
+«сегодня», «сегодняшний», «до вечера», «завтра», «до конца недели», a named date after a preposition («до 25.10», «на
+24 октября», "by 2026-10-25") or «до 18:00», `ask allow` without `--until` records `until` as the end of that day,
+counted from the day the words were given (`--asked`), and says so on stderr; several phrases — the latest wins. An
+`--until` later than that day warns. An entry written without `until` gets the same bound from its words when read.
+The phrase list is `DAY_WORDS` in `bin/ask`, the one place it lives (no language model). `ask in-force <id> [--as-of
+YYYY-MM-DDTHH:MM]` says whether a permission or an owner's answer can be acted on (exit 4 when not): an answered
+question's answer is bound the same way (a bare «да» takes the question's words), `ask close` writes its `until`. `ask allow --list [--repo R | --stage S] [--all]` shows the
 permissions in force and the invalid ones (`--all`: revoked and expired too). The `hub start` / `hub takeover`
 digest lists the ones that apply to the stage's repository and stage, from every stage's register, after the
 handoff's § 0 (which keeps its budget) and within about 520 bytes — what does not fit is `K more: ask allow --list

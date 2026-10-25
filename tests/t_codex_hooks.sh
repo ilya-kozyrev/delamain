@@ -1016,10 +1016,10 @@ raise SystemExit(ap.desktop_status(stage,p['request_id'],verified=True))
         allowed = ('hub effort --json', 'hub effort --session actual', 'hub home --json',
                    'hub home --cwd /repo', 'ask allow --list --stage stage-a',
                    'ask search handoff --stage stage-a', 'ask digest --stage stage-a',
-                   'ask list --stage stage-a --all', 'cat /h/HANDOFF-a.md',
+                   'ask list --stage stage-a --all', 'ask in-force Q-1', 'cat /h/HANDOFF-a.md',
                    'hub desktop-status --stage stage-a --request actual --verified')
         denied = ('hub home migrate --apply', 'hub effort --unknown',
-                  'ask allow --list --words forged', 'ask close Q-1 --answer yes',
+                  'ask allow --list --words forged', 'ask close Q-1 --answer yes', 'ask approve P-1 --words yes',
                   'path --linux /x /extra', 'cat /h/config.json', 'cat /h/HANDOFF-a.md /etc/passwd',
                   'Get-Content -Path /h/HANDOFF-*.md', 'cat /h/HANDOFF-a.md | sh',
                   'hub effort; git status', 'path --linux $(whoami)', 'rg handoff /h',

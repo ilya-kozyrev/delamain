@@ -75,7 +75,8 @@ stop: SIGTERM to the process group (SIGKILL after 10 s), role retired.
 CLI binary: $CLAUDE_BIN, else the newer of `claude` on PATH and the newest CLI bundled with Claude Desktop (macOS);
 spawn prints which one it took.
 spawn warns (one line on stderr, never a refusal) while the stage's register has no owner-approved plan: the plan is shown to
-the owner first, `ask plan` is recorded only after the owner's yes.
+the owner first, `ask plan` is recorded only after the owner's yes, with the owner's words (a plan without them is
+recorded as proposed and does not count).
 Exit: 0 ok, 1 failure / unknown agent, 2 usage.
 """
 from __future__ import annotations
@@ -125,7 +126,8 @@ def plan_warning(stage: str) -> str | None:
     except Exception:
         return None
     return (f"stage {stage} has no owner-approved plan on record: show the plan to the owner; record `ask plan` "
-            f"only after the owner's yes (`ask plan --stage {stage} \"<the plan in one line>\"`); spawning anyway")
+            f"only after the owner's yes (`ask plan --stage {stage} --words \"«…»\" --source \"…\" \"<the plan in one "
+            f"line>\"`; a proposed plan does not count); spawning anyway")
 
 
 ALIASES = hc.MODEL_ALIASES

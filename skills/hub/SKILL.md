@@ -125,8 +125,9 @@ unless the owner supplied them.
    branches go to the owner and the register.
 4. Put the agreed Business DoD, with its source, in the plan or brief; a clear owner request can itself be the DoD.
    Before spawning, have a plan the owner said yes to (a clear, detailed request counts; honor an explicit request to
-   approve first) and record it: `ask plan --stage <S> "<plan in one line>"`. A proposal that materially changes the
-   business scope or result needs the owner's agreement first.
+   approve first) and record it with the owner's words: `ask plan --stage <S> --words "«…»" --source "<where the owner
+   said it>" "<plan>"`. Never approve your own plan: a handoff or brief is not the owner's word; without it the plan is
+   `proposed` — ask. A proposal that materially changes the business scope or result needs the owner's agreement first.
 5. Brief executors with that result; keep implementation steps, technical verification and stop/permission
    conditions separate.
 
@@ -223,4 +224,5 @@ repository, then the stage directory, a later file winning — and `HUB-NOTES.md
 11. **The reviewer is a different model from the author.**
 12. **A question's due time is no reason to hold ready work while the owner is reachable, and never invent a gate the
     owner did not set.** Before asking about a merge, deploy or release, check `ask allow --list --stage <S>`: a
-    permission in force whose words cover the case is the answer.
+    permission in force whose words cover the case is the answer. A yes said for a day («сегодня», «до вечера»)
+    ends with that day: `ask in-force <id>` before acting on an earlier answer; expired — ask again, never stretch it.

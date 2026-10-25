@@ -9,7 +9,7 @@ meta(){ python3 -c "import json,sys; m=json.load(open(sys.argv[1])); print($2)" 
 wait_dead(){ for i in $(seq 1 60); do $B/agent status $1 | grep -q 'ALIVE' || return 0; sleep 0.25; done; }
 spawn(){ local r=$1; shift; $B/agent spawn --role $r --cwd $W --brief $W/b.md "$@" > $R/$r.out 2> $R/$r.err; }
 last_argv(){ tail -1 $W/argv.log; }
-$B/ask plan --stage stage-a "plan for the tests" > /dev/null
+$B/ask plan --stage stage-a --words "«ok»" --source "owner, chat" "plan for the tests" > /dev/null
 
 # ---- 1. the default effort per model
 export AGENT_HUB_EFFORT_DEFAULTS='{"opus": "medium", "sonnet": "xhigh"}' AGENT_HUB_DEFAULT_EFFORT=low

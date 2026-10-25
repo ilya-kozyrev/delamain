@@ -365,7 +365,13 @@ flowchart LR
 Every open question carries the action that happens if nobody answers by its due time, so work is never silently
 stuck. A decision an agent takes on its own on a matter the owner normally decides is recorded with `ask decided` —
 visible, contestable. The plan the owner approved is recorded with `ask plan` — after the owner's yes, not before (`agent spawn` warns while its stage has
-none: show the plan to the owner first); `ask add|decided|plan --print-id` prints just the new id, for scripts. At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
+none: show the plan to the owner first); `ask add|decided|plan --print-id` prints just the new id, for scripts. `ask plan`
+writes `approved` only with the owner's evidence — `--words "«…»"` and a `--source` that is not an agent's own file
+(a handoff, brief, report, journal), or `--source` an answered question or a permission whose class names `plan`, in
+force; otherwise the plan is `proposed` (unresolved, in `ask list`, the summary and the owner's inbox; spawn still warns)
+until `ask approve P-… --words … --source …`. An owner's answer or permission whose words name a day («сегодня», «до
+вечера», «до 25.10») ends with that day: `ask close` and `ask allow` record `until`, and `ask in-force <id>` (exit 4)
+tells a hub not to carry it into the next day ([details](standing-permissions.md)). At session start a hook prints one line per stage — open, overdue, awaiting execution — in the
 hub home, in repositories with `.agent-hub/` and for hub agents.
 
 `ask inbox` is the one screen the owner reads after a break, instead of asking each hub in turn. It reads every stage of
@@ -395,7 +401,8 @@ ask revoke A-WEB-001 --reason "…"
 A permission is bound to the repository the action touches (`--scope repo`, the default: the stage's recorded
 repository, or `--repo` — a path, a remote URL or an unambiguous short name; the repository is identified by its
 normalized `origin` URL, else its main clone's path), to one stage (`--scope stage`) or to every repository (`--scope
-all`); it lasts until revoked unless `--until` ends it. `ask add` refuses a question (exit 3, `covered by A-…
+all`); it lasts until revoked unless `--until` ends it, or its words bind it to a day («сегодня», «до 25.10»: the end
+of that day). `ask add` refuses a question (exit 3, `covered by A-…
 (<source>)` and the owner's words in full) only when every `--class` keyword, as written, is covered on every
 `--repo` it names (default
 the stage's repository); money, migrations and permissions/RBAC — named in the class or the text — are covered only by
@@ -961,7 +968,7 @@ missing-window defaults and explicit thresholds: WARN advises transfer at the ne
 closes ordinary recognized work.
 
 At BLOCK, the registered hub can still execute handoff/succeed/desktop-request/bind/fail/status,
-`jlog`/`jwait`, read-only `hub effort`/`hub home`, `ask allow --list`/`search`/`digest`/`list`, literal
+`jlog`/`jwait`, read-only `hub effort`/`hub home`, `ask allow --list`/`search`/`digest`/`list`/`in-force`, literal
 `path --windows`/`--linux` conversions, and literal `cat` or `Get-Content -LiteralPath` reads of a generated
 `HANDOFF-*.md`. Direct settings/authority reads must resolve to this plugin's executable, and `cat` to
 `/bin/cat` or `/usr/bin/cat`; absolute trusted paths also pass. Conversion and bare `Get-Content -LiteralPath`

@@ -360,7 +360,7 @@ def handover_query(seg, native_reads=()) -> bool:
             return True
     if name == "ask" and args:
         # Reject mutation verbs even if a read-only word appears later in the command.
-        return args[0] in ("search", "digest", "list") or (args[0] == "allow" and "--list" in args[1:]
+        return args[0] in ("search", "digest", "list", "in-force") or (args[0] == "allow" and "--list" in args[1:]
             and all(arg in ("--list", "--all", "--stage", "--repo") or not arg.startswith("--") for arg in args[1:]))
     if name == "path":
         return len(args) == 2 and args[0] in ("--windows", "--linux") and not args[1].startswith("-")
