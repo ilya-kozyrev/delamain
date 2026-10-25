@@ -50,6 +50,8 @@ id=$(lim 9 "«катите до 18:00»" 2026-10-23 19:00); block $id | grep -qx
 id=$(lim 10 "«сегодня до 18:00»" 2026-10-23 14:05); block $id | grep -qx -- '- until: 2026-10-23T18:00'; check $? 0 "«сегодня до 18:00» ends at 18:00, not midnight"
 id=$(lim 11 "«Можно катить до 25.10.»" 2026-10-23); block $id | grep -qx -- '- until: 2026-10-25'; check $? 0 "a full stop after «до 25.10.» still binds"
 id=$(lim 12 "«до 25 октября 2027»" 2026-10-23); block $id | grep -qx -- '- until: 2027-10-25'; check $? 0 "the year after a month name counts"
+id=$(lim 13 "«можно катить до 25 октября 2025»" 2026-10-23); block $id | grep -qx -- '- until: 2025-10-25'; check $? 0 "a past date with its year is a passed bound, not no bound"
+id=$(lim 14 "«долг на 30.09 закрыт, мержи»" 2026-10-23); block $id | grep -qx -- '- until: not set'; check $? 0 "negative: a past day-month without a year is a description"
 $B/ask allow --stage stage-a --scope stage --class x8 --words "«сегодня»" --asked 2026-10-23 --until 2026-10-30 "x" \
   > /dev/null 2> $R/a8.err; check $? 1 "an explicit --until past the words' day is refused"
 grep -q 'a hub does not stretch a day.s yes' $R/a8.err; check $? 0 "…and says to record the owner's words or ask"
@@ -119,6 +121,12 @@ id=$(plan --source $q --words "«да»" "Plan H"); block $id | grep -qx -- '- s
 id=$(plan --source "HANDOFF.md $q" --words "«нет, не делай»" "Plan H2"); block $id | grep -qx -- '- status: proposed'; check $? 0 "an id next to a handoff does not lift the handoff ban"
 id=$(plan --source Q-A-090 --words "да на прод-тег" "Plan E"); block $id | grep -qx -- '- status: proposed'; check $? 0 "an expired answer as the source: proposed"
 id=$(plan --words "«да, только сегодня»" --source "owner chat 23.10" --asked 2026-10-23 "Plan I"); block $id | grep -qx -- '- status: proposed'; check $? 0 "owner's words bound to a past day: proposed"
+q=$($B/ask add --stage stage-a --print-id "Утвердить план K?" 2>/dev/null); $B/ask close $q --answer "нет, не делай" > /dev/null 2>&1
+id=$(plan --source $q --words "нет, не делай" "Plan K"); block $id | grep -qx -- '- status: proposed'; check $? 0 "a refusal quoted as the words does not approve"
+q=$($B/ask add --stage stage-a --print-id "Какой цвет кнопки?" 2>/dev/null); $B/ask close $q --answer "синий" > /dev/null 2>&1
+id=$(plan --source $q --words "синий" "Plan L"); block $id | grep -qx -- '- status: proposed'; check $? 0 "an answer to a question that is not about a plan does not approve"
+q=$($B/ask add --stage stage-a --print-id "План M сегодня?" 2>/dev/null); $B/ask close $q --answer "да" > /dev/null 2>&1
+id=$(plan --source $q --words "да" "Plan M"); block $id | grep -qx -- '- status: approved' && block $id | grep -qx -- "- until: $(today)"; check $? 0 "a day-bound answer as the source: approved until that day"
 $B/ask allow --stage stage-a --scope stage --class "plan" --words "«планы утверждай сам в рамках DoD»" "plans" > /dev/null 2>&1
 pa=$(grep '^## A-' $F | tail -1 | cut -d' ' -f2)
 id=$(plan --source $pa "Plan F"); block $id | grep -qx -- '- status: approved'; check $? 0 "a standing permission naming plan: approved"
@@ -158,6 +166,17 @@ cat >> $F <<'EOF'
 - source: /Users/x/agent-hub/dolya/coordinator/HANDOFF-hub-dolya-2026-10-25-2112.md
 EOF
 check "$(pymod 'm.has_plan("stage-c")')" "False" "a legacy approved plan sourced from a handoff does not count"
+cat >> $F <<'EOF'
+
+## P-C-091 — A plan approved for one day, written before `until`
+- kind: plan
+- status: approved
+- asked: 2026-10-23 10:00
+- by: agent
+- words: да, только сегодня
+- source: owner chat 23.10
+EOF
+check "$(pymod 'm.has_plan("stage-c")')" "False" "a legacy plan whose owner's words were bound to a past day does not count"
 $B/ask approve P-C-001 --words "«ок»" --source "owner, chat" > /dev/null
 check "$(pymod 'm.has_plan("stage-c")')" "True" "control: an approved plan with the owner's words counts"
 check "$(pymod '(lambda r: (r[1], r[0].date().isoformat()))(m.owner_last_answer({"c": m.load("stage-c")[1]}, m.now_local()))')" \

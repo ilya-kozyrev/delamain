@@ -616,7 +616,8 @@ def end_of(day: dt.date) -> dt.datetime:
 
 def named_date(m: re.Match, given: dt.date) -> dt.date | None:
     """The date a DATE_BOUND_RE match names; a day-month without a year is in the year the words were given (the next
-    one when that is two months back); a date before the day the words were given refers to the past and binds nothing."""
+    one when that is two months back), and one before the day the words were given refers to the past and binds nothing
+    («долг на 30.09»). A date with its year is taken as written: one already past is a bound that has passed."""
     try:
         if m.group(1):
             day = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
@@ -635,7 +636,8 @@ def named_date(m: re.Match, given: dt.date) -> dt.date | None:
                     day = dt.date(given.year + 1, mon, d)
     except (ValueError, StopIteration):
         return None
-    return day if day >= given else None
+    explicit_year = bool(m.group(1) or m.group(6) or m.group(9))
+    return day if day >= given or explicit_year else None
 
 
 def day_bound(text: str, given: dt.datetime) -> tuple[dt.datetime, list[str]] | None:
@@ -1043,7 +1045,19 @@ def has_plan(stage: str) -> bool:
     whose owner's words were bound to a day that has passed."""
     now = now_local()
     return any(e.kind_letter == "P" and e.state == "approved" and not AGENT_SOURCE_RE.search(e.fields.get("source", ""))
-               and ((u := parse_until(e.fields.get("until", ""))) is None or u >= now) for e in load(stage)[1])
+               and ((u := plan_until(e)) is None or u >= now) for e in load(stage)[1])
+
+
+def plan_until(e: Entry) -> dt.datetime | None:
+    """When an approved plan's approval ends: its `until:`, else the day its owner's words name, counted from the
+    approval (`approved:`, else `asked:`); None: no end."""
+    raw = e.fields.get("until", "")
+    if raw not in NO_VALUE:
+        return parse_until(raw)
+    m = re.match(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?", e.fields.get("approved", "") or e.fields.get("asked", ""))
+    given = stamp_dt(m.group(1), m.group(2) or "") if m else None
+    bound = day_bound(e.fields.get("words", ""), given) if given else None
+    return bound[0] if bound else None
 
 
 # ---- plans: approved only on the owner's evidence
@@ -1052,6 +1066,7 @@ ID_RE = re.compile(r"(?<![\w-])([QDPA]-[A-Z0-9]+-\d{3,})(?![\w-])")
 # a source that is an agent's own file is no evidence of the owner's yes, even when it retells it: cite the owner's message
 AGENT_SOURCE_RE = re.compile(r"handoff|brief|report|journal|inbox|lessons|transcript|бриф|отч[её]т|журнал", re.I)
 PLAN_STEMS = ("plan", "план")   # a standing permission covers plan approval when a keyword of its class starts with one
+REFUSAL_RE = re.compile(r"(?:нет|не\b|no\b|not\b|don.t|do not|отказ|отклон|reject|б\b|b\b)", re.I)   # «нет», «Б: …»
 
 
 def plan_evidence(words: str, source: str, stage: str, given: dt.datetime, now: dt.datetime) -> tuple[str, str, str, str]:
@@ -1060,6 +1075,7 @@ def plan_evidence(words: str, source: str, stage: str, given: dt.datetime, now: 
     answered question in force whose answer contains those words, or a permission in force for this stage whose class
     names plan approval (its words are the evidence). An agent's file (a handoff, a brief) is no source even next to an id."""
     words, source = one_line(words), one_line(source)
+    limits: list[dt.datetime] = []   # the ends of the answers and permissions cited: the approval lasts no longer
     if AGENT_SOURCE_RE.search(source):
         return words, source, "", (f"--source {source!r} is an agent's file, not the owner's word: cite the owner's "
                                    "message (a chat and its time, an answered Q-, a permission A-)")
@@ -1077,10 +1093,16 @@ def plan_evidence(words: str, source: str, stage: str, given: dt.datetime, now: 
             if not any(k.startswith(PLAN_STEMS) for k in keywords(e.fields.get("class", ""))):
                 return words, source, "", f"{entry_id} does not name plan approval in its class ({e.fields.get('class', NO_SET)})"
             words = words or e.fields.get("words", "")
+        elif not any(stem in e.title.casefold() for stem in PLAN_STEMS):
+            return words, source, "", f"{entry_id} is not a question about a plan (its title names no plan)"
         elif not words:
             return words, source, "", f"--words: quote the owner's yes from {entry_id}'s answer"
         elif words.casefold().strip("«»\"' ") not in one_line(status_parts(e)[0]).casefold():
             return words, source, "", f"--words are not in {entry_id}'s answer: quote the owner's yes as recorded"
+        elif REFUSAL_RE.match(words.strip("«»\"' ")) or REFUSAL_RE.match(status_parts(e)[0].strip("«»\"' ")):
+            return words, source, "", f"{entry_id}'s answer reads as a refusal, not a yes"
+        if (u := entry_until(e)) is not None:
+            limits.append(u)
     if not words:
         return words, source, "", "no owner's words (--words)"
     if not source:
@@ -1089,7 +1111,9 @@ def plan_evidence(words: str, source: str, stage: str, given: dt.datetime, now: 
     if bound and bound[0] < now:
         return words, source, "", (f"the owner's words were bound to {bound[0]:%Y-%m-%d %H:%M} "
                                    f"({', '.join('«' + w + '»' for w in bound[1])}) and have expired")
-    return words, source, until_text(bound[0]) if bound else "", ""
+    if bound:
+        limits.append(bound[0])
+    return words, source, until_text(min(limits)) if limits else "", ""
 
 
 def cmd_plan(args) -> int:
