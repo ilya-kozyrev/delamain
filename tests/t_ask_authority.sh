@@ -177,6 +177,25 @@ cat >> $F <<'EOF'
 - source: owner chat 23.10
 EOF
 check "$(pymod 'm.has_plan("stage-c")')" "False" "a legacy plan whose owner's words were bound to a past day does not count"
+cat >> $F <<'EOF'
+
+## Q-C-092 — План на сегодня?
+- kind: question
+- status: answered: да (2026-10-23 10:00)
+- asked: 2026-10-23 09:00
+- by: agent
+- source: not set
+
+## P-C-093 — A plan approved from a day-bound answer, written before the end carried over
+- kind: plan
+- status: approved
+- asked: 2026-10-23 10:05
+- by: agent
+- words: да
+- source: Q-C-092
+EOF
+check "$(pymod 'm.plan_until(next(e for e in m.load("stage-c")[1] if e.id == "P-C-093"))')" "2026-10-23 23:59:00" \
+  "a legacy plan citing a day-bound answer ends with that answer"
 $B/ask approve P-C-001 --words "«ок»" --source "owner, chat" > /dev/null
 check "$(pymod 'm.has_plan("stage-c")')" "True" "control: an approved plan with the owner's words counts"
 check "$(pymod '(lambda r: (r[1], r[0].date().isoformat()))(m.owner_last_answer({"c": m.load("stage-c")[1]}, m.now_local()))')" \

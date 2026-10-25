@@ -1049,15 +1049,27 @@ def has_plan(stage: str) -> bool:
 
 
 def plan_until(e: Entry) -> dt.datetime | None:
-    """When an approved plan's approval ends: its `until:`, else the day its owner's words name, counted from the
-    approval (`approved:`, else `asked:`); None: no end."""
+    """When an approved plan's approval ends: the earliest of its `until:` (else the day its owner's words name, counted
+    from the approval — `approved:`, else `asked:`) and the ends of the answers and permissions its source cites (a plan
+    recorded before the end carried over); None: no end."""
+    limits = []
     raw = e.fields.get("until", "")
     if raw not in NO_VALUE:
-        return parse_until(raw)
-    m = re.match(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?", e.fields.get("approved", "") or e.fields.get("asked", ""))
-    given = stamp_dt(m.group(1), m.group(2) or "") if m else None
-    bound = day_bound(e.fields.get("words", ""), given) if given else None
-    return bound[0] if bound else None
+        if (u := parse_until(raw)) is not None:
+            limits.append(u)
+    else:
+        m = re.match(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?", e.fields.get("approved", "") or e.fields.get("asked", ""))
+        given = stamp_dt(m.group(1), m.group(2) or "") if m else None
+        if given and (bound := day_bound(e.fields.get("words", ""), given)):
+            limits.append(bound[0])
+    for entry_id in ID_RE.findall(e.fields.get("source", "")):
+        try:
+            cited = find_entry(entry_id)
+        except SystemExit:
+            continue
+        if cited.kind_letter in ("A", "Q") and (u := entry_until(cited)) is not None:
+            limits.append(u)
+    return min(limits) if limits else None
 
 
 # ---- plans: approved only on the owner's evidence
