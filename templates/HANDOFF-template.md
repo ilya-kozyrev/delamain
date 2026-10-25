@@ -10,6 +10,7 @@ Shift journal: `journal-<YYYY-MM-DD>.md`. Written by session "<title>" (<model>)
 <Agreed result/source from the plan, brief or register; see skills/hub/SKILL.md, "Planning a stage".>
 Carry this result and owner-supplied constraints forward; choose implementation details independently.
 Report progress against it with technical evidence separately.
+The owner approved it once: continue it and record no plan (`ask plan` is the owner's own approval).
 
 ## 0. First steps for the successor
 <!-- 3–6 steps, each a command or a file: `ask list --stage <stage>`, `lock list`, the expected version of each
@@ -40,6 +41,7 @@ Codex successor: apply the bundled hub skill's Terminal follow-through (`<plugin
      A new question during the shift — `ask add` with --default and --due; your own decision on a matter the owner
      normally decides — `ask decided`. The owner's answer — `ask close`, and record it where decisions live the same day. -->
 `ask summary`: <stage — open N, overdue M, …>. Overdue ones and what was done by default: <…>.
+An answer authorises its one action: after `ask done` it is spent; a repeat needs `ask allow` or a new question.
 
 ## 5. Risks and loose ends
 <!-- What breaks when nobody watches and how it shows; bookings and windows (`lock list`); bugs found

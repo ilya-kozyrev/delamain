@@ -706,8 +706,8 @@ def pending_line(ask, entries: list) -> str:
 
 
 def ask_digest(stage: str, days: int = 1, width: int = 60) -> str:
-    """"awaiting execution: N (ids)", then open questions, the owner's recent answers, the agents' decisions in
-    force and withdrawals; newest first inside each group, entries with the same text merged into one line."""
+    """"awaiting execution: N (ids)", then open questions, the owner's recent answers (an executed one marked spent:
+    it authorises nothing more), the agents' decisions in force and withdrawals; newest first inside each group, entries with the same text merged into one line."""
     try:
         ask = ask_module()
         _, entries = ask.load(stage)
@@ -729,7 +729,7 @@ def _ask_digest_groups(ask, entries: list, days: int, width: int) -> str:
         elif when < cutoff:
             continue
         elif e.state == "answered":
-            key = (1, f"owner: {body[:width]}")
+            key = (1, f"owner{', spent' if e.spent else ''}: {body[:width]}")
         elif e.kind_letter == "D" and e.state in ("standing", "open"):
             key = (2, f"in force: {e.title[:width]}")
         elif e.state == "withdrawn":
@@ -1695,6 +1695,7 @@ Written by session "{name}" ({me_id}, TODO model).{goal_line}
 TODO: brief agreed user/business result and its source (plan, brief or register; hub skill, "Planning a stage").
 Carry the result and owner-supplied constraints forward; choose implementation details independently.
 Report progress against it with technical evidence separately.
+The owner approved it once: continue it and record no plan (`ask plan` is the owner's own approval).
 
 ## 0. First steps for the successor
 1. Name your session "{succ}"; `hub takeover --stage {stage} --session <your full session id> --handoff {out}` —
@@ -1725,6 +1726,7 @@ Codex successor: apply the hub skill's Terminal follow-through; reconcile this s
 ## 4. Owner questions
 `ask summary`: {summary or '—'}.
 {cut(ask_digest(stage, width=110), 2600, f"ask list --stage {stage}")}
+An answer authorises its one action: after `ask done` it is spent; a repeat needs `ask allow` or a new question.
 TODO: questions asked in chat without a record — `ask add` first, then their ids here.
 
 ## 5. Risks and loose ends

@@ -1405,7 +1405,7 @@ def desktop_report(stage, pend):
           "No successor is verified yet. Keep the predecessor active until actual takeover.\n"
           "Native APIs cannot set sandbox/approval; Full Access is a UI/project-default limitation.\n"
           "Before create_thread, check explicit human authority in the current user instruction, inherited handoff/approved plan, "
-          "answered question or standing owner permission; verify scope and revocation. Sources: "
+          "answered question not yet done (`ask check`) or standing owner permission; verify scope and revocation. Sources: "
           f"{desktop_authority_sources(stage, pend)}; {pend['handoff']}, and the stage question register/ask allow list. "
           "An empty allow list does not negate a recorded human instruction or answer. "
           "An explicit standing owner grant for automatic same-stage context handoff satisfies the native explicit-user requirement "

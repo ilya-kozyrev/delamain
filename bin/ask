@@ -17,7 +17,9 @@ One file per stage, readable by a human and by this script. Each entry is a bloc
 
 `Q-…` is a question to the owner; `D-…` is a decision an agent took itself on a matter the owner
 normally decides ("decided by default — the owner may contest"); `P-…` is a plan the owner approved
-(status `approved`: never unresolved, found by `search`; `agent spawn` warns while its stage has none).
+(status `approved`: never unresolved, found by `search`; `agent spawn` warns while its stage has none), recorded only
+with the owner's quoted words and a source that is not an agent's file. An owner's answer authorises the action its
+question asked, once: with a `done:` line it is spent and authorises nothing more (`ask check` says which).
 An entry leaves the unresolved list only with the owner's answer (`close`) or the owner withdrawing it
 (`withdraw`). `A-…` is a standing permission (`ask allow`; docs/standing-permissions.md): the owner's words that a
 class of action needs no further question. It is read from every stage's register; `ask add` refuses a question a
@@ -35,11 +37,13 @@ Usage:
   ask allow --list [--repo R] [--stage stage-a] [--all]    (permissions in force for a repository / a stage)
   ask revoke A-A-001 [--reason "…"]
   ask decided --stage stage-a [--by …] [--source …] [--alternative "…"] [--at HH:MM] "decision taken"
-  ask plan --stage stage-a [--by …] [--source …] [--at HH:MM] "the owner-approved plan in one line"
+  ask plan --stage stage-a --words "the owner's words" --source "where the owner said them" [--by …] [--at HH:MM]
+           "the owner-approved plan in one line"
   ask close Q-A-001 --answer "…" [--at HH:MM] [--date YYYY-MM-DD]
   ask withdraw Q-A-001 [--reason "…"]
   ask default-taken Q-A-001 [--note "…"]
-  ask done Q-A-001 --evidence "…" [--at HH:MM]        (the owner's answer was executed; repeat to append)
+  ask done Q-A-001 --evidence "…" [--at HH:MM]        (the owner's answer was executed: it is spent; repeat to append)
+  ask check Q-A-001                                    (may an action rest on this entry now? exit 0 yes, 4 no)
   ask list [--stage stage-a] [--open | --overdue | --all | --pending [--since YYYY-MM-DD]]
   ask search word [word …] [--stage stage-a] [--all]   (all words, any status, every stage by default)
   ask digest [--stage stage-a] [--width 160]           (one line per answer / standing decision / permission)
@@ -114,6 +118,11 @@ class Entry:
     @property
     def unresolved(self) -> bool:
         return self.state in ("open", "default-taken", "standing")
+
+    @property
+    def spent(self) -> bool:
+        """An owner's answer that was executed (`ask done`): it authorised that one action and authorises nothing more."""
+        return self.kind_letter == "Q" and self.state == "answered" and bool(self.dones)
 
     def due_at(self) -> dt.datetime | None:
         return parse_due(self.fields.get("due", ""))
@@ -367,6 +376,7 @@ def cmd_add(args, kind_letter: str) -> int:
             lines += [
                 "- kind: plan",
                 "- status: approved",
+                f"- words: {one_line(args.words)}",
                 f"- asked: {when.stamp}",
                 f"- by: {one_line(args.by)}",
             ]
@@ -854,9 +864,77 @@ def permissions_digest(stage: str, budget: int = DIGEST_PERMS_BYTES, width: int 
     return "\n".join([head] + lines[:shown] + rest + tail)
 
 
+def agent_file(source: str) -> bool:
+    """A source that is a local file (a handoff, a report, a brief): agents write those, so it is no evidence of the
+    owner's word. The owner's word comes from a conversation (a chat, a session) or a URL."""
+    return bool(re.match(r"(?:~|\.{1,2})?/|file://", (source or "").strip()))
+
+
+def owner_plan(e: Entry) -> bool:
+    """An approved plan that counts: every `P-` entry except one an agent recorded from its own file, with no owner's
+    words (a successor's continuation plan, recorded as approved before `ask plan` asked for the words)."""
+    return e.kind_letter == "P" and not (e.fields.get("words", "") in NO_VALUE and agent_file(e.fields.get("source", "")))
+
+
 def has_plan(stage: str) -> bool:
     """True when the stage's register holds a plan the owner approved (`ask plan`)."""
-    return any(e.kind_letter == "P" for e in load(stage)[1])
+    return any(owner_plan(e) for e in load(stage)[1])
+
+
+PLAN_ELSEWHERE = ("Nothing to record when you continue a stage whose business result the owner already approved (a "
+                  "successor continues it); your own choice of how to go on is `ask decided \"…\"`, which the owner "
+                  "sees in the digest as information, not as a question")
+
+
+def cmd_plan(args) -> int:
+    """`ask plan`: an approval is the owner's, so it carries the owner's words and where they said them."""
+    if not one_line(args.words):
+        raise SystemExit("ask: plan needs --words — the owner's own words approving it. " + PLAN_ELSEWHERE)
+    source = one_line(args.source)
+    if source in NO_VALUE:
+        raise SystemExit("ask: plan needs --source — where the owner said it (a chat, a session, a URL). " + PLAN_ELSEWHERE)
+    if agent_file(source):
+        raise SystemExit(f"ask: --source {source!r} is a file, and agents write files: it is not the owner's approval. "
+                         "Name where the owner said it (a chat, a session, a URL). " + PLAN_ELSEWHERE)
+    return cmd_add(args, "P")
+
+
+CHECK_NO = 4   # `ask check`: the entry authorises nothing now
+
+
+def cmd_check(entry_id: str) -> int:
+    """Whether an action may rest on this entry now: an unspent owner's answer (once), a permission in force, an
+    owner-approved plan. Exit 0 with what it covers; CHECK_NO with why not and where to go instead."""
+    e = find_entry(entry_id)
+    again = ("A repeat needs a standing permission in the owner's words, with the scope and end the owner states "
+             "(`ask allow`), or a new question with a default (`ask add`); meanwhile go on with other ready work.")
+    if e.kind_letter == "Q" and e.spent:
+        print(f"{e.id} is spent — {e.title}\n    {e.dones[0]}\n    It authorised that one action. {again}")
+        return CHECK_NO
+    if e.kind_letter == "Q" and e.state == "answered":
+        print(f"{e.id} authorises once what it asked — {e.title}\n    the owner: {status_parts(e)[0] or e.status}\n"
+              f"    When it is done: `ask done {e.id} --evidence \"…\"`; it then authorises nothing more.")
+        return 0
+    if e.kind_letter == "Q":
+        print(f"{e.id} is {e.status or 'without a status'}: no owner's answer to act on — {e.title}")
+        return CHECK_NO
+    if e.kind_letter == "A":
+        state = perm_state(e, now_local())
+        print(fmt_perm(e, now_local()))
+        if state == "allowed":
+            print("    In force: it covers what its words say, as often as needed, until it ends or is revoked.")
+            return 0
+        print(f"    Not in force ({state}). {again}")
+        return CHECK_NO
+    if e.kind_letter == "P":
+        if owner_plan(e):
+            print(f"{e.id} is a plan the owner approved — {e.title}")
+            return 0
+        print(f"{e.id} was recorded by an agent from its own file, with no owner's words: not an approval. "
+              f"{PLAN_ELSEWHERE}.")
+        return CHECK_NO
+    print(f"{e.id} is an agent's decision ({e.status}): it records the hub's choice, not the owner's word — {e.title}")
+    return CHECK_NO
 
 
 def find_entry(entry_id: str) -> Entry:
@@ -922,7 +1000,7 @@ def set_fields(entry_id: str, updates: dict[str, str], require_unresolved: bool 
 
 def fmt_entry(e: Entry, now: dt.datetime) -> str:
     f = e.fields
-    flag = " OVERDUE" if e.overdue(now) else ""
+    flag = " OVERDUE" if e.overdue(now) else " SPENT" if e.spent else ""
     out = [f"{e.id} [{e.stage}] {e.status}{flag} — {e.title}"]
     if e.kind_letter == "Q":
         out.append(f"    blocks: {f.get('blocks', '—')}; default by {f.get('due', '—')}: {f.get('default', '—')}")
@@ -968,11 +1046,17 @@ def cmd_done(args) -> int:
         if state not in ("answered", "standing"):
             raise SystemExit(f"ask: {args.id} is {status!r}: done is for an answered question or a standing decision")
         done_at = [i for i, k, _ in fields if k == "done"]
+        spent_before = block[done_at[0]][len("- done: "):] if done_at and args.id.startswith("Q-") else ""
         at = (done_at[-1] if done_at else max(i for i, _, _ in fields)) + 1
         block.insert(at, f"- done: {when.stamp} — {evidence}")
         lines[start:end] = block
         atomic_write(path, "\n".join(lines) + "\n")
     print(f"{args.id}: done {when.stamp} — {evidence}")
+    if spent_before:
+        print(f"ask: {args.id} was already spent ({spent_before}): this line adds evidence of that same action. "
+              "Another action needs a standing permission (`ask allow`) or a new question (`ask add`)", file=sys.stderr)
+    elif args.id.startswith("Q-"):
+        print(f"{args.id} is spent: it authorised this one action and authorises nothing more")
     print(journal_line(args.id, "done", when, evidence))
     return 0
 
@@ -998,7 +1082,7 @@ def fmt_brief(e: Entry) -> str:
     date, time_ = entry_when(e)
     head = one_line(e.title)
     cut_title, rest = head[:140], head[140:]
-    label = " ".join(x for x in (e.id, f"[{e.stage}]", e.state, date, time_) if x)
+    label = " ".join(x for x in (e.id, f"[{e.stage}]", "answered, spent" if e.spent else e.state, date, time_) if x)
     out = [f"{label} — {cut_title}{'…' if rest else ''}"]
     if e.kind_letter == "D" and not status_parts(e)[0]:
         if rest:
@@ -1046,7 +1130,8 @@ def cmd_search(args) -> int:
 
 
 def cmd_digest(args) -> int:
-    """One line per decision in force (owner answers and standing decisions): `<id> <gist ≤ width>`."""
+    """One line per owner answer, standing decision and permission in force: `<id> <gist ≤ width>`; an executed
+    answer reads `<id> spent: <gist>` — it authorises nothing more."""
     stages = [args.stage] if args.stage else all_stages()
     if args.stage and not stage_file(args.stage).exists():
         raise SystemExit(f"ask: no register {stage_file(args.stage)}")
@@ -1055,7 +1140,7 @@ def cmd_digest(args) -> int:
         _, entries = load(stage)
         for e in entries:
             if e.state in ("answered", "standing"):
-                print(f"{e.id} {clip(gist(e) or e.title, args.width)}")
+                print(f"{e.id} {'spent: ' if e.spent else ''}{clip(gist(e) or e.title, args.width)}")
             elif e.kind_letter == "A" and perm_state(e, now) == "allowed":
                 line = f"allowed ({scope_label(e)}): {e.title} — {e.fields.get('words', '')}"
                 print(f"{e.id} {clip(line, args.width)}")
@@ -1159,7 +1244,7 @@ def owner_last_answer(registers: dict[str, list[Entry]], now: dt.datetime) -> tu
     best: tuple[dt.datetime, str] | None = None
     for entries in registers.values():
         for e in entries:
-            if not ((e.kind_letter == "Q" and e.state == "answered") or e.kind_letter in ("A", "P")):
+            if not ((e.kind_letter == "Q" and e.state == "answered") or e.kind_letter == "A" or owner_plan(e)):
                 continue
             at = stamp_dt(*entry_when(e))
             if at and at <= now + dt.timedelta(minutes=2) and (best is None or at > best[0]):
@@ -1515,11 +1600,14 @@ def main(argv: list[str]) -> int:
     d.add_argument("--prefix", default="")
     d.add_argument("--print-id", action="store_true", help="print only the new id (for scripts)")
 
-    pl = sub.add_parser("plan", help="record the plan the owner approved (`agent spawn` warns while a stage has none)")
+    pl = sub.add_parser("plan", help="record the plan the owner approved, with the owner's words (`agent spawn` warns "
+                                     "while a stage has none); a successor continuing it records nothing")
     pl.add_argument("text", help="the plan in one line")
     pl.add_argument("--stage", required=True)
+    pl.add_argument("--words", default="", help="the owner's own words approving the plan (required)")
     pl.add_argument("--by", default=os.environ.get("ASK_BY", "agent"))
-    pl.add_argument("--source", default="", help="where the approval is on record (a message, a file)")
+    pl.add_argument("--source", default="", help="where the owner said it: a chat, a session, a URL — not a file "
+                                                 "(required)")
     pl.add_argument("--asked", default="", help="date approved (YYYY-MM-DD), default today")
     pl.add_argument("--at", default="", help="HH:MM, default now")
     pl.add_argument("--prefix", default="")
@@ -1546,7 +1634,13 @@ def main(argv: list[str]) -> int:
     sh.add_argument("id")
     sh.add_argument("--stage", help="optional check: the entry must be in this stage")
 
-    dn = sub.add_parser("done", help="the owner's answer was executed: add a `- done:` line with the evidence")
+    ck = sub.add_parser("check", help="may an action rest on this entry now: an owner's answer not yet done (once), a "
+                                      "permission in force, an owner-approved plan (exit 0); otherwise exit 4 and why")
+    ck.add_argument("id")
+    ck.add_argument("--stage", help="optional check: the entry must be in this stage")
+
+    dn = sub.add_parser("done", help="the owner's answer was executed: add a `- done:` line with the evidence; the answer "
+                                     "is then spent and authorises nothing more")
     dn.add_argument("id")
     dn.add_argument("--stage", help="optional check: the entry must be in this stage")
     dn.add_argument("--evidence", required=True, help="what was done and where it shows (commit, MR, file, command)")
@@ -1583,7 +1677,7 @@ def main(argv: list[str]) -> int:
 
     args = p.parse_args(argv)
     today = now_local().date().isoformat()
-    if args.cmd in ("close", "withdraw", "default-taken", "show", "done", "revoke") and args.stage:
+    if args.cmd in ("close", "withdraw", "default-taken", "show", "check", "done", "revoke") and args.stage:
         found = find_entry(args.id).stage   # ids are unique across stages; --stage only guards against a typo
         if found != args.stage:
             raise SystemExit(f"ask: {args.id} is in stage {found}, not {args.stage}")
@@ -1599,7 +1693,9 @@ def main(argv: list[str]) -> int:
     if args.cmd == "decided":
         return cmd_add(args, "D")
     if args.cmd == "plan":
-        return cmd_add(args, "P")
+        return cmd_plan(args)
+    if args.cmd == "check":
+        return cmd_check(args.id)
     if args.cmd == "close":
         when = resolve_when(args.at, args.date)
         rc = set_fields(args.id, {"status": f"answered: {one_line(args.answer)} ({when.stamp})"})

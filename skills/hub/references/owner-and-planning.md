@@ -30,6 +30,13 @@ journal. The Codex-only delivery rules are in [codex-hub.md](codex-hub.md#talkin
   take if nobody answers; `ask decided` — a decision you took yourself on a matter the owner normally decides;
   `ask close <id> --answer …` — the owner answered; `ask done <id> --evidence "…"` — the answer was executed;
   `ask list --pending` — answers without `done`.
+- An owner's answer authorises the action its question asked, once. Mark it `ask done` when that action is executed:
+  it is then spent (`ask digest`, `ask search` and the takeover digest say so) and authorises nothing more, whatever
+  its words. `ask check <id>` before acting on an answer or a permission: exit 0 — it covers this; exit 4 — it does
+  not. A second action of the same kind (another release, another deploy) needs a standing permission
+  (`ask allow`, with the scope and end the owner states) or a new question with a default; while it waits, go on with
+  every other ready piece of work (rule 12). When the owner's answer itself sets a rule ("merge to dev without
+  asking"), record it with `ask allow` and the owner's words.
 - Standing permissions (`<plugin-root>/docs/standing-permissions.md`): `ask allow --list --stage <S>` — what the owner
   already allowed for this stage's repository, recorded in any stage (the start/takeover digest lists them); `ask allow
   --stage <S> --class "<keywords>" --words "<the owner's words>" "<the class of action>"` — record one (`--repo` when
@@ -104,7 +111,11 @@ This recipe applies to Claude and Codex, in the console and app.
    interview or approval solely for adding a DoD heading or file. If your proposal materially changes the business
    scope or result, obtain owner agreement first. Before spawning, have a plan the owner said yes to: a clear,
    detailed request counts as that yes. Honor an explicit request to approve the plan before starting. Record the
-   approved plan with `ask plan --stage <S> "<plan in one line>"` (`agent spawn` warns when the stage has none).
+   approved plan with the owner's words and where they said them: `ask plan --stage <S> --words "<the owner's words>"
+   --source "<chat, session or URL>" "<plan in one line>"` (`agent spawn` warns when the stage has none). The owner
+   approves a stage's business result once: a successor or a new shift continues it and records no plan, and `ask
+   plan` refuses without the owner's words or with an agent's file as the source. A choice of how to go on is the
+   hub's: `ask decided` — the owner sees it in the digest as information, not as a question.
 5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification
    and stop/permission conditions separate. Later executors and hub shifts carry the same result through handoffs;
    they choose details independently and raise only new ambiguity that materially changes the business result.

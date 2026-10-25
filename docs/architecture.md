@@ -174,7 +174,12 @@ handoffs; procedure and rules in `skills/handoff/references/lessons.md`):
 - done: 2026-10-01 12:10 — flag flipped in PR 43     (after the answer is executed; repeatable)
 ```
 
+An answer authorises the action its question asked, once: a `done:` line makes it spent, and `ask check`, `ask digest`,
+`ask search` and the takeover digest treat a spent answer as authorising nothing more.
+
 `D-…` entries (`ask decided`) record a decision an agent took itself, with `alternative:` and status `standing`.
+`P-…` entries (`ask plan`) record a plan the owner approved, with the owner's `words:` and a `source:` that is not a file;
+an older `P-` entry without words whose source is a file an agent wrote does not count as an approval.
 `A-…` entries (`ask allow`) are standing permissions — `scope:`, `repo:`, `class:`, `words:`, `until:`, status `allowed`
 or `revoked: …`; every stage's register is read for them ([format](standing-permissions.md)).
 

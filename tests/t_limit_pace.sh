@@ -11,7 +11,7 @@ FX(){ python3 "$T/limit_pace_fixture.py" "$@"; }
 dry(){ local r=$1; shift; $B/agent spawn --role $r --cwd $W --brief $W/b.md --dry-run "$@" > $R/$r.out 2>&1; }
 wait_dead(){ for i in $(seq 1 60); do $B/agent status $1 | grep -q 'ALIVE' || return 0; sleep 0.25; done; }
 J=$R/stage-a/coordinator/work/journal-$(today).md
-$B/ask plan --stage stage-a "plan for the tests" > /dev/null
+$B/ask plan --stage stage-a --words "go" --source "owner chat" "plan for the tests" > /dev/null
 
 # ---- 1. the pace model and the advice rules, against fixture logs read by the module itself
 python3 - "$B" "$T" <<'PY'

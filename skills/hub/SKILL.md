@@ -97,7 +97,7 @@ with its `--since HH:MM`, handle what it shows, keep one waiter. Going quiet on 
 - `roles list | get | set | retire | broadcast` — the role registry. Detached workers of either engine: `agent send`.
 - `ask search <words…>` — what the owner already decided; `ask add … --default … --due …` — a question with the action
   you take if nobody answers; `ask decided` — your own decision on a matter the owner normally decides; `ask close`,
-  `done`, `digest`, `list`. Standing permissions (`ask allow`, `ask revoke`): `references/owner-and-planning.md`.
+  `done`, `check`, `digest`, `list`. Standing permissions (`ask allow`, `ask revoke`): `references/owner-and-planning.md`.
 - Owner digest: on the owner's first message after a long silence run `ask inbox --if-quiet` and open your reply with
   its output (empty: go straight to the reply). Every question to the owner says what each answer changes — "A: …;
   B: …" — and the default you take if no answer comes.
@@ -117,7 +117,7 @@ the owner to leave the work to autopilot; detailed UI, scenario and technical de
 unless the owner supplied them.
 
 1. `ask search <topic words>` and `ask allow --list --stage <S>` — what is on record is settled. A successor or
-   executor preserves the inherited Business DoD and its source. No standing permission for the repository: see
+   executor preserves the inherited Business DoD and its source and records no plan. No standing permission for the repository: see
    `<plugin-root>/skills/setup/SKILL.md` § 5, then one grilling round; record answers with `ask allow`.
 2. Business result unclear → the companion `grilling` skill, **limited to ambiguity whose answer materially changes
    the business result; stop once that result is clear.** Facts and implementation choices are agent-owned.
@@ -125,8 +125,8 @@ unless the owner supplied them.
    branches go to the owner and the register.
 4. Put the agreed Business DoD, with its source, in the plan or brief; a clear owner request can itself be the DoD.
    Before spawning, have a plan the owner said yes to (a clear, detailed request counts; honor an explicit request to
-   approve first) and record it: `ask plan --stage <S> "<plan in one line>"`. A proposal that materially changes the
-   business scope or result needs the owner's agreement first.
+   approve first) and record it with the owner's words: `ask plan --stage <S> --words "…" --source "<chat>" "<plan>"`.
+   A proposal that materially changes the business scope or result needs the owner's agreement first.
 5. Brief executors with that result; keep implementation steps, technical verification and stop/permission
    conditions separate.
 
@@ -223,4 +223,5 @@ repository, then the stage directory, a later file winning — and `HUB-NOTES.md
 11. **The reviewer is a different model from the author.**
 12. **A question's due time is no reason to hold ready work while the owner is reachable, and never invent a gate the
     owner did not set.** Before asking about a merge, deploy or release, check `ask allow --list --stage <S>`: a
-    permission in force whose words cover the case is the answer.
+    permission in force whose words cover the case is the answer. An owner's answer authorises the action its question
+    asked, once: after `ask done` it is spent (`ask check <id>`); a repeat needs `ask allow` or a new question.

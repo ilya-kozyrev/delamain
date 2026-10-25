@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **An owner's answer authorises its one action; a hub records no approval it did not receive.** On one weekend an
+  owner's «да» to Friday's production release was reused for Saturday's, and a successor hub recorded its own
+  continuation plan as `approved`. Now an answered question with a `done:` line (`ask done`) is spent: `ask digest`,
+  `ask search`, `ask list --all` and the takeover digest mark it, and the new `ask check <id>` exits 4 for it (0 for an
+  answer not yet done, a permission in force, an owner-approved plan) and points to `ask allow` or a new question. No
+  wording of the owner's answer is parsed; `ask allow --until` is unchanged. `ask plan` now needs `--words` (the
+  owner's words) and a `--source` that is not a file; without them it refuses and says that a successor records
+  nothing and the hub's own choice is `ask decided`. Older plans keep counting, except one recorded from an agent's
+  file with no words. A normal autopilot shift adds no owner question (`tests/t_ask_authority.sh` walks one).
+
 - **The watchdog stops retired hubs that keep MCP servers.** R7 counted every live descendant of a session's process as
   work, and every Claude session keeps its MCP servers as children, so a retired hub with context7 or chrome-devtools was
   only reported, never stopped (two such hubs of one stage held their servers for days). Now only a shell among the direct

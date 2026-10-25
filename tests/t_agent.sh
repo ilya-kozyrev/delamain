@@ -61,7 +61,7 @@ $B/agent-spawn --role noplan --cwd $W --model haiku --brief $W/b.md > $R/np1.out
 grep -q 'stage stage-a has no owner-approved plan' $R/np1.err; check $? 0 "no plan: spawn warns once on stderr"
 check "$(grep -c 'no owner-approved plan' $R/np1.err)" 1 "no plan: exactly one warning line"
 wait_dead noplan; $B/agent-stop noplan >/dev/null
-$B/ask plan --stage stage-a "Do the thing" >/dev/null
+$B/ask plan --stage stage-a --words "go" --source "owner chat" "Do the thing" >/dev/null
 $B/agent-spawn --role withplan --cwd $W --model haiku --brief $W/b.md > $R/np2.out 2> $R/np2.err; check $? 0 "plan on record: spawn succeeds"
 grep -q 'no owner-approved plan' $R/np2.err; check $? 1 "plan on record: no warning"
 wait_dead withplan; $B/agent-stop withplan >/dev/null

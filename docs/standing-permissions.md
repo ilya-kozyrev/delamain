@@ -7,7 +7,8 @@ the `hub start` / `hub takeover` digest. For the commands, see [Reference](refer
 that class of action, and invented gates (a "from 10:00") nobody set. A permission recorded in one stage's register
 was invisible to the hub of another stage working on the same repository, which then asked again and duplicated the
 work. A standing permission is the owner's word that a class of action needs no further question, recorded once and
-seen by every stage whose action it covers.
+seen by every stage whose action it covers. An answer to a question is not one: it authorises the action its question
+asked, once (`ask done` spends it); a repeated action rests on a permission or on a new question.
 
 **Record.** An `A-` entry in the stage's own register (`<hub home>/<stage>/questions.md`), next to the `Q-`/`D-`/`P-`
 entries and with the stage's id prefix, written by `ask allow`:

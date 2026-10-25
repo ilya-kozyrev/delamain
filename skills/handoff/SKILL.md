@@ -36,6 +36,8 @@ For Codex autopilot, keep the launch surface in the handoff: actual app hub → 
 (native launch procedure in [docs/codex.md](../../docs/codex.md#desktop-autopilot)); console/detached hub → CLI.
 Before native dispatch, use that procedure's human-authority check. Carry the precise human source/reference,
 scope and revocation conditions in the handoff, including an inherited answered question or standing instruction.
+An owner's answer authorises its one action: once `ask done`, it is spent; a repeat needs `ask allow` or a new
+question. The successor continues the approved Business DoD and records no plan (`ask plan` is the owner's approval).
 An explicit owner grant for automatic same-stage context handoffs persists until revoked; the successor continues
 under it without another per-transfer approval. If absent/revoked or outside scope, preserve the request and
 predecessor and ask once. Keep the Business DoD unchanged; an automatic marker/configuration is not human authority.
