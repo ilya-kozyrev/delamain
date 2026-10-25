@@ -41,7 +41,7 @@ journal. The Codex-only delivery rules are in [codex-hub.md](codex-hub.md#talkin
   Money, migrations and permissions/RBAC are covered only by a permission that names them.
 - An owner's yes said for a day is bound to that day. When a permission's words or an answer say «сегодня»,
   «сегодняшний», «до вечера», «завтра», «до конца недели», «до 25.10», «до 18:00» (the list: `DAY_WORDS` in `bin/ask`),
-  `ask allow` and `ask close` record `until` as the end of that day and say so; record the words on the day the owner
+  `ask allow` and `ask close` record `until` as the end of that day and say so, and refuse an `--until` past it; record the words on the day the owner
   said them (`--asked` / `--date` for an earlier day). After it the grant is not in force: `ask allow --list` drops it,
   `ask add --class` is not covered by it, `ask in-force <id>` exits 4. Before acting on an answer or permission given on
   an earlier day, run `ask in-force <id>`; expired — ask the owner again, never carry yesterday's «сегодня» into today.
@@ -111,8 +111,8 @@ This recipe applies to Claude and Codex, in the console and app.
    scope or result, obtain owner agreement first. Before spawning, have a plan the owner said yes to: a clear,
    detailed request counts as that yes. Honor an explicit request to approve the plan before starting. Record the
    approved plan with the owner's evidence: `ask plan --stage <S> --words "«the owner's yes»" --source "<the chat and
-   its time>" "<plan in one line>"`, or `--source <Q-id>` of the answered question, or `--source <A-id>` of a
-   permission whose class names `plan`. **A hub never approves its own plan:** your handoff, brief or report is not the
+   its time>" "<plan in one line>"`, or `--source <Q-id>` of the answered question with `--words` quoted from its
+   answer, or `--source <A-id>` of a permission for this stage whose class names `plan`. **A hub never approves its own plan:** your handoff, brief or report is not the
    owner's word, and without the owner's words the plan is recorded `proposed` — show it to the owner and, after the
    yes, `ask approve <P-id> --words … --source …`. `agent spawn` warns while the stage has no approved plan.
 5. Brief executors with that source or a concise inherited result. Keep implementation steps, technical verification

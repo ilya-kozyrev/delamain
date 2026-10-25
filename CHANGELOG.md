@@ -6,12 +6,13 @@
   «сегодня», «сегодняшний», «до вечера», «завтра», «до конца недели», «до 25.10», «до 18:00» or "today" bind it to the end
   of that day: `ask allow` and `ask close` record `until` and say so; after it `ask allow --list` drops it, `ask add
   --class` is not covered by it, `ask digest` / `ask search` mark it expired, `ask decided` warns when it cites it, and
-  the new `ask in-force <id> [--as-of …]` exits 4. Entries recorded earlier get the same bound from their words. Seen
+  the new `ask in-force <id> [--as-of …]` exits 4. An `--until` past the words' day is refused. Entries recorded earlier get the same bound from their words. Seen
   on 23–24.10: «сегодняшний релиз» of Friday shipped a release on Saturday evening (Q-MC-009).
 - **A hub cannot approve its own plan.** `ask plan` writes `approved` only with the owner's words and a source that is
-  not an agent's file, or an answered question / a permission naming `plan` in force; otherwise the plan is
+  not an agent's file (an answered question in force whose answer holds the quoted words, or a permission for the stage
+  naming `plan`); otherwise the plan is
   `proposed` — unresolved, shown in `ask list`, the summary and the owner's inbox, not counted by `agent spawn` — until
-  `ask approve P-… --words … --source …`. Seen on 25.10: a plan sourced from the hub's own handoff stood as
+  `ask approve P-… --words … --source …`. An older `approved` plan sourced from a handoff no longer counts. Seen on 25.10: a plan sourced from the hub's own handoff stood as
   `approved, by: agent` (P-DL-025).
 
 ## 1.0.17 — 2026-10-23

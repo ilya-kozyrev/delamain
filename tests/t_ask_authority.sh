@@ -46,9 +46,15 @@ id=$(lim 4 "«ok until 3 nov»" 2026-10-23); block $id | grep -qx -- '- until: 2
 id=$(lim 5 "«катите до 18:00»" 2026-10-23 14:05); block $id | grep -qx -- '- until: 2026-10-23T18:00'; check $? 0 "«до 18:00» → that time"
 id=$(lim 6 "владелец 23.10 14:05: «мержи всё»" 2026-10-23); block $id | grep -qx -- '- until: not set'; check $? 0 "negative: a bare date stamp binds nothing"
 id=$(lim 7 "«release today»" 2026-10-23); block $id | grep -qx -- '- until: 2026-10-23'; check $? 0 "English \"today\""
+id=$(lim 9 "«катите до 18:00»" 2026-10-23 19:00); block $id | grep -qx -- '- until: 2026-10-23T18:00'; check $? 0 "«до 18:00» said at 19:00 is not moved to tomorrow"
+id=$(lim 10 "«сегодня до 18:00»" 2026-10-23 14:05); block $id | grep -qx -- '- until: 2026-10-23T18:00'; check $? 0 "«сегодня до 18:00» ends at 18:00, not midnight"
+id=$(lim 11 "«Можно катить до 25.10.»" 2026-10-23); block $id | grep -qx -- '- until: 2026-10-25'; check $? 0 "a full stop after «до 25.10.» still binds"
+id=$(lim 12 "«до 25 октября 2027»" 2026-10-23); block $id | grep -qx -- '- until: 2027-10-25'; check $? 0 "the year after a month name counts"
 $B/ask allow --stage stage-a --scope stage --class x8 --words "«сегодня»" --asked 2026-10-23 --until 2026-10-30 "x" \
-  > /dev/null 2> $R/a8.err
-grep -q 'later than the day the owner.s words name' $R/a8.err; check $? 0 "an explicit --until past the words' day warns"
+  > /dev/null 2> $R/a8.err; check $? 1 "an explicit --until past the words' day is refused"
+grep -q 'a hub does not stretch a day.s yes' $R/a8.err; check $? 0 "…and says to record the owner's words or ask"
+$B/ask allow --stage stage-a --scope stage --class x8 --words "«сегодня»" --asked 2026-10-23 --until 2026-10-23T16:00 "x" \
+  > /dev/null 2>&1; check $? 0 "…an earlier --until narrows it"
 
 # ---- 2. an answered question used as a permission carries the same bound
 q=$($B/ask add --stage stage-a --print-id "Релиз прода сегодня?" 2>/dev/null)
@@ -57,6 +63,9 @@ block $q | grep -qx -- '- until: 2026-10-23'; check $? 0 "a bare «да» to «�
 grep -q "$q: the owner.s words are bound to a day" $R/q1.err; check $? 0 "…and close says so"
 $B/ask in-force $q --as-of 2026-10-23T18:30 > /dev/null; check $? 0 "the answer is in force on 23.10"
 $B/ask in-force $q --as-of 2026-10-24T20:25 > $R/q2.out; check $? 4 "…not on 24.10"
+q2=$($B/ask add --stage stage-a --print-id "Катим сегодня?" 2>/dev/null)
+$B/ask close $q2 --answer "да" --date 2026-10-23 --until 2026-10-25 > /dev/null 2> $R/q4.err; check $? 1 "close: --until past the words' day is refused"
+block $q2 | grep -qx -- '- status: open'; check $? 0 "…the question stays open"
 q=$($B/ask add --stage stage-a --print-id "Прибыль итога сегодня считается иначе — так и оставить?" 2>/dev/null)
 $B/ask close $q --answer "оставить как есть, это правильно" --date 2026-10-23 > /dev/null 2>&1
 block $q | grep -q -- '- until:'; check $? 1 "negative: a full answer does not take the question's descriptive «сегодня»"
@@ -88,7 +97,7 @@ $B/ask in-force D-A-001 > /dev/null; check $? 4 "a decision is not an owner's an
 $B/ask plan --stage stage-a --by agent --source "$R/stage-a/coordinator/HANDOFF-hub-2026-10-25.md" \
   "Продолжить исходный DoD" > $R/p1.out 2> $R/p1.err; check $? 0 "plan from the hub's handoff: recorded"
 block P-A-001 | grep -qx -- '- status: proposed'; check $? 0 "…as proposed, not approved"
-grep -q 'PROPOSED, not approved: no owner.s words' $R/p1.err && grep -q 'A hub never approves its own plan' $R/p1.err; check $? 0 "…and tells the hub to ask the owner"
+grep -q "PROPOSED, not approved: --source .* is an agent's file" $R/p1.err && grep -q 'A hub never approves its own plan' $R/p1.err; check $? 0 "…and tells the hub to ask the owner"
 sed -n 2p $R/p1.out | grep -q '^P-A-001 proposed '; check $? 0 "…the journal line says proposed"
 $B/ask plan --stage stage-a --words "«да»" --source "/x/HANDOFF-hub.md" "Plan B" > /dev/null 2> $R/p2.err
 block P-A-002 | grep -qx -- '- status: proposed'; check $? 0 "owner words retold in a handoff: still proposed"
@@ -99,17 +108,25 @@ $B/ask inbox --stage stage-a 2>/dev/null | grep -q 'P-A-001 plan proposed, await
 $B/ask plan --stage stage-a --words "«да, делай»" --source "owner, chat 25.10 19:20" "Plan C" > /dev/null 2> $R/p3.err
 block P-A-003 | grep -qx -- '- status: approved' && block P-A-003 | grep -qx -- '- words: «да, делай»'; check $? 0 "owner's quoted words with their source: approved"
 grep -q PROPOSED $R/p3.err; check $? 1 "negative: no proposed note for an approved plan"
+plan(){ $B/ask plan --stage stage-a --print-id "$@" 2>> $R/plan.err; }
 q=$($B/ask add --stage stage-a --print-id "План D?" 2>/dev/null)
 $B/ask close $q --answer "да, план D ок" > /dev/null 2>&1
-$B/ask plan --stage stage-a --source $q "Plan D" > /dev/null 2>&1
-block P-A-004 | grep -qx -- '- status: approved' && block P-A-004 | grep -qx -- '- words: да, план D ок'; check $? 0 "an answered question as the source: approved with its answer"
-$B/ask plan --stage stage-a --source Q-A-090 "Plan E" > /dev/null 2> $R/p5.err
-block P-A-005 | grep -qx -- '- status: proposed'; check $? 0 "an expired answer as the source: proposed"
-$B/ask allow --stage stage-a --scope stage --class "plan" --words "«планы утверждай сам в рамках DoD»" "plans" > /dev/null 2>&1   # A-A-013
-$B/ask plan --stage stage-a --source A-A-013 "Plan F" > /dev/null 2>&1
-block P-A-006 | grep -qx -- '- status: approved'; check $? 0 "a standing permission naming plan: approved"
-$B/ask plan --stage stage-a --source A-A-002 "Plan G" > /dev/null 2> $R/p7.err
-block P-A-007 | grep -qx -- '- status: proposed' && grep -q 'does not name plan approval' $R/p7.err; check $? 0 "a permission for merge only: proposed"
+id=$(plan --source $q --words "«да, план D ок»" "Plan D"); block $id | grep -qx -- '- status: approved'; check $? 0 "an answered question with its quoted yes: approved"
+id=$(plan --source $q "Plan D2"); block $id | grep -qx -- '- status: proposed'; check $? 0 "an answered question without --words: proposed"
+q=$($B/ask add --stage stage-a --print-id "Утвердить план H?" 2>/dev/null)
+$B/ask close $q --answer "нет, не делай" > /dev/null 2>&1
+id=$(plan --source $q --words "«да»" "Plan H"); block $id | grep -qx -- '- status: proposed'; check $? 0 "negative: words that are not in the answer («нет») do not approve"
+id=$(plan --source "HANDOFF.md $q" --words "«нет, не делай»" "Plan H2"); block $id | grep -qx -- '- status: proposed'; check $? 0 "an id next to a handoff does not lift the handoff ban"
+id=$(plan --source Q-A-090 --words "да на прод-тег" "Plan E"); block $id | grep -qx -- '- status: proposed'; check $? 0 "an expired answer as the source: proposed"
+id=$(plan --words "«да, только сегодня»" --source "owner chat 23.10" --asked 2026-10-23 "Plan I"); block $id | grep -qx -- '- status: proposed'; check $? 0 "owner's words bound to a past day: proposed"
+$B/ask allow --stage stage-a --scope stage --class "plan" --words "«планы утверждай сам в рамках DoD»" "plans" > /dev/null 2>&1
+pa=$(grep '^## A-' $F | tail -1 | cut -d' ' -f2)
+id=$(plan --source $pa "Plan F"); block $id | grep -qx -- '- status: approved'; check $? 0 "a standing permission naming plan: approved"
+id=$(plan --source A-A-002 "Plan G"); block $id | grep -qx -- '- status: proposed'; check $? 0 "a permission for merge only: proposed"
+grep -q 'does not name plan approval' $R/plan.err; check $? 0 "…says why"
+$B/ask allow --stage stage-b --scope stage --class "plan" --words "«планы утверждай сам»" "plans of b" > /dev/null 2>&1
+pb=$(grep '^## A-' $R/stage-b/questions.md | tail -1 | cut -d' ' -f2)
+id=$(plan --source $pb "Plan J"); block $id | grep -qx -- '- status: proposed'; check $? 0 "another stage's stage-scoped permission: proposed"
 $B/ask approve P-A-001 --source "handoff" > /dev/null 2> $R/ap1.err; check $? 1 "approve without the owner's words: refused"
 block P-A-001 | grep -qx -- '- status: proposed'; check $? 0 "…the plan stays proposed"
 $B/ask approve P-A-001 --words "«да, продолжай»" --source "owner, chat 25.10 21:40" > $R/ap2.out; check $? 0 "approve with the owner's words"
@@ -118,4 +135,31 @@ grep -q '^P-A-001 approved ' $R/ap2.out; check $? 0 "…prints a journal line"
 $B/ask approve P-A-001 --words x --source "owner, chat" > /dev/null 2>&1; check $? 1 "negative: approving twice refused"
 $B/ask close P-A-002 --answer "да" > /dev/null 2> $R/cl.err; check $? 1 "close on a plan: refused"
 grep -q 'ask approve' $R/cl.err; check $? 0 "…pointing at ask approve"
+$B/ask default-taken P-A-002 > /dev/null 2>&1; check $? 1 "default-taken on a plan: refused"
+block P-A-002 | grep -qx -- '- status: proposed'; check $? 0 "…it stays proposed"
+# has_plan and owner_last_answer, read by `agent spawn` and `ask inbox`
+pymod(){ python3 -c '
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("ask_t", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("ask_t", loader)); sys.modules["ask_t"] = m
+loader.exec_module(m)
+print(eval(sys.argv[2], {"m": m}))' "$B/ask" "$1"; }
+new_home; R=$AGENT_HUB_HOME; F=$R/stage-c/questions.md
+$B/ask plan --stage stage-c --asked 2026-10-20 --at 10:00 "Self plan" > /dev/null 2>&1
+check "$(pymod 'm.has_plan("stage-c")')" "False" "a proposed plan does not count for spawn"
+echo '{}' | HUB_TAG=t python3 $HOOKS/questions.py | grep -q "stage-c — .*plan proposed, awaiting the owner"; check $? 0 "SessionStart names a stage whose only entry is a proposed plan"
+cat >> $F <<'EOF'
+
+## P-C-090 — Продолжить исходный DoD (as P-DL-025 was written)
+- kind: plan
+- status: approved
+- asked: 2026-10-20 21:32
+- by: agent
+- source: /Users/x/agent-hub/dolya/coordinator/HANDOFF-hub-dolya-2026-10-25-2112.md
+EOF
+check "$(pymod 'm.has_plan("stage-c")')" "False" "a legacy approved plan sourced from a handoff does not count"
+$B/ask approve P-C-001 --words "«ок»" --source "owner, chat" > /dev/null
+check "$(pymod 'm.has_plan("stage-c")')" "True" "control: an approved plan with the owner's words counts"
+check "$(pymod '(lambda r: (r[1], r[0].date().isoformat()))(m.owner_last_answer({"c": m.load("stage-c")[1]}, m.now_local()))')" \
+  "('P-C-001', '$(today)')" "the owner's latest word is the approval of P-C-001 (its approved: stamp, not asked:)"
 exit $fail

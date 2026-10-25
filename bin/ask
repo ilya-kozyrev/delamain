@@ -18,8 +18,8 @@ One file per stage, readable by a human and by this script. Each entry is a bloc
 
 `Q-…` is a question to the owner; `D-…` is a decision an agent took itself on a matter the owner
 normally decides ("decided by default — the owner may contest"); `P-…` is a plan: `approved` only with the owner's
-evidence (`--words` and a `--source` that is not an agent's own file, or an answered Q-/a permission naming `plan` as
-`--source`), otherwise `proposed` (unresolved, waits for the owner; `ask approve P-…` once the owner said yes);
+evidence (`--words` and a `--source` that is not an agent's own file — an answered Q- whose answer holds the words, a
+permission for the stage naming `plan`), otherwise `proposed` (unresolved, waits for the owner; `ask approve P-…` once the owner said yes);
 `agent spawn` warns while a stage has no approved one.
 An entry leaves the unresolved list only with the owner's answer (`close`) or the owner withdrawing it
 (`withdraw`). `A-…` is a standing permission (`ask allow`; docs/standing-permissions.md): the owner's words that a
@@ -385,7 +385,7 @@ def cmd_add(args, kind_letter: str) -> int:
                 f"- asked: {when.stamp}",
                 f"- by: {one_line(args.by)}",
                 f"- words: {one_line(args.words) or NO_SET}",
-            ]
+            ] + ([f"- until: {args.until}"] if args.until else [])
         else:
             lines += [
                 "- kind: decided",
@@ -605,8 +605,8 @@ MONTHS_EN = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct
 # a bare date is not a bound (the hub's own stamp «владелец 23.10 14:05:» is no limit)
 DATE_BOUND_RE = re.compile(
     r"(?<!\w)(?:до|по|на|until|till|through|by|on|for)\s+(?:(\d{4})-(\d{2})-(\d{2})"
-    r"|(\d{1,2})\.(\d{1,2})(?:\.(\d{4}|\d{2}))?(?![\d.])"
-    r"|(\d{1,2})\s+(" + "|".join(MONTHS + MONTHS_EN) + r")\w*)")
+    r"|(\d{1,2})\.(\d{1,2})(?:\.(\d{4}|\d{2}))?(?!\d|\.\d)"   # a sentence's full stop after it is fine
+    r"|(\d{1,2})\s+(" + "|".join(MONTHS + MONTHS_EN) + r")\w*(?:\s+(\d{4})(?!\d))?)")
 TIME_BOUND_RE = re.compile(r"(?<!\w)(?:до|until|till|by)\s+([01]?\d|2[0-3]):([0-5]\d)(?!\d)")   # «до 18:00»
 
 
@@ -625,7 +625,7 @@ def named_date(m: re.Match, given: dt.date) -> dt.date | None:
                 d, mon, year = int(m.group(4)), int(m.group(5)), m.group(6)
             else:
                 word = m.group(8)
-                d, year = int(m.group(7)), None
+                d, year = int(m.group(7)), m.group(9)
                 mon = next(i + 1 for i, stem in enumerate(MONTHS + MONTHS_EN) if re.match(stem, word)) % 12 or 12
             if year:
                 day = dt.date(int(year) + (2000 if len(year) == 2 else 0), mon, d)
@@ -639,23 +639,24 @@ def named_date(m: re.Match, given: dt.date) -> dt.date | None:
 
 
 def day_bound(text: str, given: dt.datetime) -> tuple[dt.datetime, list[str]] | None:
-    """(the end of the day the words bind to, the phrases found) for words given at `given`, or None: no day words,
-    the words hold until revoked."""
+    """(when the words' grant ends, the phrases found) for words given at `given`, or None: no day words, the words hold
+    until revoked. The latest day named wins; a clock time («до 18:00») is a limit within the day the words were given
+    and, when that is the latest day, ends it at the earliest such time — a time already past is not moved to tomorrow."""
     low = one_line(text).casefold()
-    bounds: list[tuple[dt.datetime, str]] = []
-    for rx, days in DAY_WORDS_RE:
-        bounds += [(end_of(given.date() + dt.timedelta(days=days)), m.group(0)) for m in rx.finditer(low)]
+    days: list[tuple[dt.date, str]] = []
+    for rx, n in DAY_WORDS_RE:
+        days += [(given.date() + dt.timedelta(days=n), m.group(0)) for m in rx.finditer(low)]
     for rx in WEEK_WORDS_RE:
-        bounds += [(end_of(given.date() + dt.timedelta(days=6 - given.weekday())), m.group(0)) for m in rx.finditer(low)]
+        days += [(given.date() + dt.timedelta(days=6 - given.weekday()), m.group(0)) for m in rx.finditer(low)]
     for m in DATE_BOUND_RE.finditer(low):
         if (day := named_date(m, given.date())) is not None:
-            bounds.append((end_of(day), m.group(0)))
-    for m in TIME_BOUND_RE.finditer(low):
-        at = dt.datetime.combine(given.date(), dt.time(int(m.group(1)), int(m.group(2))))
-        bounds.append((at if at > given else at + dt.timedelta(days=1), m.group(0)))
-    if not bounds:
+            days.append((day, m.group(0)))
+    times = [(dt.time(int(m.group(1)), int(m.group(2))), m.group(0)) for m in TIME_BOUND_RE.finditer(low)]
+    if not days and not times:
         return None
-    return max(b for b, _ in bounds), list(dict.fromkeys(w for _, w in bounds))
+    last = max([d for d, _ in days] + ([given.date()] if times else []))
+    end = dt.datetime.combine(last, min(t for t, _ in times)) if times and last == given.date() else end_of(last)
+    return end, list(dict.fromkeys(w for _, w in days + times))
 
 
 def until_text(at: dt.datetime) -> str:
@@ -667,6 +668,12 @@ def bound_note(entry_id: str, bound: tuple[dt.datetime, list[str]]) -> str:
     at, found = bound
     return (f"ask: {entry_id}: the owner's words are bound to a day ({', '.join('«' + w + '»' for w in found)}): in force "
             f"until {at:%Y-%m-%d %H:%M}, not after — then ask the owner again, do not stretch it to the next day")
+
+
+def stretch_refusal(until: str, bound: tuple[dt.datetime, list[str]]) -> str:
+    return (f"ask: --until {until} is later than the day the owner's words name ({', '.join('«' + w + '»' for w in bound[1])}: "
+            f"{bound[0]:%Y-%m-%d %H:%M}) — a hub does not stretch a day's yes. If the owner named a later end, record "
+            "those words (they set the bound themselves, «до 30.10»); otherwise ask the owner")
 
 
 def given_at(e: Entry) -> dt.datetime | None:
@@ -949,9 +956,7 @@ def cmd_allow(args) -> int:
         print(bound_note("the permission", bound) + " (pass --until only with an end the owner named)",
               file=sys.stderr)
     elif bound and parse_until(args.until) > bound[0]:
-        print(f"ask: --until {args.until} is later than the day the owner's words name "
-              f"({', '.join('«' + w + '»' for w in bound[1])}: {bound[0]:%Y-%m-%d %H:%M}) — record it only if the owner "
-              "named this end", file=sys.stderr)
+        raise SystemExit(stretch_refusal(args.until, bound))
     if len(args.repo) > 1:
         raise SystemExit("ask: allow takes one --repo (record one permission per repository)")
     given = resolve_repo(args.repo[0]) if args.repo else None
@@ -1033,9 +1038,12 @@ def permissions_digest(stage: str, budget: int = DIGEST_PERMS_BYTES, width: int 
 
 
 def has_plan(stage: str) -> bool:
-    """True when the stage's register holds a plan the owner approved (`ask plan` with the owner's words); a proposed one
-    does not count."""
-    return any(e.kind_letter == "P" and e.state == "approved" for e in load(stage)[1])
+    """True when the stage's register holds a plan the owner approved (`ask plan` with the owner's words). A proposed one
+    does not count, nor an `approved` one whose source is an agent's own file (recorded before the check, P-DL-025) or
+    whose owner's words were bound to a day that has passed."""
+    now = now_local()
+    return any(e.kind_letter == "P" and e.state == "approved" and not AGENT_SOURCE_RE.search(e.fields.get("source", ""))
+               and ((u := parse_until(e.fields.get("until", ""))) is None or u >= now) for e in load(stage)[1])
 
 
 # ---- plans: approved only on the owner's evidence
@@ -1046,39 +1054,49 @@ AGENT_SOURCE_RE = re.compile(r"handoff|brief|report|journal|inbox|lessons|transc
 PLAN_STEMS = ("plan", "план")   # a standing permission covers plan approval when a keyword of its class starts with one
 
 
-def plan_evidence(words: str, source: str, now: dt.datetime) -> tuple[str, str, str]:
-    """(the owner's words to record, the source to record, why the evidence does not stand — "" when it does). The owner's
-    yes is either quoted words with a source that is not an agent's file, or an id: an answered question in force (its
-    answer is the words), a permission in force whose class names plan approval."""
+def plan_evidence(words: str, source: str, stage: str, given: dt.datetime, now: dt.datetime) -> tuple[str, str, str, str]:
+    """(the owner's words to record, the source, the `until` their day words set or "", why the evidence does not stand —
+    "" when it does). The owner's yes is quoted words with a source that is not an agent's file; the source may be an
+    answered question in force whose answer contains those words, or a permission in force for this stage whose class
+    names plan approval (its words are the evidence). An agent's file (a handoff, a brief) is no source even next to an id."""
     words, source = one_line(words), one_line(source)
-    ids = ID_RE.findall(source)
-    for entry_id in ids:
+    if AGENT_SOURCE_RE.search(source):
+        return words, source, "", (f"--source {source!r} is an agent's file, not the owner's word: cite the owner's "
+                                   "message (a chat and its time, an answered Q-, a permission A-)")
+    for entry_id in ID_RE.findall(source):
         try:
             e = find_entry(entry_id)
         except SystemExit as exc:
-            return words, source, str(exc).removeprefix("ask: ")
+            return words, source, "", str(exc).removeprefix("ask: ")
         ok, why = in_force(e, now)
         if not ok:
-            return words, source, f"{entry_id}: {why}"
-        if e.kind_letter == "A" and not any(k.startswith(PLAN_STEMS) for k in keywords(e.fields.get("class", ""))):
-            return words, source, f"{entry_id} does not name plan approval in its class ({e.fields.get('class', NO_SET)})"
-        if not words:
-            words = status_parts(e)[0] if e.kind_letter == "Q" else e.fields.get("words", "")
-    if ids:
-        return words, source, ""
+            return words, source, "", f"{entry_id}: {why}"
+        if e.kind_letter == "A":
+            if not applies(e, stage, question_repo(stage)):
+                return words, source, "", f"{entry_id} ({scope_label(e)}) does not apply to stage {stage}"
+            if not any(k.startswith(PLAN_STEMS) for k in keywords(e.fields.get("class", ""))):
+                return words, source, "", f"{entry_id} does not name plan approval in its class ({e.fields.get('class', NO_SET)})"
+            words = words or e.fields.get("words", "")
+        elif not words:
+            return words, source, "", f"--words: quote the owner's yes from {entry_id}'s answer"
+        elif words.casefold().strip("«»\"' ") not in one_line(status_parts(e)[0]).casefold():
+            return words, source, "", f"--words are not in {entry_id}'s answer: quote the owner's yes as recorded"
     if not words:
-        return words, source, "no owner's words (--words)"
+        return words, source, "", "no owner's words (--words)"
     if not source:
-        return words, source, "no --source: where did the owner say it"
-    if AGENT_SOURCE_RE.search(source):
-        return words, source, (f"--source {source!r} is an agent's file, not the owner's word: cite the owner's message "
-                               "(a chat and its time, an answered Q-, a permission A-)")
-    return words, source, ""
+        return words, source, "", "no --source: where did the owner say it"
+    bound = day_bound(words, given)
+    if bound and bound[0] < now:
+        return words, source, "", (f"the owner's words were bound to {bound[0]:%Y-%m-%d %H:%M} "
+                                   f"({', '.join('«' + w + '»' for w in bound[1])}) and have expired")
+    return words, source, until_text(bound[0]) if bound else "", ""
 
 
 def cmd_plan(args) -> int:
     stage_file(args.stage)
-    args.words, args.source, problem = plan_evidence(args.words, args.source, now_local())
+    when = resolve_when(args.at, args.asked)
+    said = stamp_dt(when.date, when.time) or now_local()
+    args.words, args.source, args.until, problem = plan_evidence(args.words, args.source, args.stage, said, now_local())
     args.plan_status, args.verb = ("proposed", "proposed") if problem else ("approved", "recorded")
     rc = cmd_add(args, "P")
     if problem:
@@ -1094,11 +1112,16 @@ def cmd_approve(args) -> int:
         raise SystemExit(f"ask: {args.id} is not a plan (approve is for P-…)")
     if e.state != "proposed":
         raise SystemExit(f"ask: {args.id} is {e.status!r}: only a proposed plan is approved")
-    words, source, problem = plan_evidence(args.words, args.source, now_local())
+    when = resolve_when(args.at)
+    now = now_local()
+    words, source, until, problem = plan_evidence(args.words, args.source, e.stage, stamp_dt(when.date, when.time) or now,
+                                                  now)
     if problem:
         raise SystemExit(f"ask: {args.id} stays proposed: {problem}. Approval needs the owner's own yes")
-    when = resolve_when(args.at)
-    rc = set_fields(args.id, {"status": "approved", "words": words, "source": source, "approved": when.stamp})
+    updates = {"status": "approved", "words": words, "source": source, "approved": when.stamp}
+    if until:
+        updates["until"] = until
+    rc = set_fields(args.id, updates)
     print(journal_line(args.id, "approved", when, e.title))
     return rc
 
@@ -1237,10 +1260,9 @@ def cmd_close(args) -> int:
     bound = day_bound(answer_words(e.title, args.answer), said) if said else None
     updates = {"status": f"answered: {one_line(args.answer)} ({when.stamp})"}
     if args.until:
-        updates["until"] = args.until
         if bound and parse_until(args.until) > bound[0]:
-            print(f"ask: --until {args.until} is later than the day the words name ({bound[0]:%Y-%m-%d %H:%M}) — "
-                  "record it only if the owner named this end", file=sys.stderr)
+            raise SystemExit(stretch_refusal(args.until, bound))
+        updates["until"] = args.until
     elif bound:
         updates["until"] = until_text(bound[0])
     rc = set_fields(args.id, updates)
@@ -1467,7 +1489,8 @@ def owner_last_answer(registers: dict[str, list[Entry]], now: dt.datetime) -> tu
             if not ((e.kind_letter == "Q" and e.state == "answered") or e.kind_letter == "A"
                     or (e.kind_letter == "P" and e.state == "approved")):
                 continue
-            at = stamp_dt(*entry_when(e))
+            approved = re.match(r"(\d{4}-\d{2}-\d{2})(?: (\d{2}:\d{2}))?", e.fields.get("approved", ""))
+            at = stamp_dt(approved.group(1), approved.group(2) or "") if approved else stamp_dt(*entry_when(e))
             if at and at <= now + dt.timedelta(minutes=2) and (best is None or at > best[0]):
                 best = (at, e.id)
     return best
@@ -1942,6 +1965,8 @@ def main(argv: list[str]) -> int:
     if args.cmd == "withdraw":
         return set_fields(args.id, {"status": f"withdrawn: {one_line(args.reason)} ({today})"})
     if args.cmd == "default-taken":
+        if find_entry(args.id).kind_letter != "Q":
+            raise SystemExit(f"ask: {args.id} is not a question: default-taken is for a question whose due passed")
         note = f" — {one_line(args.note)}" if args.note else ""
         return set_fields(args.id, {"status": f"default-taken: {today}{note}"})
     if args.cmd == "list":

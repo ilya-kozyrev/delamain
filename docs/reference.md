@@ -367,8 +367,8 @@ stuck. A decision an agent takes on its own on a matter the owner normally decid
 visible, contestable. The plan the owner approved is recorded with `ask plan` — after the owner's yes, not before (`agent spawn` warns while its stage has
 none: show the plan to the owner first); `ask add|decided|plan --print-id` prints just the new id, for scripts. `ask plan`
 writes `approved` only with the owner's evidence — `--words "«…»"` and a `--source` that is not an agent's own file
-(a handoff, brief, report, journal), or `--source` an answered question or a permission whose class names `plan`, in
-force; otherwise the plan is `proposed` (unresolved, in `ask list`, the summary and the owner's inbox; spawn still warns)
+(a handoff, brief, report, journal), with an answered question as the source the words quoted from its answer, or
+`--source` a permission for the stage whose class names `plan`; the evidence must be in force; otherwise the plan is `proposed` (unresolved, in `ask list`, the summary and the owner's inbox; spawn still warns)
 until `ask approve P-… --words … --source …`. An owner's answer or permission whose words name a day («сегодня», «до
 вечера», «до 25.10») ends with that day: `ask close` and `ask allow` record `until`, and `ask in-force <id>` (exit 4)
 tells a hub not to carry it into the next day ([details](standing-permissions.md)). At session start a hook prints one line per stage — open, overdue, awaiting execution — in the

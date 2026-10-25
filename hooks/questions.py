@@ -52,7 +52,7 @@ def build_line() -> str:
             parts.append(f"{stage} — questions.md is unreadable (ask list --stage {stage})")
             continue
         c = ask.counts(entries, now)
-        if c["open"] or c["default_taken"] or c["decided"]:
+        if c["open"] or c["default_taken"] or c["decided"] or c.get("proposed"):
             parts.append(f"{ask.summary_line(stage, c)} (ask list --stage {stage})")
     if not parts:
         return ""
