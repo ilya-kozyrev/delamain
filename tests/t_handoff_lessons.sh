@@ -157,7 +157,7 @@ $B/hub handoff --stage stage-a --finish --handoff $C/big.md --allow-todo > $R/b2
 # 9. review edge cases: the cut inside a comment, a damaged lessons.md, a huge id, code blocks, counts per entry
 # 9a. the cut fell inside a comment of the front: it is closed before § 7, so a filled § 0–2 passes --finish and the TODO
 # of § 7 is still seen. The facts' size is stepped until the cut point lands inside one.
-for n in $(seq 40 4 140); do
+for n in $(seq 40 1 160); do   # one row (~80 bytes) per step: a comment is wider, so no step jumps over it
   python3 - $R/stage-a/handoff-facts.sh $n <<'PY2'
 import sys
 rows = "\n".join(f'echo "| Fact {i} | {"x" * 60} | `cmd {i}` |"' for i in range(int(sys.argv[2])))
