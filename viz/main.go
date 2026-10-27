@@ -137,6 +137,9 @@ type Hub struct {
 
 	subMu sync.Mutex
 	subs  map[chan []byte]struct{}
+
+	demo    bool     // -demo: a scripted story instead of the hub home (demo.go)
+	demoLog []*Event // the lines the story told, for /history
 }
 
 func readJSON(path string, v any) bool {
@@ -615,6 +618,13 @@ func (h *Hub) routes() *http.ServeMux {
 		if err != nil || hours <= 0 || math.IsNaN(hours) || math.IsInf(hours, 0) {
 			hours = 24
 		}
+		if h.demo {
+			h.mu.Lock()
+			lines := append([]*Event{}, h.demoLog...)
+			h.mu.Unlock()
+			writeJSON(w, r, map[string]any{"machine": h.machine, "lines": lines})
+			return
+		}
 		writeJSON(w, r, map[string]any{"machine": h.machine, "lines": h.history(min(hours, 24*7))})
 	})
 	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
@@ -661,6 +671,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:8765", "listen address; 0.0.0.0:8765 lets another machine's page read this one")
 	origins := flag.String("allow-origin", "", "comma-separated page origins that may read this server from another origin (CORS); none by default")
 	verbose := flag.Bool("v", false, "log every request but assets, with its user agent (a screen saver's diagnostics arrive this way)")
+	demo := flag.Bool("demo", false, "play a scripted team of agents building an HRM system instead of reading the hub home")
 	flag.Parse()
 	for _, o := range strings.Split(*origins, ",") {
 		if o = strings.TrimRight(strings.TrimSpace(o), "/"); o != "" {
@@ -675,6 +686,12 @@ func main() {
 	host, _ := os.Hostname()
 	h := &Hub{root: root, machine: strings.TrimSuffix(host, ".local"), heard: map[Node]time.Time{},
 		offsets: map[string]int64{}, subs: map[chan []byte]struct{}{}}
+	if *demo {
+		h.demo, h.machine = true, "hrm-team"
+		go h.demoLoop()
+		log.Printf("hub-viz: http://%s/  (demo: the HRM team)", *addr)
+		log.Fatal(http.ListenAndServe(*addr, h.routes()))
+	}
 	h.mu.Lock()
 	h.scan()
 	h.mu.Unlock()

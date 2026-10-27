@@ -36,7 +36,9 @@ agent-top: a worker while its process lives, a stage hub while it runs. Read-onl
 build/hub-viz               # http://127.0.0.1:8765/
 ```
 
-`hub-viz` flags: `-addr 127.0.0.1:8765` (listen address), `-allow-origin http://a:8765,http://b:8765` (page origins that
+`hub-viz` flags: `-addr 127.0.0.1:8765` (listen address), `-demo` (no hub home: a scripted team of agents on several
+models builds an HRM system, asks the owner questions and ships a release, in Russian, one line every 8 s, looping; for
+showing hub-viz on a screen), `-allow-origin http://a:8765,http://b:8765` (page origins that
 may read this server from another origin; none by default, so no CORS header is sent), `-v` (log every request but
 assets, with its user agent; off by default). `-addr 0.0.0.0:…` publishes the journals, unauthenticated, to the whole
 network: use it only on a network you trust. A page that reads several machines (`src=`) needs `-allow-origin <the
@@ -45,7 +47,7 @@ page's origin>` on each of the others (the page itself is served by the first). 
 
 Page parameters: `src=http://a:8765,http://b:8765` (several machines, each running `hub-viz`), `quiet=N` (replay the
 last `hours` after N seconds without a live line; off by default: live only), `hours=24`, `speed=120`, `follow=0`
-(keep the overview), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
+(keep the overview), `ui=1.6` (text over the map that much larger, for a projector), `lang=en|ru` (else the browser's languages; English is the fallback; journal text is shown as
 written). Keys: `r` replay, `l` back to live, `c` camera back to the overview. Hover a tower or a cab for its title.
 
 ## Screen saver
