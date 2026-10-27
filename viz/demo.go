@@ -152,6 +152,16 @@ func (d *demoWorld) engine(stage, role string) string {
 	return ""
 }
 
+func (d *demoWorld) leave(stage, role string) {
+	ws := d.workers[stage][:0]
+	for _, w := range d.workers[stage] {
+		if w.Role != role {
+			ws = append(ws, w)
+		}
+	}
+	d.workers[stage] = ws
+}
+
 func (d *demoWorld) setWorking(stage, role string, on bool) {
 	for i := range d.workers[stage] {
 		if d.workers[stage][i].Role == role {
@@ -186,6 +196,7 @@ func (h *Hub) demoLoop() {
 	}
 	sleep := func(s float64) { time.Sleep(time.Duration(s * float64(time.Second))) }
 	for {
+		var landing []string // workers done with the previous line: they land on their hub's tower before the next one
 		d := &demoWorld{workers: map[string][]Worker{}, questions: map[string]int{}, ctx: map[string]int{}}
 		for _, s := range demoStages {
 			d.ctx[s.name] = 120000
@@ -194,6 +205,15 @@ func (h *Hub) demoLoop() {
 		for i, step := range demoScript {
 			if i == 0 {
 				sleep(2)
+			} else if len(landing) > 0 {
+				sleep(1.5) // the reply's beam reaches the hub first
+				for _, k := range landing {
+					stage, role, _ := strings.Cut(k, "|")
+					d.leave(stage, role)
+				}
+				landing = nil
+				h.setDemo(d)
+				sleep(demoGap + step.pause - 1.5)
 			} else {
 				sleep(demoGap + step.pause)
 			}
@@ -225,6 +245,7 @@ func (h *Hub) demoLoop() {
 			h.publish("line", ev)
 			for _, r := range step.done {
 				d.setWorking(step.stage, r, false)
+				landing = append(landing, step.stage+"|"+r)
 			}
 			d.questions[step.stage] += step.ask
 			d.ctx[step.stage] += 8000 + 150*len([]rune(step.text)) // about 350k, the tallest tower, at the release

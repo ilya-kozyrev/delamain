@@ -763,13 +763,15 @@ function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with
   const s = sprites[cabSprite(c)] || sprites.flyer; if (!s) return;
   const [gx, gy] = P(c.x, c.y), [x, y] = P(c.x, c.y, c.z), w = unit() * 3.4;
   ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.beginPath(); ctx.ellipse(gx, gy, w * 0.35, w * 0.16, 0, 0, Math.PI * 2); ctx.fill();
-  c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 18) c.trail.shift();
-  ctx.globalCompositeOperation = "lighter";
-  for (let k = 1; k < c.trail.length; k++) {
-    const [ax, ay] = P(...c.trail[k - 1]), [bx, by] = P(...c.trail[k]);
-    ctx.strokeStyle = rgba(modelColor(c), 0.7 * k / c.trail.length); ctx.lineWidth = Math.max(1, unit() * 0.35);
-    ctx.beginPath(); ctx.moveTo(ax, ay + w * 0.15); ctx.lineTo(bx, by + w * 0.15); ctx.stroke();
-  }
+  c.trail.push([c.x, c.y, c.z]); if (c.trail.length > 80) c.trail.shift();
+  ctx.globalCompositeOperation = "lighter";   // a neon trail: a wide haze under a bright core, both fading to the tail
+  const tc = modelColor(c);
+  for (const [width, alpha] of [[0.9, 0.22], [0.3, 0.9]])
+    for (let k = 1; k < c.trail.length; k++) {
+      const [ax, ay] = P(...c.trail[k - 1]), [bx, by] = P(...c.trail[k]);
+      ctx.strokeStyle = rgba(tc, alpha * k / c.trail.length); ctx.lineWidth = Math.max(1, unit() * width);
+      ctx.beginPath(); ctx.moveTo(ax, ay + w * 0.15); ctx.lineTo(bx, by + w * 0.15); ctx.stroke();
+    }
   glow(x, y + w * 0.2, w * (0.55 + c.pulse * 0.6 + (c.working ? 0.15 * (1 + Math.sin(now / 300)) : 0)), c.color, 0.35 + c.pulse * 0.5);
   ctx.globalCompositeOperation = "source-over";
   const [vx] = isoRaw(c.x - c.px, c.y - c.py);
