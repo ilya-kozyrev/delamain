@@ -30,7 +30,7 @@ var demoStages = []demoStage{
 	{"analytics", "hrm-analytics", "Витрины и дашборд для руководства"},
 }
 
-const demoGap = 8.0 // seconds between lines: one label (5.6 s) fades before the next one comes
+const demoGap = 5.0 // seconds between lines: readable, and the camera moves on before the scene goes stale
 
 var demoScript = []demoStep{
 	// kickoff
@@ -191,16 +191,19 @@ func (h *Hub) demoLoop() {
 			d.ctx[s.name] = 120000
 		}
 		h.setDemo(d)
-		sleep(4)
-		for _, step := range demoScript {
-			sleep(demoGap + step.pause)
+		for i, step := range demoScript {
+			if i == 0 {
+				sleep(2)
+			} else {
+				sleep(demoGap + step.pause)
+			}
 			for _, a := range step.join {
 				d.workers[step.stage] = append(d.workers[step.stage], Worker{Role: a.role, Tag: a.role, Engine: a.engine,
 					Model: a.model, Alive: true, Working: true, Title: a.title})
 			}
 			if len(step.join) > 0 {
 				h.setDemo(d) // the cab takes off before the line reaches it
-				sleep(1.5)
+				sleep(1)
 			}
 			to := []Node{}
 			for _, t := range step.to {
@@ -224,7 +227,7 @@ func (h *Hub) demoLoop() {
 				d.setWorking(step.stage, r, false)
 			}
 			d.questions[step.stage] += step.ask
-			d.ctx[step.stage] += 12000 + 300*len([]rune(step.text))
+			d.ctx[step.stage] += 8000 + 150*len([]rune(step.text)) // about 350k, the tallest tower, at the release
 			h.setDemo(d)
 		}
 		sleep(12) // the release sinks in; then the cabs land and the story starts over

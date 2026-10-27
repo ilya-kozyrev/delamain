@@ -137,7 +137,7 @@ final class TowerLayers {
 
 final class CabLayers {
     let group: CALayer, shadow: CALayer, trail: CAShapeLayer, glow: CAGradientLayer, sprite: CALayer, label: TextL
-    var tint: UInt32 = 0, spriteName = ""
+    var tint: UInt32 = 0, trailTint: UInt32 = 0, spriteName = ""
     init(_ parent: CALayer, scale: CGFloat) {
         group = mk(CALayer(), parent)
         shadow = mk(CALayer(), group)
@@ -1055,8 +1055,9 @@ final class DelamainSaverView: ScreenSaverView {
             }()
             let name = cabSprite(model: c.model, engine: c.engine, key: c.key)   // the model may arrive after the cab
             if L.spriteName != name { L.spriteName = name; L.sprite.contents = sprites.images[name] ?? sprites.images["flyer"] }
-            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color)
-                L.trail.strokeColor = c.color.cg(0.28) }
+            if L.tint != c.color.key { L.tint = c.color.key; setGlow(L.glow, c.color) }
+            let mc = modelColor(model: c.model, fallback: c.color)   // the trail in the model's colour, the glow in the engine's
+            if L.trailTint != mc.key { L.trailTint = mc.key; L.trail.strokeColor = mc.cg(0.4) }
             let g = P(c.x, c.y), p = P(c.x, c.y, c.z), w = u * 3.4
             L.group.zPosition = CGFloat(c.x + c.y)
             L.shadow.bounds = CGRect(x: 0, y: 0, width: w * 0.7, height: w * 0.7)
@@ -1071,7 +1072,7 @@ final class DelamainSaverView: ScreenSaverView {
                 if k == 0 { tp.move(to: q2) } else { tp.addLine(to: q2) }
             }
             L.trail.path = tp
-            L.trail.lineWidth = CGFloat(max(1, u * 0.3))
+            L.trail.lineWidth = CGFloat(max(1, u * 0.35))
             let wob = c.working ? 0.15 * (1 + sin(now / 300)) : 0
             placeGlow(L.glow, CGPoint(x: p.x, y: p.y + CGFloat(w * 0.2)), w * (0.55 + c.pulse * 0.6 + wob), 0.35 + c.pulse * 0.5)
             let vx = (c.x - c.px) - (c.y - c.py)

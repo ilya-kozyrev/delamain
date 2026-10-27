@@ -37,7 +37,7 @@ build/hub-viz               # http://127.0.0.1:8765/
 ```
 
 `hub-viz` flags: `-addr 127.0.0.1:8765` (listen address), `-demo` (no hub home: a scripted team of agents on several
-models builds an HRM system, asks the owner questions and ships a release, in Russian, one line every 8 s, looping; for
+models builds an HRM system, asks the owner questions and ships a release, in Russian, one line every 5 s, looping; for
 showing hub-viz on a screen), `-allow-origin http://a:8765,http://b:8765` (page origins that
 may read this server from another origin; none by default, so no CORS header is sent), `-v` (log every request but
 assets, with its user agent; off by default). `-addr 0.0.0.0:…` publishes the journals, unauthenticated, to the whole

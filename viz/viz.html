@@ -42,7 +42,9 @@
 const qs = new URLSearchParams(location.search);
 // ui=N scales the text over the map (labels, ticker, HUD, tooltips) for a big screen; the map keeps its scale
 const UI = Math.max(0.5, Math.min(4, +qs.get("ui") || 1));
-for (const id of ["hud", "mode", "legend", "ticker", "tip"]) document.getElementById(id).style.zoom = UI;
+for (const id of ["hud", "mode", "legend", "ticker"]) document.getElementById(id).style.zoom = UI;
+document.getElementById("ticker").style.width = `min(820px, calc(${100 / UI}vw - 52px))`;   // zoomed: in its own units
+document.getElementById("tip").style.fontSize = `${13 * UI}px`;   // not zoomed: it is placed at the cursor
 const SOURCES = (qs.get("src") || location.origin).split(",").map(s => s.trim().replace(/\/$/, "")).filter(Boolean);
 // Live only by default; ?quiet=N replays the last day after N seconds without a live line.
 const QUIET_MS = qs.has("quiet") ? +qs.get("quiet") * 1000 : Infinity;
@@ -111,6 +113,13 @@ const TOWERS = ["hub-tower", "hub-tower-cyan", "hub-tower-red", "hub-tower-green
 const CABS = ["flyer", "flyer-sport", "flyer-van", "flyer-police", "flyer-limo", "flyer-bike"];
 // A worker's flyer shows its model's tier (its glow shows the engine): a limo for the flagship, a sports flyer for Opus,
 // the plain flyer for the workhorse, a bike for the light model, a van for a service tool; an unknown model by the key's hash.
+// A worker's trail is its model's colour; the engine's colour stays in its glow.
+const MODEL_COLORS = [["fable", "#c08bff"], ["opus", "#ff4fd8"], ["sonnet", "#ffb547"], ["haiku", "#9dff6a"], ["astra", "#ff5a5a"],
+  ["luna", "#7aa8ff"], ["sol", "#4fe3ff"]];
+function modelColor(c) {
+  const m = (c.model || "").toLowerCase(), hit = MODEL_COLORS.find(([k]) => k === "sol" ? /(^|[^a-z])sol([^a-z]|$)/.test(m) : m.includes(k));
+  return hit ? hit[1] : c.color;
+}
 function cabSprite(c) {
   const m = (c.model || "").toLowerCase();
   if (/fable|astra/.test(m)) return "flyer-limo";
@@ -758,7 +767,7 @@ function drawCab(c, now) {   // a worker: its flyer over its ground shadow, with
   ctx.globalCompositeOperation = "lighter";
   for (let k = 1; k < c.trail.length; k++) {
     const [ax, ay] = P(...c.trail[k - 1]), [bx, by] = P(...c.trail[k]);
-    ctx.strokeStyle = rgba(c.color, 0.5 * k / c.trail.length); ctx.lineWidth = Math.max(1, unit() * 0.3);
+    ctx.strokeStyle = rgba(modelColor(c), 0.7 * k / c.trail.length); ctx.lineWidth = Math.max(1, unit() * 0.35);
     ctx.beginPath(); ctx.moveTo(ax, ay + w * 0.15); ctx.lineTo(bx, by + w * 0.15); ctx.stroke();
   }
   glow(x, y + w * 0.2, w * (0.55 + c.pulse * 0.6 + (c.working ? 0.15 * (1 + Math.sin(now / 300)) : 0)), c.color, 0.35 + c.pulse * 0.5);

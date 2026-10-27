@@ -690,17 +690,17 @@ func main() {
 		h.demo, h.machine = true, "hrm-team"
 		go h.demoLoop()
 		log.Printf("hub-viz: http://%s/  (demo: the HRM team)", *addr)
-		log.Fatal(http.ListenAndServe(*addr, h.routes()))
+	} else {
+		h.mu.Lock()
+		h.scan()
+		h.mu.Unlock()
+		h.prime()
+		h.mu.Lock()
+		h.state = h.snapshot()
+		h.mu.Unlock()
+		go h.loop()
+		log.Printf("hub-viz: http://%s/  (home %s, machine %s)", *addr, root, h.machine)
 	}
-	h.mu.Lock()
-	h.scan()
-	h.mu.Unlock()
-	h.prime()
-	h.mu.Lock()
-	h.state = h.snapshot()
-	h.mu.Unlock()
-	go h.loop()
-	log.Printf("hub-viz: http://%s/  (home %s, machine %s)", *addr, root, h.machine)
 	var handler http.Handler = h.routes()
 	if *verbose {
 		routes := handler
