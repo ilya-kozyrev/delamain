@@ -14,6 +14,12 @@
   `set_thread_archived` for the exact agent UUID in Desktop without it, then verify runtime and tool-process release.
   The procedure protects active agents, planned continuations and user chats; this is guidance, not automatic cleanup.
 
+- **Russian parameter rules no longer disable context handoff.** The context-budget hook treated
+  `Не передавай идентификаторы другого провайдера` and `параметры Codex ему не передавай` in user-provided
+  `AGENTS.md` instructions as a handoff prohibition. It now requires a standalone prohibition or an explicit
+  context, work, task or shift object, including timing modifiers and recipient-first word order.
+  Such parameter rules remain neutral and cannot clear an existing owner stop;
+  explicit handoff stops and resumptions retain their durable behavior.
 ## 1.0.24 — 2026-10-28
 
 - **The whole Codex lineup is documented and used: Luna, Terra, Sol, Astra.** Codex Terra (`gpt-6.1-terra`), the
