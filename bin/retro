@@ -237,7 +237,8 @@ class Audit:
                     continue
                 meta = read(p, {})
                 role = meta.get("role") or p.parent.name
-                self.agent_meta[st.name, role] = meta
+                # Archived directories may retain the same role; keep each log's identity.
+                self.agent_meta[st.name, p.parent.name] = meta
                 start = when(meta.get("started_at"))
                 if not self.inside(start):
                     continue
@@ -263,7 +264,7 @@ class Audit:
                 brief = meta.get("brief") or ""
                 review = role.startswith("review") or Path(brief).name.startswith("brief-review")
                 final = [r for r in self.lines[st.name] if r["tag"] == (meta.get("tag") or role) and self.inside(r["at"]) and TERMINAL.match(r["text"])]
-                row = dict(stage=st.name, role=role, model=state.model or meta.get("model", ""), effort=meta.get("effort", ""), engine=engine,
+                row = dict(id=f"{st.name}/{p.parent.name}", stage=st.name, role=role, model=state.model or meta.get("model", ""), effort=meta.get("effort", ""), engine=engine,
                            started_at=iso(start), last_event_at=iso(last), wall_h=hours(start, last), runs=max(1, len([r for r in meta.get("runs", []) if not when(r.get("at")) or when(r["at"]) < self.until])),
                            turns=state.turns, cost_usd=state.cost_sum if engine == "claude" else None,
                            is_review=int(review), broad_review=int("review" in (role + brief).lower()), mcp=meta.get("mcp", ""),
@@ -681,6 +682,7 @@ class Audit:
         for (st, role), m in self.agent_meta.items():
             if st != stage or HUB.fullmatch(role):
                 continue
+            role = m.get("role") or role
             for raw in [m.get("started_at")] + [r.get("at") for r in m.get("runs", [])]:
                 if (at := when(raw)) and at < self.until:
                     starts[role].add(at)
@@ -728,13 +730,14 @@ class Audit:
         for r in all_lines:
             if TERMINAL.match(r["text"]):
                 role_items[r["stage"], r["tag"]].update(ref_items(r["text"]))
-        for role, meta in self.agent_meta.items():
+        for (st, role), meta in self.agent_meta.items():
             if meta.get("brief"):
-                role_items[role].update(ref_items(text(meta["brief"])[:6000]))
+                role_items[st, meta.get("role") or role].update(ref_items(text(meta["brief"])[:6000]))
         for key, m in merges.items():
             candidates = []
             mentions = []
             for (st, role), meta in self.agent_meta.items():
+                role = meta.get("role") or role
                 branch = (meta.get("worktree") or {}).get("branch", "") if isinstance(meta.get("worktree"), dict) else ""
                 branch = branch or meta.get("branch", "")
                 if m["branch"] and branch == m["branch"] and not role.startswith("review"):

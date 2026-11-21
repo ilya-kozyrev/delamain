@@ -81,6 +81,7 @@ jl(st/'agents/codex/log.jsonl', [
     {'type':'turn.completed','usage':{'input_tokens':2500,'cached_input_tokens':2000,'output_tokens':25}},
 ])
 put(st/'agents/old/meta.json',{'role':'old','engine':'claude','started_at':'2025-12-01T00:00:00Z'})
+put(st/'agents/build.20251201-000000/meta.json',{'role':'build','engine':'claude','started_at':'2025-12-01T00:00:00Z','worktree':{'branch':'old-feature'}})
 jl(st/'agents/old/log.jsonl',[{'type':'result','total_cost_usd':10000}])
 put(st/'agents/until/meta.json',{'role':'until','started_at':'2026-01-03T00:00:00Z'})
 put(st/'agents/next/meta.json',{'role':'next','engine':'claude','started_at':'2026-01-01T02:01:00Z','model':'haiku','effort':'high'})
@@ -172,6 +173,7 @@ assert value(m,'await.FAILED.duration_min')==5.5
 assert value(m,'await.PASSED.duration_min')==62.05
 assert value(m,'flow.first_time_right') is None
 assert value(m,'flow.red_cycles_per_merge')==1
+assert rows(current,'flow')[0]['stage']=='alpha' and rows(current,'flow')[0]['join_method']=='unique branch', 'an archived role must not overwrite its live metadata'
 assert value(m,'questions.self_decided_share')==.5
 assert m['agents.count']['per_day']==1.5
 assert value(m,'hubs.cost_usd')>0 and value(m,'hubs.unpriced_messages')==0
