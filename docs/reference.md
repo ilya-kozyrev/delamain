@@ -313,6 +313,56 @@ agent-top the summary has a block with the same split and `desktop_idle` is in `
 because it runs git and `gh`/`glab` (`agent desktop-idle` always checks afresh). `hub close` names the stage's own idle
 Desktop sessions (its roles and the hubs it retired). Exit 0 whenever the command ran, 2 for a usage error.
 
+## Retro: period audit
+
+Load [the retro skill](../skills/retro/SKILL.md) for a period audit of hub work: rule compliance, repeated mistakes,
+lessons, token cost and delivery efficiency. It owns the model workflow, evidence contract, report and next
+`CHECK-NEXT.md`; the CLI performs deterministic discovery and measurement. Run the installed plugin's
+`bin/retro` when PATH is missing or shadowed. Inspect `retro --help` and subcommand help for available options.
+
+```bash
+retro plan --since '2026-11-08T16:00:00+03:00' --until '2026-11-21T00:00:00+03:00' --readers 4 --out <audit-out>
+retro measure --out <audit-out>
+retro measure --out <audit-out> --baseline <previous-out> --classifications <audit-out>/classifications --forge <local-export-dir>
+```
+
+`plan [--since T] [--until T] [--readers N] --out DIR` resolves the hub home with the shared `hubcore`
+resolver ([home precedence](#where-the-hubs-files-live)). All paths are derived from that home and the chosen
+output directory; no personal stage or repository name is required. The time window is half-open `[since, until)`:
+events at `since` count; events at `until` do not. Explicit offsets are honored; unzoned input uses
+`AGENT_HUB_TZ`. The saved `window.json` records the resolved window and assignments so workers share one scope.
+Baseline discovery uses the newest `<home>/*/coordinator/work/retro-*/metrics.json`; explicit `--baseline DIR`
+on measurement selects another prior output. Check the chosen baseline before making period comparisons.
+
+Planning writes `window.json`, filled `brief-common.md`, partitioned `reader-01.md` (and subsequent readers),
+`brief-lessons.md`, `brief-classify.md`, `brief-verify.md`, `report.md` and `check-next.md`. Reader briefs receive
+only their assigned stages; the other briefs receive the full stage list. The plugin's authoritative templates
+live under `skills/retro/resources/`. The skill instructs the hub to fill `report.md` and publish the completed
+follow-up checklist as `CHECK-NEXT.md`; creating a plan does not launch models or schedule later work.
+
+`measure --out DIR [--baseline DIR] [--since T] [--until T] [--classifications DIR] [--forge DIR]` reads the
+saved window unless timestamp overrides are supplied. It writes `metrics.json` (a flat dictionary whose metric
+entries contain `value`, `per_day` and `source`), `measure.md`, and CSV tables: `agents`, `hubs`, `wakes`,
+`latency`, `friction`, `flow`, `stages`, `touches`, `tells`, `gaps`, `lessons`, `questions` and `await`.
+The Markdown covers quantitative cost/turn/context/wake/friction/latency evidence plus A feature flow,
+B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,
+source coverage and unknown fields beside each conclusion.
+
+Classification is a separate evidence review. `--classifications DIR` reads reviewed `touches.csv`, `gaps.csv`,
+`flow.csv`, `stages.csv` and `tells.csv`, keyed by the original `id`, with `needs_review`, `class` and `evidence`.
+Use the accepted taxonomy in subcommand help; ambiguous rows retain `needs_review` until source evidence
+supports their class. Keep raw measurement CSVs intact and rerun measurement with the classification directory.
+Metrics requiring semantic judgement remain null until supported; a script's silence does not establish autonomy,
+a brake or a completed plan. The [classification brief](../skills/retro/resources/brief-classify.md) defines
+what evidence to inspect for the A–D method.
+
+`--forge DIR` reads existing local `forge-cache-mrs.json` and `forge-cache-pipelines.json` exports through the
+forge export adapter; it never contacts the forge. Missing fields remain null. Without complete exports,
+journal MERGED candidates are an observed lower bound, and first-time-right stays null: missing red CI or
+review lines cannot establish zero failures or one review round. Source gaps also constrain costs, owner-touch
+coverage, item joins and historical lesson attribution. The audit reads source homes/transcripts/repositories
+and writes its chosen output directory; it adds no hooks, configuration, forge commands or automatic fixes.
+
 ## Cost and turn limits
 
 - **Limits are shared.** Your plan's usage limits are spent by your interactive session and by every headless agent
