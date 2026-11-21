@@ -12,9 +12,11 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 home, out, b = map(lambda x: Path(os.environ[x]), ('AGENT_HUB_HOME', 'RETRO_TEST_OUT', 'RETRO_TEST_BIN'))
 def put(p, value):
@@ -35,6 +37,81 @@ def value(m, key):
     return m[key]['value']
 def snapshot():
     return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in home.rglob('*') if p.is_file()}
+
+def test_r1_1_headless_hub_cost():
+    """R1-1: registered headless SIDs have one cost owner, including retired runs."""
+    isolated = out/'r1-1-home'
+    stage = isolated/'headless'
+    config = out/'r1-1-claude'
+    saved = {key: os.environ.get(key) for key in ('AGENT_HUB_HOME', 'CLAUDE_CONFIG_DIR')}
+    sid_a = '11111111-1111-2222-3333-444444444444'
+    sid_b = '22222222-1111-2222-3333-444444444444'
+    registration = dict(tag='hub-31', engine='claude', kind='headless',
+                        set_at='2026-01-01T00:00:00Z', cli_session_id=sid_a)
+    put(stage/'roles.json', {'roles': {'hub': registration}, 'retired': []})
+    put(stage/'agents/hub-31/meta.json', dict(role='hub-31', tag='hub-31', engine='claude',
+        session_id=sid_a, cli_session_id=sid_a, started_at='2026-01-01T00:00:00Z'))
+    put(stage/'coordinator/work/journal-2026-01-01.md', '- 02:00 [hub-31] MERGED MR !31\n')
+    # Twelve independent price points fit the same known rates as the main fixture.
+    calibration = []
+    for i in range(12):
+        tokens = [(i+1)**k*100 for k in range(1, 5)]
+        cost = sum(x*y for x, y in zip(tokens, [2, 10, .2, 3]))/1e6
+        calibration.append(dict(type='result', session_id=sid_a, total_cost_usd=5,
+            modelUsage={'claude-test': dict(zip(
+                ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'], tokens), costUSD=cost)}))
+    def transcript(sid, cost):
+        jl(config/'projects/headless'/f'{sid}.jsonl', [dict(type='assistant',
+            timestamp='2026-01-01T01:00:00Z', sessionId=sid,
+            message=dict(id=sid, model='claude-test', content=[],
+                         usage={'input_tokens': int(cost*1e6/2)}))])
+    def measure(label, total, hub_cost):
+        target = out/('r1-1-'+label)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02')
+        metrics = data(target)
+        for key, expected in {'cost.total_usd': total, 'hubs.cost_usd': hub_cost,
+                              'agents.claude.cost_usd': total-hub_cost,
+                              'cost.hub_share': hub_cost/total, 'cost.per_merge_usd': total,
+                              'flow.merged_observed': 1}.items():
+            actual = value(metrics, key)
+            assert actual is not None and math.isclose(actual, expected, abs_tol=1e-8), ('R1-1', label, key, actual, expected)
+        assert math.isclose(sum(float(r.get('cost_usd') or 0) for r in rows(target, 'hubs')), hub_cost), 'R1-1 hub CSV must have a single cost source per SID'
+    try:
+        os.environ.update(AGENT_HUB_HOME=str(isolated), CLAUDE_CONFIG_DIR=str(config))
+        jl(stage/'agents/hub-31/log.jsonl', calibration)
+        transcript(sid_a, 5)
+        measure('current', 5, 5)
+
+        # A resumed SID is cumulative (1 -> 3); a new SID contributes another $2.
+        calibration = [dict(row, total_cost_usd=1 if i == 0 else 3) for i, row in enumerate(calibration)]
+        jl(stage/'agents/hub-31/log.jsonl', calibration + [dict(type='result', session_id=sid_b, total_cost_usd=2)])
+        transcript(sid_a, 3)
+        transcript(sid_b, 2)
+        current = dict(registration, cli_session_id=sid_b, set_at='2026-01-01T00:30:00Z')
+        retired_a = dict(registration, role='hub', retired_at='2026-01-01T00:30:00Z')
+        retired_b = dict(current, role='hub', retired_at='2026-01-01T01:30:00Z')
+        put(stage/'roles.json', {'roles': {'hub': current}, 'retired': [retired_a, retired_b]})
+        put(stage/'agents/hub-31/meta.json', dict(role='hub-31', tag='hub-31', engine='claude',
+            session_id=sid_b, cli_session_id=sid_b, started_at='2026-01-01T00:00:00Z'))
+        measure('retired-and-current', 5, 5)
+
+        # A distinct worker is a negative control against dropping all agent costs.
+        put(stage/'agents/build/meta.json', dict(role='build', engine='claude',
+            session_id='unrelated-worker', started_at='2026-01-01T00:00:00Z'))
+        jl(stage/'agents/build/log.jsonl', [dict(type='result', session_id='unrelated-worker', total_cost_usd=3)])
+        measure('unrelated-worker', 8, 5)
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+    print('PASS R1-1 headless hub cost: current, retired, cumulative SIDs, unrelated worker')
+
+test_r1_1_headless_hub_cost()
+if os.environ.get('RETRO_REGRESSION') == '1':
+    sys.exit(0)
+
 st = home/'alpha'
 sid='aaaaaaaa-1111-2222-3333-444444444444'
 put(st/'roles.json', {'roles':{'hub':{'tag':'hub-1','engine':'claude','set_at':'2026-01-01T00:00:00Z','cli_session_id':sid}},'retired':[]})
