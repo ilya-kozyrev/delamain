@@ -466,6 +466,70 @@ def test_r1_7_fractional_window():
                 os.environ[key] = previous
     print('PASS R1-7 fractional/microsecond/whole-second windows, persisted reruns, half-open event boundaries')
 
+def test_r2_1_resumed_hub_cost():
+    """R2-1: an older result cannot understate a resumed session's fitted cost."""
+    saved = {key: os.environ.get(key) for key in ('AGENT_HUB_HOME', 'CLAUDE_CONFIG_DIR')}
+    def scenario(label, known_cost, fitted_cost, worker_cost=0):
+        isolated = (out/('r2-1-home-'+label)).resolve()
+        config = (out/('r2-1-claude-'+label)).resolve()
+        stage = isolated/'resumed'
+        sid = '88888888-1111-2222-3333-444444444444'
+        put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-41', engine='claude',
+            kind='headless', set_at='2026-01-01T00:00:00Z', cli_session_id=sid)}, 'retired': []})
+        put(stage/'agents/hub-41/meta.json', dict(role='hub-41', tag='hub-41', engine='claude',
+            session_id=sid, cli_session_id=sid, started_at='2026-01-01T00:00:00Z',
+            runs=[{'at': '2026-01-01T00:00:00Z'}, {'at': '2026-01-01T01:00:00Z'}]))
+        put(stage/'coordinator/work/journal-2026-01-01.md', '- 03:00 [hub-41] MERGED PR #41\n')
+        log = []
+        for i in range(12):
+            tokens = [(i+1)**k*100 for k in range(1, 5)]
+            price = sum(x*y for x, y in zip(tokens, [2, 10, .2, 3]))/1e6
+            log.append(dict(type='result', timestamp='2026-01-01T00:30:00Z', session_id=sid,
+                total_cost_usd=known_cost, modelUsage={'claude-test': dict(zip(
+                    ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'], tokens), costUSD=price)}))
+        log.append(dict(type='system', subtype='init', timestamp='2026-01-01T01:00:00Z', session_id=sid))
+        if fitted_cost is not None and known_cost > fitted_cost:
+            log.append(dict(type='result', timestamp='2026-01-01T02:00:00Z', session_id=sid, total_cost_usd=known_cost))
+        jl(stage/'agents/hub-41/log.jsonl', log)
+        if fitted_cost is not None:
+            # The same SID spent $1 before resuming, then another $4 without a new result.
+            costs = [1, fitted_cost-1] if fitted_cost > 1 else [fitted_cost]
+            jl(config/'projects/resumed'/f'{sid}.jsonl', [dict(type='assistant',
+                timestamp=f'2026-01-01T0{index}:30:00Z', sessionId=sid,
+                message=dict(id=f'resumed-{index}', model='claude-test', content=[],
+                    usage={'input_tokens': int(cost*1e6/2)})) for index, cost in enumerate(costs)])
+        if worker_cost:
+            put(stage/'agents/build/meta.json', dict(role='build', engine='claude',
+                session_id='distinct-worker', started_at='2026-01-01T00:00:00Z'))
+            jl(stage/'agents/build/log.jsonl', [dict(type='result', session_id='distinct-worker', total_cost_usd=worker_cost)])
+        os.environ.update(AGENT_HUB_HOME=str(isolated), CLAUDE_CONFIG_DIR=str(config))
+        target = out/('r2-1-'+label)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02')
+        metrics = data(target)
+        hub_cost = max(known_cost, fitted_cost or 0)
+        total = hub_cost+worker_cost
+        for key, expected in {'hubs.cost_usd': hub_cost, 'cost.total_usd': total,
+                              'cost.per_merge_usd': total, 'agents.claude.cost_usd': worker_cost,
+                              'cost.hub_share': hub_cost/total}.items():
+            actual = value(metrics, key)
+            assert actual is not None and math.isclose(actual, expected, abs_tol=1e-8), ('R2-1', label, key, actual, expected)
+        hubs = rows(target, 'hubs')
+        assert len(hubs) == 1 and math.isclose(float(hubs[0]['cost_usd']), hub_cost), ('R2-1 single SID cost owner', label, hubs)
+        if fitted_cost is not None and fitted_cost > known_cost:
+            assert 'fitted' in hubs[0]['cost_source'].lower(), ('R2-1 fitted cost provenance', label, hubs)
+    try:
+        scenario('resumed-no-new-result', 1, 5)
+        scenario('current-result-partial-transcript', 5, 1)
+        scenario('missing-transcript', 1, None)
+        scenario('resumed-with-distinct-worker', 1, 5, worker_cost=3)
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+    print('PASS R2-1 resumed SID fitted cost, current result, missing transcript, distinct worker')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -481,7 +545,9 @@ if regression in (None, '6'):
     test_r1_6_missing_classifications()
 if regression in (None, '7'):
     test_r1_7_fractional_window()
-if regression in ('1', '2', '3', '4', '5', '6', '7'):
+if regression in (None, '2-1'):
+    test_r2_1_resumed_hub_cost()
+if regression in ('1', '2', '3', '4', '5', '6', '7', '2-1'):
     sys.exit(0)
 
 st = home/'alpha'
