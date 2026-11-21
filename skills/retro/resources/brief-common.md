@@ -1,10 +1,10 @@
 # Retro — common contract
 
-Home: `{{home}}`  
-Output: `{{out}}`  
-Window: `[{{since}}, {{until}})`  
-Baseline: `{{baseline}}`  
-Previous checklist: `{{check_next}}`  
+Home: `{{home}}`
+Output: `{{out}}`
+Window: `[{{since}}, {{until}})`
+Baseline: `{{baseline}}`
+Previous checklist: `{{check_next}}`
 Metrics: `{{metrics}}`
 
 Stages:

@@ -1,8 +1,8 @@
 # CHECK-NEXT — follow-up to {{since}} / {{until}}
 
-Home: `{{home}}`  
-Baseline metrics directory: `{{out}}`  
-Baseline metrics: `{{metrics}}`  
+Home: `{{home}}`
+Baseline metrics directory: `{{out}}`
+Baseline metrics: `{{metrics}}`
 Previous checklist: `{{check_next}}`
 
 Fill after the verified report. Save the finished checklist as `CHECK-NEXT.md` beside `metrics.json`.
