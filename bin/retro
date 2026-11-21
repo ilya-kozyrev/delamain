@@ -675,46 +675,56 @@ class Audit:
                 if q["default"].lower() not in ("", "not set", "none") and q["due"]:
                     end = min(end, when(q["due"]))
                 blocking.append((when(q["asked"]), end))
-            busy = merge_intervals(runs + waits + blocking)
+            busy = merge_intervals([(a, b) for a, b, confirmed in runs if confirmed] + waits + blocking)
+            uncertain_runs = merge_intervals([(a, b) for a, b, confirmed in runs if not confirmed])
             for a, b in intervals:
                 points = [(a, "registration boundary")] + [(r["at"], r["source"]) for r in own if a < r["at"] < b] + [(b, "window/registration boundary")]
                 for (g0, before), (g1, after) in zip(points, points[1:]):
                     if hours(g0, g1) < .5:
                         continue
-                    cuts = sorted({g0, g1} | {max(g0, min(g1, x)) for iv in busy for x in iv})
+                    cuts = sorted({g0, g1} | {max(g0, min(g1, x)) for iv in busy + uncertain_runs for x in iv})
                     for start, end in zip(cuts, cuts[1:]):
                         if start == end:
                             continue
                         proven_wait = any(x <= start and end <= y for x, y in busy)
                         row = dict(id=f"{st.name}/{iso(start)}/{iso(end)}", stage=st.name, start=iso(start), end=iso(end),
                             hours=hours(start, end), night_h=night_hours(start, end), source=before + "; " + after,
+                            run_needs_review=any(x <= start and end <= y for x, y in uncertain_runs),
                             before=next((r["text"][:700] for r in reversed(own) if r["at"] <= start), ""),
                             ending=next((r["text"][:700] for r in own if r["at"] >= end), ""),
                             **review_fields())
                         if proven_wait:
                             row.update(class_="legit wait", needs_review=False, evidence="active executor/await/blocking register interval")
                         self.rows["gaps"].append(row)
-            starts = sorted({a for a, _ in runs})
+            starts = sorted({a for a, _, _ in runs})
             done = [r for r in relevant if TERMINAL.match(r["text"]) and TERMINAL.match(r["text"])[1] == "DONE" and not EXCLUDE_AGENT.fullmatch(r["tag"])]
             for r in done:
-                if any(a <= r["at"] < b for a, b in runs):
+                if any(a <= r["at"] < b for a, b, confirmed in runs if confirmed):
                     continue
                 nxt = next((t for t in starts if t >= r["at"]), None)
                 self.rows["ready"].append(dict(id=r["source"], stage=st.name, at=iso(r["at"]), next_start=iso(nxt),
-                    hours=hours(r["at"], nxt), source=r["source"], **review_fields()))
+                    hours=hours(r["at"], nxt), parallel_needs_review=any(a <= r["at"] < b for a, b in uncertain_runs),
+                    source=r["source"], **review_fields()))
 
     def run_intervals(self, stage):
         starts, stops, own = defaultdict(set), defaultdict(list), defaultdict(list)
+        aliases = {}
+        for (st, folder), meta in self.agent_meta.items():
+            if st == stage:
+                role = meta.get("role") or folder
+                aliases[role] = role
+                aliases[meta.get("tag") or role] = role
         lines = self.lines[stage]
         for r in lines:
             if r["at"] >= self.until:
                 continue
             tx, tag = r["text"], r["tag"]
-            own[tag].append(r["at"])
+            role = aliases.get(tag, tag)
+            own[role].append(r["at"])
             if (HUB.fullmatch(tag) or tag == "cli") and (m := START.match(tx) or RESUME.match(tx)):
-                starts[m[1]].add(r["at"])
+                starts[aliases.get(m[1], m[1])].add(r["at"])
             if TERMINAL.match(tx) and not EXCLUDE_AGENT.fullmatch(tag):
-                stops[tag].append(r["at"])
+                stops[role].append(r["at"])
         for (st, role), m in self.agent_meta.items():
             if st != stage or HUB.fullmatch(role):
                 continue
@@ -730,8 +740,11 @@ class Audit:
                 later_own = [t for t in own[role] if t >= a]
                 if later_own:
                     cap = max(later_own) + dt.timedelta(hours=1)
-                end = min([t for t in stops[role] if t >= a] + seq[i + 1:i + 2] + [cap, self.until])
-                intervals.append((a, end))
+                next_start = seq[i + 1] if i + 1 < len(seq) else self.until
+                terminal = min([t for t in stops[role] if a <= t <= next_start] or [None])
+                confirmed = terminal is not None
+                end = terminal if confirmed else min(next_start, cap, self.until)
+                intervals.append((a, end, confirmed))
         return intervals
 
     def flow(self, forge_dir):

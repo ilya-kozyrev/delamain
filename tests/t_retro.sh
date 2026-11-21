@@ -8,6 +8,7 @@ export RETRO_TEST_BIN="$B"
 export RETRO_TEST_OUT="$(mktemp -d)"
 python3 - <<'PY'
 import csv
+import datetime as dt
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -108,8 +109,78 @@ def test_r1_1_headless_hub_cost():
                 os.environ[key] = previous
     print('PASS R1-1 headless hub cost: current, retired, cumulative SIDs, unrelated worker')
 
-test_r1_1_headless_hub_cost()
-if os.environ.get('RETRO_REGRESSION') == '1':
+def test_r1_2_run_tag_and_uncertainty():
+    """R1-2: custom tags bind terminal evidence; inferred endings stay reviewable."""
+    isolated = (out/'r1-2-home').resolve()
+    stage = isolated/'waiting'
+    journal = stage/'coordinator/work/journal-2026-01-01.md'
+    previous = os.environ.get('AGENT_HUB_HOME')
+    put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-1', engine='claude',
+        set_at='2026-01-01T00:00:00Z')}, 'retired': []})
+    put(stage/'agents/build/meta.json', dict(role='build', tag='hub-1-build', engine='claude',
+        started_at='2026-01-01T00:00:00Z'))
+    put(stage/'agents/next/meta.json', dict(role='next', tag='hub-1-next', engine='claude',
+        started_at='2026-01-01T12:00:00Z'))
+    start = '- 00:00 [hub-1] started headless agent build (sonnet/high)\n'
+    next_start = '- 12:00 [hub-1] started headless agent next (sonnet/high)\n'
+    def measure(label, text):
+        put(journal, text)
+        target = out/('r1-2-'+label)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02')
+        return target
+    def covered(gaps, start_hour, end_hour):
+        left = dt.datetime(2026, 1, 1, start_hour, tzinfo=dt.timezone.utc)
+        right = dt.datetime(2026, 1, 1, end_hour, tzinfo=dt.timezone.utc)
+        return [(row, (min(right, dt.datetime.fromisoformat(row['end'])) -
+                       max(left, dt.datetime.fromisoformat(row['start']))).total_seconds()/3600)
+                for row in gaps
+                if dt.datetime.fromisoformat(row['start']) < right and left < dt.datetime.fromisoformat(row['end'])]
+    def uncertain(target, start_hour, end_hour):
+        overlap = covered(rows(target, 'gaps'), start_hour, end_hour)
+        assert math.isclose(sum(hours for _, hours in overlap), end_hour-start_hour), ('R1-2 missing gap coverage', overlap)
+        assert all(row['needs_review'].lower() == 'true' for row, _ in overlap), ('R1-2 inferred wait was confirmed', overlap)
+        assert all(row['class'] != 'legit wait' for row, _ in overlap), ('R1-2 heuristic ending is not evidence', overlap)
+    try:
+        os.environ['AGENT_HUB_HOME'] = str(isolated)
+        target = measure('custom-tag', start+'- 01:00 [hub-1-build] DONE implemented\n'+next_start)
+        uncertain(target, 1, 12)
+        # The matching terminal positively proves exactly the preceding run interval.
+        confirmed = covered(rows(target, 'gaps'), 0, 1)
+        assert math.isclose(sum(hours for _, hours in confirmed), 1), ('R1-2 missing proven run', confirmed)
+        assert all(row['class'] == 'legit wait' and row['needs_review'].lower() == 'false'
+                   for row, _ in confirmed), ('R1-2 matching DONE must confirm wait', confirmed)
+        ready = [row for row in rows(target, 'ready') if row['source'] == str(journal)+':2']
+        assert len(ready) == 1 and ready[0]['id'] == str(journal)+':2', ('R1-2 custom-tag DONE missing from ready.csv', ready)
+        assert dt.datetime.fromisoformat(ready[0]['at']).hour == 1 and dt.datetime.fromisoformat(ready[0]['next_start']).hour == 12
+        assert float(ready[0]['hours']) == 11, ('R1-2 next executor start', ready)
+
+        target = measure('missing-terminal-cap', start+next_start)
+        uncertain(target, 0, 12)
+        target = measure('missing-terminal-own-line', start+'- 10:00 [hub-1-build] still working\n'+next_start)
+        uncertain(target, 0, 12)
+
+        # A separately proven parallel run suppresses readiness while it is active.
+        put(stage/'agents/parallel/meta.json', dict(role='parallel', tag='hub-1-parallel', engine='claude',
+            started_at='2026-01-01T00:30:00Z'))
+        target = measure('proven-parallel', start+
+            '- 00:30 [hub-1] started headless agent parallel (sonnet/high)\n'+
+            '- 01:00 [hub-1-build] DONE implemented\n'+
+            '- 02:00 [hub-1-parallel] DONE parallel work\n'+next_start)
+        assert not any(row['source'] == str(journal)+':3' for row in rows(target, 'ready')), 'R1-2 proven parallel executor must exclude readiness'
+        assert any(row['source'] == str(journal)+':4' for row in rows(target, 'ready')), 'R1-2 final parallel DONE must expose readiness'
+    finally:
+        if previous is None:
+            os.environ.pop('AGENT_HUB_HOME', None)
+        else:
+            os.environ['AGENT_HUB_HOME'] = previous
+    print('PASS R1-2 custom run tags, confirmed terminals, uncertain caps and own lines, proven parallel exclusion')
+
+regression = os.environ.get('RETRO_REGRESSION')
+if regression in (None, '1'):
+    test_r1_1_headless_hub_cost()
+if regression in (None, '2'):
+    test_r1_2_run_tag_and_uncertainty()
+if regression in ('1', '2'):
     sys.exit(0)
 
 st = home/'alpha'
