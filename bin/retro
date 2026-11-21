@@ -839,7 +839,8 @@ class Audit:
             tag = match[2].get("tag") or role if match else role
             done = next((r["at"] for r in relevant if r["tag"] == tag and re.match(r"^(DONE|BLOCKED|STOP|QUESTION)\b", r["text"])), None)
             rv = [r for r in relevant if re.match(r"^REVIEWED\b", r["text"]) and (names_item(ref_items(r["text"]), r["stage"])
-                  or len(item_repos[iid]) == 1 and re.search(r"(?<!\d)" + re.escape(iid) + r"(?!\d)", r["tag"]))]
+                  or not ref_items(r["text"]) and len(item_repos[iid]) == 1
+                  and re.search(r"(?<!\d)" + re.escape(iid) + r"(?!\d)", r["tag"]))]
             item_awaits = [r for r in self.rows["await"] if names_item(ref_items(r["text"].split(" — ")[0]), r["stage"])
                            and when(r["at"]) <= m["merged"] + dt.timedelta(minutes=5)
                            and (not spawn or when(r["at"]) >= spawn - dt.timedelta(hours=1))]

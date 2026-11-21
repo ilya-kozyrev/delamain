@@ -7,7 +7,9 @@
   flat metrics for comparison with the previous audit. The `retro` skill ties evidence extraction, classification,
   independent verification and the next `CHECK-NEXT.md` together. Audited homes stay read-only; missing data
   stays unknown, and local forge exports are optional without network calls. Registered headless hubs have a
-  single dollar source; inferred executor endings and ambiguous owner-message copies remain reviewable.
+  single dollar source, retaining a larger transcript estimate after a resume. Forge joins compare complete
+  project paths, and explicit review references take precedence over numeric reviewer tags. Inferred executor
+  endings and ambiguous owner-message copies remain reviewable.
 
 ## 1.0.27 — 2026-11-08
 
