@@ -67,9 +67,17 @@ results=[]
 for i in range(12):
     v=[(i+1)**k*100 for k in range(1,5)]
     cost=sum(x*y for x,y in zip(v,[2,10,.2,3]))/1e6
-    results.append({'type':'result','session_id':'worker','num_turns':1,'total_cost_usd':i+1,
+    results.append({'type':'result','session_id':'worker','num_turns':100,'total_cost_usd':i+1,
         'modelUsage':{'claude-test':dict(zip(['inputTokens','outputTokens','cacheReadInputTokens','cacheCreationInputTokens'],v),costUSD=cost)}})
-jl(st/'agents/build/log.jsonl',results)
+messages=[{'type':'assistant','message':{'id':f'worker-{i}','model':'claude-test','content':[], 'usage':{}}} for i in range(12)]
+jl(st/'agents/build/log.jsonl',messages+results)
+put(st/'agents/codex/meta.json', {'role':'codex','engine':'codex','started_at':'2026-01-01T00:00:00Z'})
+jl(st/'agents/codex/log.jsonl', [
+    {'type':'thread.started','thread_id':'thread-one'}, {'type':'turn.started'},
+    {'type':'turn.completed','usage':{'input_tokens':1000,'cached_input_tokens':800,'output_tokens':10}},
+    {'type':'thread.started','thread_id':'thread-one'}, {'type':'turn.started'},
+    {'type':'turn.completed','usage':{'input_tokens':2500,'cached_input_tokens':2000,'output_tokens':25}},
+])
 put(st/'agents/old/meta.json',{'role':'old','engine':'claude','started_at':'2025-12-01T00:00:00Z'})
 jl(st/'agents/old/log.jsonl',[{'type':'result','total_cost_usd':10000}])
 put(st/'agents/until/meta.json',{'role':'until','started_at':'2026-01-03T00:00:00Z'})
@@ -92,6 +100,7 @@ transcript=[user('00:01:00','A new feature, please'),
     assistant('00:09:00','side',[{'type':'text','text':'side chain'}],isSidechain=True),
     {'type':'system','timestamp':'2026-01-01T00:10:00Z','subtype':'compact_boundary'},
     user('00:11:00','fake owner',isMeta=True),
+    user('00:12:00','ordinary internal harness message',origin={'kind':'internal'}),
     {'type':'user','timestamp':'2026-01-03T00:00:00Z','message':{'content':'until boundary'}}]
 jl(Path(os.environ['CLAUDE_CONFIG_DIR'])/'projects/project'/f'{sid}.jsonl',transcript)
 put(st/'questions.md','''# Questions
@@ -148,7 +157,9 @@ assert len(w['readers'])==2
 run('plan','--out',out/'bad','--readers',0,ok=False)
 run('measure','--out',current,'--forge',forge)
 m=data(current)
-for k,want in {'agents.count':2,'agents.claude.cost_usd':12,'agents.claude.turns':12,'hubs.active':1,'hubs.messages':3,
+for k,want in {'agents.count':3,'agents.claude.cost_usd':12,'agents.claude.turns':12,
+    'agents.codex.turns':2,'agents.codex.input_tokens':2500,'agents.codex.cached_tokens':2000,'agents.codex.output_tokens':25,
+    'hubs.active':1,'hubs.messages':3,
     'hubs.compactions':1,'wakes.watchdog':1,'wakes.watchdog.no_tool':1,'wakes.notif':1,'wakes.notif.no_tool':0,
     'latency.events':2,'watchdog.wakes':1,'watchdog.dead_turn_wakes':1,'watchdog.failed_wakes':1,'watchdog.notifications':1,
     'watchdog.jwait_mismatches':1,'guards.decisions':1,'await.FAILED.count':1,'await.PASSED.count':1,
@@ -160,11 +171,12 @@ assert value(m,'await.PASSED.duration_min')==62.05
 assert value(m,'flow.first_time_right') is None
 assert value(m,'flow.red_cycles_per_merge')==1
 assert value(m,'questions.self_decided_share')==.5
-assert m['agents.count']['per_day']==1
+assert m['agents.count']['per_day']==1.5
 assert value(m,'hubs.cost_usd')>0 and value(m,'hubs.unpriced_messages')==0
 assert value(m,'touches.nudge') is None
 assert any(r['needs_review']=='True' for r in rows(current,'gaps'))
 assert all(r['needs_review']=='True' for r in rows(current,'touches'))
+assert not any('ordinary internal harness message' in r['text'] for r in rows(current,'touches'))
 assert rows(current,'latency')[0]['latency_min']=='2.0'
 assert value(m,'gaps.total_h')>=value(m,'gaps.needs_review_h')>0
 base=home/'audit/coordinator/work/retro-previous'
@@ -178,11 +190,17 @@ put(base/'CHECK-NEXT-test.md','# Metric: agents.count\n')
 planned=out/'next'
 run('plan','--until','2026-01-03','--out',planned)
 w=json.loads((planned/'window.json').read_text())
-assert w['since']=='2026-01-01T00:00:00+00:00' and w['baseline']==str(base)
+assert w['since']=='2026-01-01T00:00:00+00:00' and w['baseline']==str(base.resolve()),w
 assert (planned/'CHECK-NEXT-test.md').exists()
 run('measure','--out',planned)
 assert data(planned)['agents.count']['baseline']==4
 assert data(planned)['agents.count']['baseline_per_day']==4
+explicit=out/'explicit'
+run('measure','--out',explicit,'--since','2026-01-01','--until','2026-01-03','--baseline',base,'--exclude-stage','alpha')
+assert data(explicit)['agents.count']['baseline']==4
+assert value(data(explicit),'agents.count')==0
+assert 'beta' in {r['stage'] for r in rows(explicit,'stages')}
+assert 'alpha' not in {r['stage'] for r in rows(explicit,'stages')}
 classify=out/'classify'
 classify.mkdir()
 ts=rows(current,'touches')
@@ -197,6 +215,11 @@ with (classify/'touches.csv').open('w') as f:
     writer=csv.DictWriter(f,fieldnames=ts[0].keys());writer.writeheader();writer.writerows(ts)
 run('measure','--out',current,'--classifications',classify,ok=False)
 run('measure','--out',out/'badtime','--since','2026-01-03','--until','2026-01-01',ok=False)
+run('measure','--out',out/'badstamp','--since','not-a-date','--until','2026-01-03',ok=False)
+foreign=out/'foreign'
+foreign.mkdir()
+put(foreign/'window.json',dict(w, home=str(out/'other-home')))
+run('measure','--out',foreign,ok=False)
 run('measure','--out',out/'badbase','--baseline',out/'missing',ok=False)
 after=snapshot()
 assert all(after[p]==digest for p,digest in before.items()), 'real evidence modified by retro'

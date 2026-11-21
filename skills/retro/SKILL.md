@@ -1,6 +1,6 @@
 ---
 name: retro
-description: Audit a period of hub work for recurring mistakes, token cost, delivery efficiency and lessons; compare it with the previous retro and propose evidenced plugin improvements. Use for a hub retrospective or weekly audit, not live agent status.
+description: Audit a period of hub work for recurring mistakes, token cost, delivery efficiency and lessons; compare it with the previous retro and propose evidenced plugin improvements. Use for retro, ретро, ретроспектива, аудит недели, a hub retrospective or weekly audit, not live agent status.
 argument-hint: "[--since T] [--until T] [--readers N]"
 ---
 

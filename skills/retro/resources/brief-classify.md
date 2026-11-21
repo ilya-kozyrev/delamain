@@ -1,7 +1,7 @@
 # Retro — efficiency and evidence classification
 
 Read `{{out}}/brief-common.md`, `measure.md` and CSV headers before editing. Sources: `{{metrics}}` and
-`flow.csv`, `stages.csv`, `touches.csv`, `tells.csv`, `gaps.csv`, `questions.csv`, `await.csv` under `{{out}}`.
+`flow.csv`, `stages.csv`, `touches.csv`, `tells.csv`, `gaps.csv`, `ready.csv`, `questions.csv`, `await.csv` under `{{out}}`.
 Stages:
 {{stages}}
 
@@ -15,7 +15,9 @@ supports the class; accepted classifications set it false. Preserve unknown fiel
 CLI-supported classes; report a missing class as unresolved rather than inventing accepted vocabulary.
 
 Taxonomy: owner touches = decision (money/product/outside company), unblock, correction, nudge, repeat,
-new task. Gaps = legit wait, missed wake, brake (owner-ended/self-ended/hanging), permission brake. Resolve
+new task. Gaps = legit wait, missed wake, brake, permission brake; put owner-ended/self-ended/hanging details in evidence.
+Flow = verified/duplicate/unattributed; stages = hanging/complete/dropped/carried over; tells =
+autonomous/escalated/notice/unanswered; ready = open plan/complete; questions = process/owner. Resolve
 plan items from approved P-entries and handoff next steps; distinguish done, dropped, carried over and unknown.
 Tell autonomy needs an attributable reply and evidence of whether the owner intervened. Flow review/CI counts
 need complete item joins, not absence of journal mentions. Missing forge coverage leaves first-time-right null.

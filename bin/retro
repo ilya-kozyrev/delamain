@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import random
 import re
-import statistics
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -165,8 +164,12 @@ def window(args, home):
     excluded = sorted(set(args.exclude_stage or saved.get("exclude_stages", [])))
     if not args.exclude_stage and not saved and os.environ.get("HUB_STAGE"):
         excluded = [os.environ["HUB_STAGE"]]
-    return dict(home=str(home), since=iso(since), until=iso(until), days=(until - since).total_seconds() / 86400,
-                baseline=baseline, exclude_stages=excluded, boundary="[since, until)", timezone=str(hc.TZ))
+    result = dict(home=str(home), since=iso(since), until=iso(until), days=(until - since).total_seconds() / 86400,
+                  baseline=baseline, exclude_stages=excluded, boundary="[since, until)", timezone=str(hc.TZ))
+    for key in ("forge", "classifications"):
+        if saved.get(key):
+            result[key] = saved[key]
+    return result
 
 
 class Audit:
@@ -216,7 +219,7 @@ class Audit:
         for p in sorted(RESOURCES.glob("*.md")):
             if p.name == "brief-reader.md":
                 for b in bins:
-                    v = dict(values, reader=str(b["reader"]), stages="\n".join(f"- {self.home / s}" for s in b["stages"]) or "No stages in window.")
+                    v = dict(values, reader=f"{b['reader']:02d}", stages="\n".join(f"- {self.home / s}" for s in b["stages"]) or "No stages in window.")
                     write_brief(p, out / f"reader-{b['reader']:02d}.md", v)
             else:
                 write_brief(p, out / p.name, values)
@@ -240,7 +243,6 @@ class Audit:
                 log = p.parent / "log.jsonl"
                 state = top.LogState(log)
                 last = start
-                turns = 0
                 results = []
                 # Feed the existing parser complete, in-window records, without its live-view tail limit/cache.
                 for n, ev in events(log):
@@ -252,7 +254,6 @@ class Audit:
                     state._feed(n, json.dumps(ev, separators=(",", ":")).encode() + b"\n")
                     if ev.get("type") == "result":
                         results.append(ev)
-                        turns += ev.get("num_turns") or 0
                         for model, u in (ev.get("modelUsage") or {}).items():
                             if u.get("costBasis") in (None, "list") and u.get("costUSD", 0) > 0:
                                 self.price_points[model].append(tuple((u.get(k) or 0) / 1e6 for k in
@@ -263,7 +264,7 @@ class Audit:
                 final = [r for r in self.lines[st.name] if r["tag"] == (meta.get("tag") or role) and self.inside(r["at"]) and TERMINAL.match(r["text"])]
                 row = dict(stage=st.name, role=role, model=state.model or meta.get("model", ""), effort=meta.get("effort", ""), engine=engine,
                            started_at=iso(start), last_event_at=iso(last), wall_h=hours(start, last), runs=max(1, len([r for r in meta.get("runs", []) if not when(r.get("at")) or when(r["at"]) < self.until])),
-                           turns=turns if engine == "claude" else state.turns, cost_usd=state.cost_sum if engine == "claude" else None,
+                           turns=state.turns, cost_usd=state.cost_sum if engine == "claude" else None,
                            is_review=int(review), broad_review=int("review" in (role + brief).lower()), mcp=meta.get("mcp", ""),
                            final_status=TERMINAL.match(final[-1]["text"]).group(1) if final else "", source=str(p), log=str(log),
                            input_tokens=(state.usage_tokens or {}).get("input_tokens"), cached_tokens=(state.usage_tokens or {}).get("cached_input_tokens"),
@@ -306,6 +307,9 @@ class Audit:
             prefix = "review.broad" if broad else "review.strict"
             self.metric(prefix + ".count", len(rr), "agents.csv")
             self.metric(prefix + ".cost_usd", sum(r["cost_usd"] or 0 for r in rr), "agents.csv")
+        review_cost = self.metrics["review.strict.cost_usd"]["value"]
+        total_cost = self.metrics["agents.claude.cost_usd"]["value"]
+        self.metric("review.strict.cost_share", review_cost / total_cost if total_cost else None, "agents.csv; strict reviewers / Claude agent cost", False)
         families = defaultdict(list)
         for r in rows:
             if r["is_review"]:
@@ -316,7 +320,7 @@ class Audit:
         self.metric("review.families_over_3", sum(len(rr) > 3 or sum(r["runs"] for r in rr) > 3 for rr in families.values()), "agents.csv")
         self.rates = fit_prices(self.price_points)
 
-    def scan_transcript(self, path, stage, label, kind, price=True):
+    def scan_transcript(self, path, stage, label, kind, price=True, touch_intervals=None):
         msgs, wake, wakes, uses = {}, None, [], {}
         compactions = 0
         for n, obj in events(path):
@@ -324,7 +328,7 @@ class Audit:
                 continue
             t = when(obj.get("timestamp"))
             typ = obj.get("type")
-            msg = obj.get("message") or {}
+            msg = obj.get("message") if isinstance(obj.get("message"), dict) else {}
             c = msg.get("content")
             source = f"{path}:{n}"
             if typ == "assistant" and msg.get("model") != "<synthetic>":
@@ -336,7 +340,7 @@ class Audit:
                     if mid in msgs:
                         v["tokens"] = [max(x, y) for x, y in zip(v["tokens"], msgs[mid]["tokens"])]
                     msgs[mid] = v
-                if wake:
+                if wake and (self.inside(t) or kind == "agent" and not t):
                     wake["tools"] += sum(isinstance(b, dict) and b.get("type") == "tool_use" for b in c or [] if isinstance(c, list))
                     wake["mids"].add(mid)
             if self.inside(t) and (obj.get("subtype") == "compact_boundary" or obj.get("isCompactSummary") is True):
@@ -356,7 +360,10 @@ class Audit:
                     if wk == "watchdog":
                         self.friction(stage, label, "watchdog wake message", source, tx[:170])
                     wake = dict(stage=stage, hub=label, at=iso(t), kind=wk, tools=0, mids=set(), source=source)
-                elif valid and kind == "hub" and not wk and autopilot.owner_spoke(tx) and not tx.startswith(("[Request interrupted", "[Usage limit", "# Takeover brief", "Caveat:")):
+                elif (valid and kind == "hub" and not wk and org in (None, "", "human") and autopilot.owner_spoke(tx)
+                      and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c or [] if isinstance(c, list))
+                      and not tx.startswith(("[Request interrupted", "[Usage limit", "# Takeover brief", "Caveat:"))
+                      and (touch_intervals is None or any(a <= t < b for a, b in touch_intervals))):
                     self.rows["touches"].append(dict(id=source, stage=stage, at=iso(t), text=tx[:1200], source=source, **review_fields()))
             if not valid or not isinstance(c, list):
                 continue
@@ -418,7 +425,9 @@ class Audit:
                 duplicate = bool(sid and sid in self.transcripts_seen)
                 scan = {}
                 if path and not duplicate:
-                    scan = self.scan_transcript(path, st.name, e.get("tag", "hub"), "hub") if engine == "claude" else self.scan_codex(path)
+                    touch_intervals = [(when(x.get("set_at")), when(x.get("retired_at")) or self.until) for x in entries
+                                       if (x.get("cli_session_id") or x.get("session")) == sid and when(x.get("set_at"))]
+                    scan = self.scan_transcript(path, st.name, e.get("tag", "hub"), "hub", touch_intervals=touch_intervals) if engine == "claude" else self.scan_codex(path, st.name)
                     self.transcripts_seen.add(sid)
                 key = (e.get("tag"), iso(start))
                 if key in seen:
@@ -441,20 +450,33 @@ class Audit:
             self.metric("wakes." + kind + ".no_tool", sum(r["tools"] == 0 for r in wakes), "wakes.csv; until next non-tool-result user event")
             self.metric("wakes." + kind + ".cost_usd", sum(r["cost_usd"] for r in wakes), "wakes.csv")
 
-    def scan_codex(self, path):
+    def scan_codex(self, path, stage):
         norm = codex_rollouts.Normalizer()
-        msgs, compact, peak, tokens = 0, 0, 0, {}
-        for _, ev in events(path):
-            if not self.inside(when(ev.get("timestamp"))):
+        msgs, compact, peak, tokens, before = 0, 0, 0, {}, {}
+        for n, ev in events(path):
+            # Feed pre-window metadata too: fork filtering needs the session's birth and own task start.
+            common_events = norm.events(ev)
+            at = when(ev.get("timestamp"))
+            if at and at < self.since:
+                for common in common_events:
+                    if common.get("codex_usage"):
+                        before = common["codex_usage"]
+            if not self.inside(at):
                 continue
-            for common in norm.events(ev):
+            payload = ev.get("payload") or {}
+            compact += int(ev.get("type") == "compacted" or payload.get("type") == "context_compacted")
+            for common in common_events:
                 msgs += int(common.get("type") == "assistant")
-                compact += int(common.get("type") == "codex_compacted")
                 peak = max(peak, common.get("context_tokens") or 0)
                 if common.get("codex_usage"):
                     tokens = common["codex_usage"]
-        return dict(messages=msgs, compactions=compact, peak_context=peak, input_tokens=tokens.get("input_tokens", 0),
-                    output_tokens=tokens.get("output_tokens", 0), cost_usd=None, unpriced_messages=msgs, model="")
+                if common.get("type") == "user":
+                    tx = content((common.get("message") or {}).get("content"))
+                    if autopilot.owner_spoke(tx) and not tx.startswith(("#", "[$", "Files mentioned", "[Request interrupted")):
+                        source = f"{path}:{n}"
+                        self.rows["touches"].append(dict(id=source, stage=stage, at=iso(at), text=tx[:1200], source=source, **review_fields()))
+        return dict(messages=msgs, compactions=compact, peak_context=peak, input_tokens=max(0, tokens.get("input_tokens", 0) - before.get("input_tokens", 0)),
+                    output_tokens=max(0, tokens.get("output_tokens", 0) - before.get("output_tokens", 0)), cost_usd=None, unpriced_messages=msgs, model="")
 
     def registers(self):
         ask, hub = module("ask"), module("hub")
@@ -465,8 +487,9 @@ class Audit:
                 closed = field_time(closed[1], end_of_day=True) if closed else None
                 due = ask.parse_due(e.fields.get("due", ""))
                 due = due.replace(tzinfo=hc.TZ) if due else None
-                row = dict(id=e.id, stage=st.name, kind=e.kind_letter, asked=iso(asked), closed=iso(closed), due=iso(due),
-                    state=e.state, title=e.title, blocks=e.fields.get("blocks", ""), default=e.fields.get("default", ""),
+                state = "open" if closed and closed >= self.until and e.state in ("answered", "withdrawn") else e.state
+                row = dict(id=f"{st.name}/{e.id}", question_id=e.id, stage=st.name, kind=e.kind_letter, asked=iso(asked), closed=iso(closed), due=iso(due),
+                    state=state, title=e.title, blocks=e.fields.get("blocks", ""), default=e.fields.get("default", ""),
                     wait_h=hours(asked, closed) if closed and closed < self.until and e.state == "answered" else None,
                     source=str(st / "questions.md"), **review_fields())
                 self.register.append(row)
@@ -479,9 +502,14 @@ class Audit:
             for lid, cue, status, helped, hurt, written, head, status_line, lesson in entries:
                 self.rows["lessons"].append(dict(stage=st.name, id=lid, cue=cue, status=status, written_status=written,
                     helped=helped, hurt=hurt, lesson=lesson, source=f"{st / 'lessons.md'}:{head}"))
+        seen_broadcasts = set()
         for st, lines in self.lines.items():
             for r in lines:
                 if self.inside(r["at"]) and r["tag"] == "owner":
+                    broadcast = (r["at"], r["text"][:80])
+                    if broadcast in seen_broadcasts:
+                        continue
+                    seen_broadcasts.add(broadcast)
                     self.add_touch(dict(id=r["source"], stage=st, at=iso(r["at"]), text=r["text"], source=r["source"], **review_fields()))
 
     def add_touch(self, row, precision="minute"):
@@ -547,7 +575,7 @@ class Audit:
 
     def system_metrics(self):
         watchdog = []
-        wd_path = self.home / ".state/watchdog/log.md"
+        wd_path = hc.state_dir() / "watchdog/log.md"
         for n, line in enumerate(text(wd_path).splitlines(), 1):
             m = re.match(r"^- (\d{4}-\d\d-\d\d \d\d:\d\d) (\S+): (.*)$", line)
             if m and self.inside(when(m[1])) and m[2] not in self.win["exclude_stages"]:
@@ -562,7 +590,7 @@ class Audit:
             self.metric("watchdog." + name, sum(predicate(tx) for _, tx, _ in watchdog) if wd_path.exists() else None, str(wd_path))
         mismatch = [r for lines in self.lines.values() for r in lines if self.inside(r["at"]) and r["tag"] == "watchdog" and "jwait does not match" in r["text"]]
         self.metric("watchdog.journal_jwait_mismatches", len(mismatch), "stage journals, watchdog tag")
-        path = self.home / ".state/guard-decisions.jsonl"
+        path = hc.state_dir() / "guard-decisions.jsonl"
         counts = Counter()
         for n, ev in events(path):
             if self.inside(when(ev.get("ts"))):
@@ -586,12 +614,15 @@ class Audit:
             started = min([when(e.get("set_at")) for e in raw.get("retired", []) + list(raw.get("roles", {}).values()) if when(e.get("set_at"))] or [r["at"] for r in own] or [self.until])
             closed_raw = sj.get("closed")
             closed = field_time(closed_raw.get("at", "")) if isinstance(closed_raw, dict) else field_time(closed_raw) if isinstance(closed_raw, str) else None
+            if not closed and not raw.get("roles", {}).get("hub"):
+                closed = max([when(e.get("retired_at")) for e in raw.get("retired", []) if e.get("role") == "hub" and when(e.get("retired_at"))] or [None])
             last = own[-1]["at"] if own else started
             at_end = any(a <= self.until - dt.timedelta(microseconds=1) < b for a, b in intervals)
             self.rows["stages"].append(dict(id=st.name, stage=st.name, started_at=iso(started), closed_at=iso(closed),
                 started=int(self.inside(started)), closed=int(self.inside(closed)), open_at_end=int(at_end and not (closed and closed < self.until)),
                 registered_h=sum(hours(a, b) for a, b in intervals), shifts=len(shifts), last_at=iso(last), idle_h=hours(last, self.until),
                 hanging_candidate=int(at_end and hours(last, self.until) >= 24), close_age_h=hours(started, closed),
+                plan_done=None, plan_dropped=None, plan_carried=None, plan_total=None,
                 source=str(st / "stage.json") + "; " + str(st / "roles.json"), **review_fields()))
             runs = self.run_intervals(st.name)
             waits = [(when(r["start"]), when(r["at"])) for r in self.rows["await"] if r["stage"] == st.name]
@@ -678,22 +709,43 @@ class Audit:
             for r in all_lines:
                 if not self.inside(r["at"]) or not re.match(r"^(?:@hub\s+)?MERGED\b", r["text"]) or r["tag"].endswith("-await"):
                     continue
-                for item in ref_items(r["text"]):
+                items = ref_items(r["text"])
+                urls = [item for item in items if item.startswith("http")]
+                # Prefer a qualified URL over a redundant !N in the same line.
+                items -= {"!" + re.search(r"/(\d+)$", item)[1] for item in urls if re.search(r"/(\d+)$", item)}
+                for item in items:
                     # Journal-only observations remain candidates: the same !N can exist in several repositories.
                     key = r["stage"] + "/" + item
                     merges.setdefault(key, dict(repo="", iid=item, merged=r["at"], created=None, branch="", title=r["text"], source=r["source"], stage=r["stage"]))
+        item_repos = defaultdict(set)
+        for m in merges.values():
+            item_repos[m["iid"]].add(m["repo"])
+        role_items = defaultdict(set)
+        for r in all_lines:
+            if TERMINAL.match(r["text"]):
+                role_items[r["stage"], r["tag"]].update(ref_items(r["text"]))
+        for role, meta in self.agent_meta.items():
+            if meta.get("brief"):
+                role_items[role].update(ref_items(text(meta["brief"])[:6000]))
         for key, m in merges.items():
             candidates = []
+            mentions = []
             for (st, role), meta in self.agent_meta.items():
                 branch = (meta.get("worktree") or {}).get("branch", "") if isinstance(meta.get("worktree"), dict) else ""
                 branch = branch or meta.get("branch", "")
                 if m["branch"] and branch == m["branch"] and not role.startswith("review"):
                     candidates.append((st, role, meta))
-            match = candidates[0] if len(candidates) == 1 else None
+                if not role.startswith("review") and len(item_repos[m["iid"]]) == 1:
+                    if "!" + m["iid"] in role_items[st, role]:
+                        mentions.append((st, role, meta))
+            match = candidates[0] if len(candidates) == 1 else mentions[0] if not candidates and len(mentions) == 1 else None
+            join = "unique branch" if len(candidates) == 1 else "unique item mention" if match else "unattributed/ambiguous"
             stage = match[0] if match else m["stage"]
             role = match[1] if match else ""
             created = m["created"]
             starts = [when(r.get("at")) for r in match[2].get("runs", []) if when(r.get("at"))] if match else []
+            if match and when(match[2].get("started_at")):
+                starts.append(when(match[2]["started_at"]))
             eligible = [t for t in starts if created and t <= created + dt.timedelta(minutes=10)]
             spawn = max(eligible) if eligible else min(starts) if starts else created
             relevant = [r for r in all_lines if stage and r["stage"] == stage and (not spawn or r["at"] >= spawn) and r["at"] <= m["merged"]]
@@ -701,12 +753,17 @@ class Audit:
             iid = m["iid"]
             rv = [r for r in relevant if re.match(r"^REVIEWED\b", r["text"]) and ("!" + iid in ref_items(r["text"]) or re.search(r"(?<!\d)" + re.escape(iid) + r"(?!\d)", r["tag"]))]
             ci = [r for r in self.rows["await"] if r["stage"] == stage and "!" + iid in ref_items(r["text"]) and when(r["at"]) <= m["merged"] and (not spawn or when(r["at"]) >= spawn)]
+            queue = [when(r["at"]) for r in self.rows["tells"] if r["sender"] == stage and "!" + iid in ref_items(r["text"])
+                     and re.search(r"ready|request|прошу|готов|заявк|мерж", r["text"], re.I)
+                     and (done or spawn or self.since) - dt.timedelta(minutes=30) <= when(r["at"]) <= m["merged"]]
+            queue_start = min(queue) if queue else None
             pipe = pipelines.get(key)
             red = sum(p.get("status") == "failed" for p in pipe if when(p.get("created_at")) and when(p["created_at"]) <= m["merged"]) if pipe is not None else None
             self.rows["flow"].append(dict(id=key, stage=stage or "(unattributed)", item=iid, merged_at=iso(m["merged"]),
-                spawn=iso(spawn), done=iso(done), lead_h=hours(spawn, m["merged"]), build_h=hours(spawn, done),
-                review_h=hours(done, rv[-1]["at"]) if done and rv else None, review_rounds=len(rv) if stage else None,
-                ci_min=sum(r["duration_min"] for r in ci), red_cycles=red, queue_h=None,
+                spawn=iso(spawn), done=iso(done), review_end=iso(rv[-1]["at"]) if rv else "", queue_start=iso(queue_start), exec_role=role, join_method=join,
+                lead_h=hours(spawn, m["merged"]), build_h=hours(spawn, done),
+                review_h=hours(done, rv[-1]["at"]) if done and rv else 0 if done else None, review_rounds=len(rv) if stage else None,
+                ci_min=sum(r["duration_min"] for r in ci), red_cycles=red, queue_h=hours(queue_start, m["merged"]),
                 first_time_right=None, title=m["title"], source=m["source"], **review_fields()))
 
     def classify(self, directory):
@@ -728,11 +785,49 @@ class Audit:
                     if key not in known or cls not in classes or not evidence:
                         raise ValueError(f"{path}: reviewed rows require a known id, class in {sorted(classes)} and evidence")
                     known[key].update(class_=cls, needs_review=False, evidence=evidence)
+                    target = known[key]
+                    if family == "flow":
+                        for field in ("stage", "exec_role"):
+                            if row.get(field):
+                                if field == "stage" and row[field] not in self.lines and row[field] != "(unattributed)":
+                                    raise ValueError(f"{path}: unknown stage {row[field]}")
+                                target[field] = row[field]
+                        for field in ("spawn", "done", "review_end", "queue_start"):
+                            if row.get(field):
+                                t = when(row[field])
+                                if not t or t > when(target["merged_at"]):
+                                    raise ValueError(f"{path}: {field} must be a timestamp <= merged_at")
+                                target[field] = iso(t)
+                        for field in ("review_rounds", "red_cycles", "ci_min"):
+                            if row.get(field):
+                                number = float(row[field])
+                                if not math.isfinite(number) or number < 0 or (field != "ci_min" and number != int(number)):
+                                    raise ValueError(f"{path}: {field} must be a finite nonnegative number")
+                                target[field] = number if field == "ci_min" else int(number)
+                        for field, start, end in (("lead_h", "spawn", "merged_at"), ("build_h", "spawn", "done"),
+                                                  ("review_h", "done", "review_end"), ("queue_h", "queue_start", "merged_at")):
+                            target[field] = hours(when(target[start]), when(target[end]))
+                    if family == "stages":
+                        for field in ("plan_done", "plan_dropped", "plan_carried", "plan_total"):
+                            if row.get(field):
+                                target[field] = int(row[field])
+                                if target[field] < 0:
+                                    raise ValueError(f"{path}: {field} must be nonnegative")
+                        parts = [target[k] for k in ("plan_done", "plan_dropped", "plan_carried")]
+                        if target["plan_total"] is not None and all(p is not None for p in parts) and sum(parts) != target["plan_total"]:
+                            raise ValueError(f"{path}: plan counts must sum to plan_total")
+                    if family == "tells" and row.get("reply_at"):
+                        reply = when(row["reply_at"])
+                        if not reply or not when(target["at"]) <= reply < self.until:
+                            raise ValueError(f"{path}: reply_at must be in the remaining window")
+                        target["reply_min"] = (reply - when(target["at"])).total_seconds() / 60
+                        target["candidate_reply_at"] = iso(reply)
                     if family == "flow" and cls == "verified":
                         known[key]["first_time_right"] = int(known[key]["red_cycles"] == 0 and known[key]["review_rounds"] <= 1) if known[key]["red_cycles"] is not None and known[key]["review_rounds"] is not None else None
 
     def scorecard(self):
         flow, stages, touches, tells, gaps = (self.rows[k] for k in ("flow", "stages", "touches", "tells", "gaps"))
+        flow = [r for r in flow if r["class_"] != "duplicate"]
         self.metric("flow.merged_observed", len(flow), "flow.csv; forge universe when supplied, otherwise journal candidates (lower bound)")
         verified = [r for r in flow if r["class_"] == "verified" and not r["needs_review"]]
         self.metric("flow.verified", len(verified), "flow.csv; classification evidence")
@@ -784,13 +879,56 @@ class Audit:
         ready = self.rows["ready"]
         self.stats("ready.observed_h", [r["hours"] for r in ready if r["hours"] is not None and r["hours"] <= 24], "ready.csv; DONE->start, no parallel executor, <=24h; plan unverified")
         self.stats("ready.open_plan_h", [r["hours"] for r in ready if r["class_"] == "open plan"], "ready.csv; classified unfinished plan")
-        self.metric("lessons.count", len(self.rows["lessons"]), "lessons.csv; current inventory, dates not inferred")
+        self.metric("lessons.count", len(self.rows["lessons"]), "lessons.csv; current inventory, dates not inferred", False)
         for status in ("proposed", "confirmed", "promotable", "promoted", "retired"):
-            self.metric("lessons." + status, sum(r["status"] == status for r in self.rows["lessons"]), "lessons.csv; bin/hub.lessons_entries")
+            self.metric("lessons." + status, sum(r["status"] == status for r in self.rows["lessons"]), "lessons.csv; bin/hub.lessons_entries", False)
         self.metric("lessons.helped", sum(r["helped"] for r in self.rows["lessons"]), "lessons.csv; distinct shift verdicts")
         self.metric("lessons.hurt", sum(r["hurt"] for r in self.rows["lessons"]), "lessons.csv; distinct shift verdicts")
         for family in ("touches", "gaps", "stages", "flow", "tells", "ready", "questions"):
             self.metric("review_pending." + family, sum(bool(r["needs_review"]) for r in self.rows[family]), family + ".csv")
+        self.metric("questions.process", sum(r["class_"] == "process" for r in questions) if all(not r["needs_review"] for r in questions) else None, "questions.csv; classified legitimate owner vs process questions")
+        for field in ("plan_done", "plan_dropped", "plan_carried", "plan_total"):
+            closed = [r for r in stages if r["closed"]]
+            self.metric("stages." + field, sum(r[field] for r in closed) if all(r[field] is not None for r in closed) else None, "stages.csv; classified plan at close")
+        # Dimensions are metric names too, so the next run compares every stage/model/effort without hand-built tables.
+        for st in self.lines:
+            prefix = "stage." + st + "."
+            agents = [r for r in self.rows["agents"] if r["stage"] == st]
+            hubs = [r for r in self.rows["hubs"] if r["stage"] == st]
+            flows = [r for r in flow if r["stage"] == st]
+            ts = [r for r in touches if r["stage"] == st]
+            gs = [r for r in gaps if r["stage"] == st]
+            stage = next(r for r in stages if r["stage"] == st)
+            sd = stage["registered_h"] / 24
+            ac, hc_ = sum(r["cost_usd"] or 0 for r in agents), sum(r.get("cost_usd") or 0 for r in hubs)
+            for name, value, src in (("agents", len(agents), "agents.csv"), ("agent_cost_usd", ac, "agents.csv"),
+                                     ("hub_cost_usd", hc_, "hubs.csv"), ("hub_turns", sum(r.get("messages", 0) for r in hubs), "hubs.csv"),
+                                     ("hub_input_tokens", sum(r.get("input_tokens", 0) for r in hubs), "hubs.csv"),
+                                     ("merged", len(flows), "flow.csv"), ("touches", len(ts), "touches.csv"),
+                                     ("gap_h", sum(r["hours"] for r in gs), "gaps.csv")):
+                self.metric(prefix + name, value, src + "; stage=" + st)
+            for cls in sorted(GAP_CLASSES):
+                self.metric(prefix + "gaps." + cls.replace(" ", "_") + ".hours", sum(r["hours"] for r in gs if r["class_"] == cls), "gaps.csv; classified lower bound")
+            self.metric(prefix + "cost_per_merge_usd", (ac + hc_) / len(flows) if flows else None, "agents+hubs / flow.csv", False)
+            self.metric(prefix + "merged_per_stage_day", len(flows) / sd if sd else None, "flow.csv / union registration days", False)
+            self.metric(prefix + "merged_per_shift", len(flows) / len(hubs) if hubs else None, "flow.csv / hubs.csv", False)
+            for field in ("lead_h", "build_h", "review_h", "queue_h", "ci_min"):
+                self.stats(prefix + "flow." + field, [r[field] for r in flows], "flow.csv; stage=" + st)
+            self.metric(prefix + "review_cost_usd", sum(r["cost_usd"] or 0 for r in agents if r["is_review"]), "agents.csv; strict review")
+            self.metric(prefix + "wakes", sum(r["stage"] == st for r in self.rows["wakes"]), "wakes.csv")
+            self.metric(prefix + "wakes_no_tool", sum(r["stage"] == st and not r["tools"] for r in self.rows["wakes"]), "wakes.csv")
+            self.stats(prefix + "latency_min", [r["latency_min"] for r in self.rows["latency"] if r["stage"] == st], "latency.csv")
+        dimensions = defaultdict(list)
+        for r in self.rows["agents"]:
+            dimensions[r["engine"], r["model"], r["effort"]].append(r)
+        for (engine, model, effort), rr in dimensions.items():
+            prefix = f"model.{engine}.{model}.{effort}."
+            self.metric(prefix + "agents", len(rr), "agents.csv")
+            self.metric(prefix + "turns", sum(r["turns"] for r in rr), "agents.csv")
+            self.metric(prefix + "cost_usd", sum(r["cost_usd"] or 0 for r in rr) if engine == "claude" else None, "agents.csv")
+            self.stats(prefix + "cost_usd", [r["cost_usd"] for r in rr], "agents.csv")
+            self.stats(prefix + "turns", [r["turns"] for r in rr], "agents.csv")
+        self.metric("agents.before_window_active", sum(when(m.get("started_at")) is not None and when(m["started_at"]) < self.since and any(self.inside(when(r.get("at"))) for r in m.get("runs", [])) for m in self.agent_meta.values()), "meta.json; pre-window start with in-window resume; excluded from cohort")
 
 
 def review_fields():
@@ -943,7 +1081,8 @@ def output(audit, out):
                             ("4. Status-to-hub latency", ("latency.",)), ("5. Period comparison", ()),
                             ("7. Cost", ("cost.",)), ("A. Feature flow", ("flow.", "await.")),
                             ("B. Stage closure", ("stages.",)), ("C. Autonomy", ("touches.", "questions.", "tells.")),
-                            ("D. Idle and brakes", ("gaps.", "ready.")), ("Lessons inventory", ("lessons.", "review_pending."))):
+                            ("D. Idle and brakes", ("gaps.", "ready.")), ("Lessons inventory", ("lessons.", "review_pending.")),
+                            ("Per-stage scorecard and cost/day", ("stage.",)), ("Model/effort comparison", ("model.",))):
         sections += ["\n## " + title, table(["metric", "value", "/day", "baseline", "baseline/day", "source"],
             [[name, r["value"], r["per_day"], r.get("baseline"), r.get("baseline_per_day"), r["source"]] for name, r in sorted(audit.metrics.items())
              if name.startswith(prefixes) or (not prefixes and "baseline" in r)])]
@@ -963,6 +1102,11 @@ def output(audit, out):
         if family == "gaps":
             rr = sorted(rr, key=lambda r: -r["hours"])[:10]
         sections += ["\n## " + title, table(keys, [[r.get(k) for k in keys] for r in rr])]
+    sections += ["\n## Window-fitted Claude token prices (USD / million)", table(["model", "input", "output", "cache read", "cache creation", "points"],
+        [[model] + rates + [len(audit.price_points[model])] for model, rates in sorted(audit.rates.items())])]
+    sections += ["\n## Top 10 Codex agents by input tokens", table(["stage", "role", "model", "effort", "turns", "input", "cached", "output", "source"],
+        [[r[k] for k in ("stage", "role", "model", "effort", "turns", "input_tokens", "cached_tokens", "output_tokens", "source")]
+         for r in sorted((r for r in audit.rows["agents"] if r["engine"] == "codex"), key=lambda r: -(r["input_tokens"] or 0))[:10]])]
     sections += ["\n## Coverage and interpretation", "A forge export supplies the complete merge universe; otherwise flow rows are observed journal candidates. "
         "First-time-right requires verified item joins and pipeline coverage. Stage plan completion, hanging status, owner-touch class, "
         "tell autonomy and unexplained gap causes require evidence in classification CSVs. Lessons are the current inventory, not a historical snapshot. "
@@ -997,6 +1141,13 @@ def main():
         if args.command == "plan":
             audit.plan(out, args.readers)
         else:
+            for option in ("forge", "classifications"):
+                supplied = getattr(args, option)
+                saved = win.get(option)
+                if supplied:
+                    win[option] = str(supplied.expanduser().resolve())
+                elif saved:
+                    setattr(args, option, Path(saved))
             audit.agents()
             audit.hubs()
             audit.registers()

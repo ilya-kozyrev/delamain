@@ -326,13 +326,20 @@ retro measure --out <audit-out>
 retro measure --out <audit-out> --baseline <previous-out> --classifications <audit-out>/classifications --forge <local-export-dir>
 ```
 
-`plan [--since T] [--until T] [--readers N] --out DIR` resolves the hub home with the shared `hubcore`
+`plan [--since T] [--until T] [--readers N] [--exclude-stage S] --out DIR` resolves the hub home with the shared `hubcore`
 resolver ([home precedence](#where-the-hubs-files-live)). All paths are derived from that home and the chosen
 output directory; no personal stage or repository name is required. The time window is half-open `[since, until)`:
 events at `since` count; events at `until` do not. Explicit offsets are honored; unzoned input uses
 `AGENT_HUB_TZ`. The saved `window.json` records the resolved window and assignments so workers share one scope.
-Baseline discovery uses the newest `<home>/*/coordinator/work/retro-*/metrics.json`; explicit `--baseline DIR`
-on measurement selects another prior output. Check the chosen baseline before making period comparisons.
+Baseline discovery selects the newest schema-version-1 `<home>/*/coordinator/work/retro-*/metrics.json` by its
+window's `until`, constrained to `until` ≤ the requested end and excluding the current output directory.
+An explicit `--baseline DIR` on measurement overrides the saved/discovered baseline. Without `--until`, planning
+uses now; measurement reuses saved `until` or now. Without `--since`, use saved window (measurement), otherwise
+the discovered prior end, otherwise seven days before `until`. `since` must be earlier than `until`.
+`HUB_STAGE` is excluded by default on a fresh plan; repeatable `--exclude-stage S` replaces that default list.
+Measurement preserves saved exclusions unless explicitly overridden. Check the chosen baseline and exclusions
+before comparing periods. Reader count defaults to `ceil(journal bytes / 400000)` (at least one); stages stay
+whole and reader count is capped by available active stages (one empty reader when no stages are active).
 
 Planning writes `window.json`, filled `brief-common.md`, partitioned `reader-01.md` (and subsequent readers),
 `brief-lessons.md`, `brief-classify.md`, `brief-verify.md`, `report.md` and `check-next.md`. Reader briefs receive
@@ -340,18 +347,31 @@ only their assigned stages; the other briefs receive the full stage list. The pl
 live under `skills/retro/resources/`. The skill instructs the hub to fill `report.md` and publish the completed
 follow-up checklist as `CHECK-NEXT.md`; creating a plan does not launch models or schedule later work.
 
-`measure --out DIR [--baseline DIR] [--since T] [--until T] [--classifications DIR] [--forge DIR]` reads the
+`measure --out DIR [--baseline DIR] [--since T] [--until T] [--classifications DIR] [--forge DIR] [--exclude-stage S]` reads the
 saved window unless timestamp overrides are supplied. It writes `metrics.json` (a flat dictionary whose metric
 entries contain `value`, `per_day` and `source`), `measure.md`, and CSV tables: `agents`, `hubs`, `wakes`,
-`latency`, `friction`, `flow`, `stages`, `touches`, `tells`, `gaps`, `lessons`, `questions` and `await`.
+`latency`, `friction`, `flow`, `stages`, `touches`, `tells`, `gaps`, `lessons`, `questions`, `ready` and `await`.
 The Markdown covers quantitative cost/turn/context/wake/friction/latency evidence plus A feature flow,
 B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,
 source coverage and unknown fields beside each conclusion.
 
 Classification is a separate evidence review. `--classifications DIR` reads reviewed `touches.csv`, `gaps.csv`,
-`flow.csv`, `stages.csv` and `tells.csv`, keyed by the original `id`, with `needs_review`, `class` and `evidence`.
-Use the accepted taxonomy in subcommand help; ambiguous rows retain `needs_review` until source evidence
-supports their class. Keep raw measurement CSVs intact and rerun measurement with the classification directory.
+`flow.csv`, `stages.csv`, `tells.csv`, `ready.csv` and `questions.csv`, keyed by the original `id`.
+Accepted reviewed rows contain `id,class,evidence,needs_review=false` (`0` also means false); rows still marked
+for review are skipped. Reviewed rows require a known id, supported class and nonempty evidence:
+
+| CSV | Accepted `class` values |
+|---|---|
+| touches | decision, unblock, correction, nudge, repeat, new task |
+| gaps | legit wait, missed wake, brake, permission brake |
+| flow | verified, duplicate, unattributed |
+| stages | hanging, complete, dropped, carried over |
+| tells | autonomous, escalated, notice, unanswered |
+| ready | open plan, complete |
+| questions | process, owner |
+
+Put brake ending details (owner-ended/self-ended/hanging) in evidence, rather than inventing subclasses.
+Ambiguous rows retain `needs_review` until source evidence supports their class. Keep raw measurement CSVs intact and rerun measurement with the classification directory.
 Metrics requiring semantic judgement remain null until supported; a script's silence does not establish autonomy,
 a brake or a completed plan. The [classification brief](../skills/retro/resources/brief-classify.md) defines
 what evidence to inspect for the A–D method.
