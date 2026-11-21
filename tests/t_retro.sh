@@ -530,6 +530,56 @@ def test_r2_1_resumed_hub_cost():
                 os.environ[key] = previous
     print('PASS R2-1 resumed SID fitted cost, current result, missing transcript, distinct worker')
 
+def test_r2_2_complete_project_path():
+    """R2-2: forge joins require the complete project path in qualified URLs."""
+    saved = {key: os.environ.get(key) for key in ('AGENT_HUB_HOME', 'CLAUDE_CONFIG_DIR')}
+    def scenario(label, repo, url, expected_id, expected_role, expected_join):
+        isolated = (out/('r2-2-home-'+label)).resolve()
+        config = (out/('r2-2-claude-'+label)).resolve()
+        stage = isolated/'joins'
+        forge = out/('r2-2-forge-'+label)
+        put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-1',
+            set_at='2026-01-01T00:00:00Z')}, 'retired': []})
+        put(stage/'agents/build/meta.json', dict(role='build', tag='build', engine='claude',
+            started_at='2026-01-01T00:00:00Z'))
+        put(stage/'coordinator/work/journal-2026-01-01.md',
+            f'- 01:00 [build] DONE {url} implemented\n')
+        put(forge/'forge-cache-mrs.json', {repo: [dict(iid=7,
+            created_at='2026-01-01T00:30:00Z', merged_at='2026-01-01T02:00:00Z')]})
+        os.environ.update(AGENT_HUB_HOME=str(isolated), CLAUDE_CONFIG_DIR=str(config))
+        target = out/('r2-2-'+label)
+        run('measure', '--out', target, '--forge', forge,
+            '--since', '2026-01-01', '--until', '2026-01-02')
+        flow = rows(target, 'flow')
+        assert len(flow) == 1, ('R2-2 single forge item', label, flow)
+        row = flow[0]
+        assert row['id'] == expected_id, ('R2-2 forge identity', label, row)
+        assert row['exec_role'] == expected_role, ('R2-2 complete project path executor', label, row)
+        assert row['join_method'] == expected_join, ('R2-2 project path attribution', label, row)
+    try:
+        scenario('gitlab-extra-prefix', 'org/repo',
+            'https://gitlab.example/other/org/repo/-/merge_requests/7',
+            'org/repo!7', '', 'unattributed/ambiguous')
+        scenario('gitlab-exact', 'org/repo',
+            'https://gitlab.example/org/repo/-/merge_requests/7',
+            'org/repo!7', 'build', 'unique item mention')
+        scenario('github-extra-prefix', 'org/repo',
+            'https://github.com/other/org/repo/pull/7',
+            'org/repo!7', '', 'unattributed/ambiguous')
+        scenario('github-exact', 'org/repo',
+            'https://github.com/org/repo/pull/7',
+            'org/repo!7', 'build', 'unique item mention')
+        scenario('insufficient-namespace', 'repo',
+            'https://gitlab.example/org/repo/-/merge_requests/7',
+            'repo!7', '', 'unattributed/ambiguous')
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+    print('PASS R2-2 exact GitLab/GitHub project paths, extra prefixes, insufficient namespace')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -547,7 +597,9 @@ if regression in (None, '7'):
     test_r1_7_fractional_window()
 if regression in (None, '2-1'):
     test_r2_1_resumed_hub_cost()
-if regression in ('1', '2', '3', '4', '5', '6', '7', '2-1'):
+if regression in (None, '2-2'):
+    test_r2_2_complete_project_path()
+if regression in ('1', '2', '3', '4', '5', '6', '7', '2-1', '2-2'):
     sys.exit(0)
 
 st = home/'alpha'
