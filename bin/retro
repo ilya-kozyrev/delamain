@@ -124,7 +124,13 @@ def tool_results(c):
 
 def ref_items(tx):
     # Bare numbers require later attribution; repository-qualified URLs stay distinct.
-    return {m.group(0).rstrip(".") if m.group(1) else "!" + (m.group(2) or m.group(3)) for m in ITEM.finditer(tx)}
+    refs = {m.group(0).rstrip(".") if m.group(1) else "!" + (m.group(2) or m.group(3)) for m in ITEM.finditer(tx)}
+    qualified = {item_number(r) for r in refs if r.startswith("http")}
+    return {r for r in refs if r.startswith("http") or item_number(r) not in qualified}
+
+
+def item_number(ref):
+    return str(int(ref.rsplit("/", 1)[-1].lstrip("!")))
 
 
 def journals(stage):
@@ -781,10 +787,11 @@ class Audit:
                 for item in items:
                     # Journal-only observations remain candidates: the same !N can exist in several repositories.
                     key = r["stage"] + "/" + item
-                    merges.setdefault(key, dict(repo="", iid=item, merged=r["at"], created=None, branch="", title=r["text"], source=r["source"], stage=r["stage"]))
+                    repo = item.rsplit("/", 1)[0] if item.startswith("http") else ""
+                    merges.setdefault(key, dict(repo=repo, iid=item_number(item), merged=r["at"], created=None, branch="", title=r["text"], source=r["source"], stage=r["stage"]))
         item_repos = defaultdict(set)
         for m in merges.values():
-            item_repos[m["iid"]].add(m["repo"])
+            item_repos[m["iid"]].add(m["repo"] or "stage:" + m["stage"])
         role_items = defaultdict(set)
         for r in all_lines:
             if TERMINAL.match(r["text"]):
@@ -793,6 +800,19 @@ class Audit:
             if meta.get("brief"):
                 role_items[st, meta.get("role") or role].update(ref_items(text(meta["brief"])[:6000]))
         for key, m in merges.items():
+            iid = m["iid"]
+            def names_item(refs, source_stage):
+                matching = [r for r in refs if item_number(r) == iid]
+                qualified = [r for r in matching if r.startswith("http")]
+                if qualified:
+                    if m["repo"].startswith("http"):
+                        return any(r.rsplit("/", 1)[0] == m["repo"] for r in qualified)
+                    if not m["repo"]:
+                        return False
+                    return any(r.rsplit("/", 1)[0].endswith(("/" + m["repo"] + "/-/merge_requests",
+                               "/" + m["repo"] + "/merge_requests", "/" + m["repo"] + "/pull")) for r in qualified)
+                return (bool(matching) and len(item_repos[iid]) == 1
+                        and (m["repo"] or source_stage == m["stage"]))
             candidates = []
             mentions = []
             for (st, role), meta in self.agent_meta.items():
@@ -801,8 +821,8 @@ class Audit:
                 branch = branch or meta.get("branch", "")
                 if m["branch"] and branch == m["branch"] and not role.startswith("review"):
                     candidates.append((st, role, meta))
-                if not role.startswith("review") and len(item_repos[m["iid"]]) == 1:
-                    if "!" + m["iid"] in role_items[st, role]:
+                if not role.startswith("review"):
+                    if names_item(role_items[st, role], st):
                         mentions.append((st, role, meta))
             match = candidates[0] if len(candidates) == 1 else mentions[0] if not candidates and len(mentions) == 1 else None
             join = "unique branch" if len(candidates) == 1 else "unique item mention" if match else "unattributed/ambiguous"
@@ -815,18 +835,19 @@ class Audit:
             eligible = [t for t in starts if created and t <= created + dt.timedelta(minutes=10)]
             spawn = max(eligible) if eligible else min(starts) if starts else created
             relevant = [r for r in all_lines if stage and r["stage"] == stage and (not spawn or r["at"] >= spawn) and r["at"] <= m["merged"]]
-            done = next((r["at"] for r in relevant if r["tag"] == role and re.match(r"^(DONE|BLOCKED|STOP|QUESTION)\b", r["text"])), None)
-            iid = m["iid"]
-            rv = [r for r in relevant if re.match(r"^REVIEWED\b", r["text"]) and ("!" + iid in ref_items(r["text"]) or re.search(r"(?<!\d)" + re.escape(iid) + r"(?!\d)", r["tag"]))]
-            item_awaits = [r for r in self.rows["await"] if "!" + iid in ref_items(r["text"].split(" — ")[0])
-                           and len(item_repos[iid]) == 1 and when(r["at"]) <= m["merged"] + dt.timedelta(minutes=5)
+            tag = match[2].get("tag") or role if match else role
+            done = next((r["at"] for r in relevant if r["tag"] == tag and re.match(r"^(DONE|BLOCKED|STOP|QUESTION)\b", r["text"])), None)
+            rv = [r for r in relevant if re.match(r"^REVIEWED\b", r["text"]) and (names_item(ref_items(r["text"]), r["stage"])
+                  or len(item_repos[iid]) == 1 and re.search(r"(?<!\d)" + re.escape(iid) + r"(?!\d)", r["tag"]))]
+            item_awaits = [r for r in self.rows["await"] if names_item(ref_items(r["text"].split(" — ")[0]), r["stage"])
+                           and when(r["at"]) <= m["merged"] + dt.timedelta(minutes=5)
                            and (not spawn or when(r["at"]) >= spawn - dt.timedelta(hours=1))]
             ci, train = [], []
             for r in item_awaits:
                 head = r["text"].split(" — ")[0]
                 is_ci = len(ref_items(head)) == 1 and r["verdict"] != "MERGED" and not re.search(r"окно|поезд|train|релиз", head, re.I)
                 (ci if is_ci else train).append(r)
-            queue = [when(r["at"]) for r in self.rows["tells"] if r["sender"] == stage and "!" + iid in ref_items(r["text"])
+            queue = [when(r["at"]) for r in self.rows["tells"] if r["sender"] == stage and names_item(ref_items(r["text"]), r["sender"])
                      and re.search(r"ready|request|прошу|готов|заявк|мерж", r["text"], re.I)
                      and (done or spawn or self.since) - dt.timedelta(minutes=30) <= when(r["at"]) <= m["merged"]]
             queue_start = min(queue) if queue else None

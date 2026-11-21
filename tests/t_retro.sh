@@ -243,6 +243,82 @@ def test_r1_3_distinct_owner_touches():
                 os.environ[key] = previous
     print('PASS R1-3 distinct owner messages, confirmed copies, date-only answers, stage identity')
 
+def test_r1_4_journal_item_joins():
+    """R1-4: journal-only item keys join evidence without guessing repositories."""
+    previous = os.environ.get('AGENT_HUB_HOME')
+    def fixture(label):
+        isolated = (out/('r1-4-home-'+label)).resolve()
+        stage = isolated/'joins'
+        put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-1',
+            set_at='2026-01-01T00:00:00Z')}, 'retired': []})
+        put(isolated/'queue/roles.json', {'roles': {}, 'retired': []})
+        os.environ['AGENT_HUB_HOME'] = str(isolated)
+        return isolated, stage
+    def agent(stage, role):
+        put(stage/f'agents/{role}/meta.json', dict(role=role, tag=role, engine='claude',
+            started_at='2026-01-01T00:00:00Z'))
+    def measure(label):
+        target = out/('r1-4-'+label)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02')
+        return rows(target, 'flow')
+    try:
+        for label, item in [('bare', 'PR #7'), ('url', 'https://github.com/org/project/pull/7')]:
+            isolated, stage = fixture(label)
+            agent(stage, 'build')
+            put(stage/'coordinator/work/journal-2026-01-01.md',
+                '- 00:00 [hub-1] started headless agent build (sonnet/high)\n'+
+                f'- 01:00 [build] DONE {item} implemented\n'+
+                f'- 01:30 [review] REVIEWED {item} approved\n'+
+                f'- 01:35 [hub-1-await] @hub PASSED {item} — https://ci.example/run/7 (exit 0, 10m, log /tmp/ci)\n'+
+                f'- 02:00 [hub-1] MERGED {item}\n')
+            put(isolated/'queue/coordinator/work/journal-2026-01-01.md',
+                f'- 01:40 [joins-hub-1] @hub ready {item} for merge\n')
+            flow = measure(label)
+            assert len(flow) == 1, ('R1-4 item identity', label, flow)
+            row = flow[0]
+            assert row['exec_role'] == 'build', ('R1-4 executor join', label, row)
+            assert dt.datetime.fromisoformat(row['spawn']) == dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc), ('R1-4 spawn', label, row)
+            for key, expected in {'lead_h': 2, 'build_h': 1, 'review_rounds': 1,
+                                  'review_h': .5, 'ci_awaits': 1, 'ci_min': 10, 'queue_h': 1/3}.items():
+                assert row[key] and math.isclose(float(row[key]), expected, abs_tol=1e-8), ('R1-4', label, key, row[key], expected)
+
+        isolated, stage = fixture('repo-ambiguity')
+        url_a = 'https://github.com/org/repo-a/pull/7'
+        url_b = 'https://github.com/org/repo-b/pull/7'
+        for role in ('build-a', 'build-b', 'build-ambiguous'):
+            agent(stage, role)
+        put(stage/'coordinator/work/journal-2026-01-01.md',
+            '- 00:40 [build-ambiguous] DONE PR #7 unqualified work\n'+
+            f'- 01:00 [build-a] DONE {url_a} implemented A\n'+
+            f'- 01:10 [build-b] DONE {url_b} implemented B\n'+
+            f'- 01:20 [review-a] REVIEWED {url_a} approved A\n'+
+            f'- 01:30 [review-b] REVIEWED {url_b} approved B\n'+
+            '- 01:40 [review-ambiguous] REVIEWED PR #7 ambiguous review\n'+
+            f'- 01:45 [hub-1-await] @hub PASSED {url_a} — https://ci.example/a (exit 0, 10m, log /tmp/a)\n'+
+            f'- 01:50 [hub-1-await] @hub PASSED {url_b} — https://ci.example/b (exit 0, 20m, log /tmp/b)\n'+
+            '- 01:55 [hub-1-await] @hub PASSED PR #7 — https://ci.example/unknown (exit 0, 30m, log /tmp/unknown)\n'+
+            f'- 02:00 [hub-1] MERGED {url_a}\n'+
+            f'- 02:05 [hub-1] MERGED {url_b}\n'+
+            '- 02:10 [hub-1] MERGED PR #7 ambiguous observation\n')
+        flow = measure('repo-ambiguity')
+        assert len(flow) == 3 and len({row['id'] for row in flow}) == 3, ('R1-4 distinct repository keys', flow)
+        for line, role, ci_minutes in [(10, 'build-a', 10), (11, 'build-b', 20)]:
+            source = str(stage/'coordinator/work/journal-2026-01-01.md')+f':{line}'
+            matches = [row for row in flow if row['source'] == source]
+            assert len(matches) == 1, ('R1-4 qualified item missing', source, flow)
+            row = matches[0]
+            assert row['exec_role'] == role, ('R1-4 cross-repository executor join', row)
+            assert int(row['review_rounds']) == 1 and int(row['ci_awaits']) == 1, ('R1-4 ambiguous bare evidence must not join', row)
+            assert float(row['ci_min']) == ci_minutes, ('R1-4 cross-repository CI join', row)
+        ambiguous = [row for row in flow if row['source'] == str(stage/'coordinator/work/journal-2026-01-01.md')+':12']
+        assert len(ambiguous) == 1 and not ambiguous[0]['exec_role'] and ambiguous[0]['needs_review'].lower() == 'true', ('R1-4 bare number must remain ambiguous', ambiguous)
+    finally:
+        if previous is None:
+            os.environ.pop('AGENT_HUB_HOME', None)
+        else:
+            os.environ['AGENT_HUB_HOME'] = previous
+    print('PASS R1-4 bare and qualified journal joins, review/CI/queue timing, repository ambiguity')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -250,7 +326,9 @@ if regression in (None, '2'):
     test_r1_2_run_tag_and_uncertainty()
 if regression in (None, '3'):
     test_r1_3_distinct_owner_touches()
-if regression in ('1', '2', '3'):
+if regression in (None, '4'):
+    test_r1_4_journal_item_joins()
+if regression in ('1', '2', '3', '4'):
     sys.exit(0)
 
 st = home/'alpha'
