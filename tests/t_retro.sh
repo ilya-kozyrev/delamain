@@ -352,6 +352,65 @@ def test_r1_5_half_open_hub_overlap():
             os.environ['AGENT_HUB_HOME'] = previous
     print('PASS R1-5 half-open registration boundaries, prior window, one-second overlap, shift denominator')
 
+def test_r1_6_missing_classifications():
+    """R1-6: missing classification directories cannot erase reviewed results."""
+    previous = os.environ.get('AGENT_HUB_HOME')
+    isolated = (out/'r1-6-home').resolve()
+    target = out/'r1-6-measured'
+    classifications = out/'r1-6-classifications'
+    empty = out/'r1-6-empty-classifications'
+    empty.mkdir()
+    classifications.mkdir()
+    put(isolated/'classified/roles.json', {'roles': {}, 'retired': []})
+    put(isolated/'classified/coordinator/work/journal-2026-01-01.md',
+        '- 10:00 [owner] Please continue the implementation\n')
+    def snapshot_outputs():
+        return {str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in target.rglob('*') if p.is_file()}
+    def rejected(label, *args, destination=target):
+        result = run('measure', '--out', destination, *args, ok=False)
+        error = (result.stdout+'\n'+result.stderr).lower()
+        assert 'classif' in error and 'director' in error, ('R1-6 actionable directory error', label, error)
+        assert snapshot_outputs() == reviewed, ('R1-6 classified outputs modified on failure', label)
+    try:
+        os.environ['AGENT_HUB_HOME'] = str(isolated)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02',
+            '--classifications', empty)
+        assert value(data(target), 'touches.count') == 1 and value(data(target), 'touches.nudge') is None
+        touches = rows(target, 'touches')
+        touches[0].update(needs_review='false', **{'class': 'nudge', 'evidence': 'fixture owner request verified'})
+        with (classifications/'touches.csv').open('w') as f:
+            writer = csv.DictWriter(f, fieldnames=touches[0].keys())
+            writer.writeheader()
+            writer.writerows(touches)
+        # Other classification families are intentionally absent: partial directories are supported.
+        run('measure', '--out', target, '--classifications', classifications)
+        assert value(data(target), 'touches.nudge') == 1, 'R1-6 partial directory must apply classification'
+        reviewed = snapshot_outputs()
+        assert 'metrics.json' in reviewed and 'window.json' in reviewed and 'touches.csv' in reviewed
+
+        classifications.rename(out/'r1-6-moved-classifications')
+        rejected('saved-missing-directory')
+        rejected('explicit-missing-directory', '--classifications', out/'r1-6-typo')
+        regular_file = out/'r1-6-regular-file'
+        put(regular_file, 'This path is a file, not a classification directory.\n')
+        rejected('explicit-regular-file', '--classifications', regular_file)
+        fresh = out/'r1-6-invalid-new-output'
+        rejected('new-output-missing-directory', '--since', '2026-01-01', '--until', '2026-01-02',
+                 '--classifications', out/'r1-6-typo', destination=fresh)
+        assert not any(p.is_file() for p in fresh.rglob('*')), 'R1-6 invalid directory must not produce result files'
+
+        # An explicit existing empty directory is a deliberate request to measure without classifications.
+        run('measure', '--out', target, '--classifications', empty)
+        assert value(data(target), 'touches.count') == 1 and value(data(target), 'touches.nudge') is None
+        assert rows(target, 'touches')[0]['needs_review'].lower() == 'true'
+    finally:
+        if previous is None:
+            os.environ.pop('AGENT_HUB_HOME', None)
+        else:
+            os.environ['AGENT_HUB_HOME'] = previous
+    print('PASS R1-6 partial/empty classification directories, missing saved/explicit paths, immutable failed outputs')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -363,7 +422,9 @@ if regression in (None, '4'):
     test_r1_4_journal_item_joins()
 if regression in (None, '5'):
     test_r1_5_half_open_hub_overlap()
-if regression in ('1', '2', '3', '4', '5'):
+if regression in (None, '6'):
+    test_r1_6_missing_classifications()
+if regression in ('1', '2', '3', '4', '5', '6'):
     sys.exit(0)
 
 st = home/'alpha'

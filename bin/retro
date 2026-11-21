@@ -1248,18 +1248,20 @@ def main():
         home = hc.home().path.resolve()
         win = window(args, home)
         out = args.out.expanduser().resolve()
+        if args.command == "measure":
+            for option in ("forge", "classifications"):
+                supplied = getattr(args, option)
+                if supplied:
+                    win[option] = str(supplied.expanduser().resolve())
+                if win.get(option):
+                    setattr(args, option, Path(win[option]))
+            if args.classifications is not None and not args.classifications.is_dir():
+                raise ValueError(f"classification directory does not exist or is not a directory: {args.classifications}")
         out.mkdir(parents=True, exist_ok=True)
         audit = Audit(home, win)
         if args.command == "plan":
             audit.plan(out, args.readers)
         else:
-            for option in ("forge", "classifications"):
-                supplied = getattr(args, option)
-                saved = win.get(option)
-                if supplied:
-                    win[option] = str(supplied.expanduser().resolve())
-                elif saved:
-                    setattr(args, option, Path(saved))
             audit.agents()
             audit.hubs()
             audit.registers()
