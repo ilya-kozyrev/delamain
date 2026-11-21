@@ -456,7 +456,7 @@ class Audit:
             seen = set()
             for e in sorted(entries, key=lambda e: e.get("set_at", "")):
                 start, end = when(e.get("set_at")), when(e.get("retired_at")) or self.until
-                if not start or end < self.since or start >= self.until:
+                if not start or end <= self.since or start >= self.until:
                     continue
                 sid = e.get("cli_session_id") or e.get("session") or ""
                 engine = e.get("engine") or "claude"

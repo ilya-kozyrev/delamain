@@ -319,6 +319,39 @@ def test_r1_4_journal_item_joins():
             os.environ['AGENT_HUB_HOME'] = previous
     print('PASS R1-4 bare and qualified journal joins, review/CI/queue timing, repository ambiguity')
 
+def test_r1_5_half_open_hub_overlap():
+    """R1-5: hub registrations intersect retrospective windows as [start, end)."""
+    previous = os.environ.get('AGENT_HUB_HOME')
+    def scenario(label, start, end, expected_hours, since='2026-01-02', until='2026-01-03'):
+        isolated = (out/('r1-5-home-'+label)).resolve()
+        stage = isolated/'boundary'
+        put(stage/'roles.json', {'roles': {}, 'retired': [dict(role='hub', tag='hub-1',
+            engine='claude', set_at=start, retired_at=end)]})
+        put(stage/f'coordinator/work/journal-{since}.md', '- 12:00 [hub-1] MERGED PR #5\n')
+        os.environ['AGENT_HUB_HOME'] = str(isolated)
+        target = out/('r1-5-'+label)
+        run('measure', '--out', target, '--since', since, '--until', until)
+        metrics, hubs = data(target), rows(target, 'hubs')
+        count = int(expected_hours > 0)
+        assert value(metrics, 'hubs.registered') == count and len(hubs) == count, ('R1-5', label, hubs, metrics['hubs.registered'])
+        assert value(metrics, 'flow.merged_observed') == 1, ('R1-5 merge positive control', label)
+        registered_hours = sum(float(row['registered_h']) for row in hubs)
+        assert math.isclose(registered_hours, expected_hours, abs_tol=1e-10), ('R1-5 clipped overlap', label, registered_hours, expected_hours)
+        assert value(metrics, 'flow.per_shift') == (1 if count else None), ('R1-5 shift denominator', label, metrics['flow.per_shift'])
+    try:
+        scenario('end-at-since', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 0)
+        scenario('previous-window', '2026-01-01T00:00:00Z', '2026-01-02T00:00:00Z', 24,
+                 since='2026-01-01', until='2026-01-02')
+        scenario('one-second-overlap', '2026-01-01T00:00:00Z', '2026-01-02T00:00:01Z', 1/3600)
+        scenario('start-at-until', '2026-01-03T00:00:00Z', '2026-01-04T00:00:00Z', 0)
+        scenario('end-before-since', '2026-01-01T00:00:00Z', '2026-01-01T23:59:59Z', 0)
+    finally:
+        if previous is None:
+            os.environ.pop('AGENT_HUB_HOME', None)
+        else:
+            os.environ['AGENT_HUB_HOME'] = previous
+    print('PASS R1-5 half-open registration boundaries, prior window, one-second overlap, shift denominator')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -328,7 +361,9 @@ if regression in (None, '3'):
     test_r1_3_distinct_owner_touches()
 if regression in (None, '4'):
     test_r1_4_journal_item_joins()
-if regression in ('1', '2', '3', '4'):
+if regression in (None, '5'):
+    test_r1_5_half_open_hub_overlap()
+if regression in ('1', '2', '3', '4', '5'):
     sys.exit(0)
 
 st = home/'alpha'
