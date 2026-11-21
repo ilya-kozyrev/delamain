@@ -13,6 +13,8 @@ filenames in `classifications/`; retain `id` and add/fill `needs_review`, `class
 `retro measure --help`. Evidence is file:line/time plus ≤25-word quote. Keep `needs_review` true until evidence
 supports the class; accepted classifications set it false. Preserve unknown fields and source ids. Use only
 CLI-supported classes; report a missing class as unresolved rather than inventing accepted vocabulary.
+For verified joins, fill evidenced flow timestamps/counts, stage plan counts or tell `reply_at` as described in
+the command reference. Measurement recomputes segments; classification supplies evidence, not metric totals.
 
 Taxonomy: owner touches = decision (money/product/outside company), unblock, correction, nudge, repeat,
 new task. Gaps = legit wait, missed wake, brake, permission brake; put owner-ended/self-ended/hanging details in evidence.

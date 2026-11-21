@@ -348,8 +348,9 @@ live under `skills/retro/resources/`. The skill instructs the hub to fill `repor
 follow-up checklist as `CHECK-NEXT.md`; creating a plan does not launch models or schedule later work.
 
 `measure --out DIR [--baseline DIR] [--since T] [--until T] [--classifications DIR] [--forge DIR] [--exclude-stage S]` reads the
-saved window unless timestamp overrides are supplied. It writes `metrics.json` (a flat dictionary whose metric
-entries contain `value`, `per_day` and `source`), `measure.md`, and CSV tables: `agents`, `hubs`, `wakes`,
+saved window unless timestamp overrides are supplied. It writes `metrics.json` (`schema_version`, `window`, a flat
+`metrics` dictionary, fitted prices and coverage warnings; metric entries contain `value`, `per_day` and `source`),
+`measure.md`, and CSV tables: `agents`, `hubs`, `wakes`,
 `latency`, `friction`, `flow`, `stages`, `touches`, `tells`, `gaps`, `lessons`, `questions`, `ready` and `await`.
 The Markdown covers quantitative cost/turn/context/wake/friction/latency evidence plus A feature flow,
 B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,
@@ -375,6 +376,13 @@ Ambiguous rows retain `needs_review` until source evidence supports their class.
 Metrics requiring semantic judgement remain null until supported; a script's silence does not establish autonomy,
 a brake or a completed plan. The [classification brief](../skills/retro/resources/brief-classify.md) defines
 what evidence to inspect for the A–D method.
+
+Verified flow rows may correct `stage`, `exec_role`, `spawn`, `done`, `review_end`, `queue_start`, `review_rounds`,
+`red_cycles` and `ci_min`; timestamps must precede the merge and numeric counts must be finite and nonnegative.
+The tool recomputes segments and first-time-right from these evidenced fields. Stage rows may supply
+`plan_done`, `plan_dropped`, `plan_carried`, `plan_total` (parts must sum to total); tell rows may supply `reply_at`
+inside the remaining window. Accepted input paths are retained in `window.json` for the next measurement.
+Flow baselines with forge coverage are compared only with forge-covered runs, rather than journal candidates.
 
 `--forge DIR` reads existing local `forge-cache-mrs.json` and `forge-cache-pipelines.json` exports through the
 forge export adapter; it never contacts the forge. Missing fields remain null. Without complete exports,

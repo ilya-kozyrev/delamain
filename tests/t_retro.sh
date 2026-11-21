@@ -49,6 +49,7 @@ put(st/'coordinator/work/journal-2026-01-01.md', '''# Journal
 - 01:05 [hub-1-await] @hub FAILED MR !7 — https://forge/a/merge_requests/7 (exit 1, 2m30s, log /tmp/x)
 - 01:06 [hub-1] @hub FAILED quoted await (exit 1, 2m30s, log /tmp/x)
 - 01:07 [hub-1-await] @hub PASSED MR !7 — https://forge/a/merge_requests/7 (exit 0, 1h2m3s, log /tmp/x)
+- 01:08 [hub-1-await] @hub FAILED train MR !99 (killed by signal 15 after 3m, log /tmp/x)
 - 02:00 [hub-1] MERGED MR !7
 - 02:01 [hub-1] started headless agent next (sonnet/high)
 - 03:00 [next] DONE next item
@@ -163,11 +164,11 @@ for k,want in {'agents.count':3,'agents.claude.cost_usd':12,'agents.claude.turns
     'hubs.active':1,'hubs.messages':3,
     'hubs.compactions':1,'wakes.watchdog':1,'wakes.watchdog.no_tool':1,'wakes.notif':1,'wakes.notif.no_tool':0,
     'latency.events':2,'watchdog.wakes':1,'watchdog.dead_turn_wakes':1,'watchdog.failed_wakes':1,'watchdog.notifications':1,
-    'watchdog.jwait_mismatches':1,'guards.decisions':1,'await.FAILED.count':1,'await.PASSED.count':1,
+    'watchdog.jwait_mismatches':1,'guards.decisions':1,'await.FAILED.count':2,'await.PASSED.count':1,
     'questions.asked':1,'questions.decided':1,'lessons.count':2,'lessons.promotable':1,'lessons.retired':1,
     'tells.count':2,'flow.merged_observed':1,'friction.plugin hook: polling guard':1,'stages.closed':1}.items():
     assert value(m,k)==want,(k,value(m,k),want)
-assert value(m,'await.FAILED.duration_min')==2.5
+assert value(m,'await.FAILED.duration_min')==5.5
 assert value(m,'await.PASSED.duration_min')==62.05
 assert value(m,'flow.first_time_right') is None
 assert value(m,'flow.red_cycles_per_merge')==1

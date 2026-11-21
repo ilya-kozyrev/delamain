@@ -30,7 +30,8 @@ TERMINAL = re.compile(r"^(DONE|BLOCKED|STOP|QUESTION|MERGED|EXIT|ENDED|REVIEWED)
 EXCLUDE_AGENT = re.compile(r"^(hub(-\d+)?|hub-\d+-await|watchdog|pace|owner|.*-hub-\d+|.*-await)$")
 START = re.compile(r"^started headless agent (\S+) \(")
 RESUME = re.compile(r"^@(\S+) \(session resumed")
-AWAIT = re.compile(r"^@hub (\w+)\b.*\(exit (-?\d+), ((?:\d+h)?(?:\d+m)?(?:\d+s)?)(?:[,)]|$)")
+AWAIT = re.compile(r"^@hub (\w+)\b")
+AWAIT_DETAIL = re.compile(r"\((?:exit (-?\d+), |(?:killed|interrupted) by signal (\d+) after )((?:\d+h)?(?:\d+m)?(?:\d+s)?)(?:[,)]|$)")
 WD = re.compile(r"^\s*\[(delamain|agent-hub) watchdog\]")
 ITEM = re.compile(r"https?://[^\s)>,]+/(?:merge_requests|pull)/(\d+)|(?<![\w/])!(\d+)\b|\b(?:MR|PR)\s*[!#]?(\d+)\b")
 TOUCH_CLASSES = {"decision", "unblock", "correction", "nudge", "repeat", "new task"}
@@ -542,9 +543,11 @@ class Audit:
                             reply_at=iso(reply["at"]) if reply else "", latency_min=(reply["at"] - r["at"]).total_seconds() / 60 if reply else None,
                             text=tx[:300], source=r["source"]))
                 if tag.endswith("-await") and (m := AWAIT.match(tx)):
-                    duration = sum(int(num) * {"h": 3600, "m": 60, "s": 1}[unit] for num, unit in re.findall(r"(\d+)([hms])", m[3]))
-                    self.rows["await"].append(dict(stage=st, at=iso(r["at"]), start=iso(r["at"] - dt.timedelta(seconds=duration)),
-                        verdict=m[1], exit_code=int(m[2]), duration_min=duration / 60, text=tx, source=r["source"]))
+                    detail = AWAIT_DETAIL.search(tx)
+                    duration = sum(int(num) * {"h": 3600, "m": 60, "s": 1}[unit] for num, unit in re.findall(r"(\d+)([hms])", detail[3])) if detail else None
+                    self.rows["await"].append(dict(stage=st, at=iso(r["at"]), start=iso(r["at"] - dt.timedelta(seconds=duration)) if duration is not None else "",
+                        verdict=m[1], exit_code=int(detail[1]) if detail and detail[1] else -int(detail[2]) if detail else None,
+                        duration_min=duration / 60 if duration is not None else None, text=tx, source=r["source"]))
                 if tag == "watchdog":
                     self.friction(st, tag, "journal watchdog", r["source"], tx)
                 if tx.startswith("EXIT "):
@@ -570,7 +573,8 @@ class Audit:
         for word in {"PASSED", "DONE", "MERGED", "FAILED", "TIMEOUT", "CANCELLED", "CONFLICT"} | {r["verdict"] for r in self.rows["await"]}:
             rr = [r for r in self.rows["await"] if r["verdict"] == word]
             self.metric("await." + word + ".count", len(rr), "await.csv; only *-await protocol lines")
-            self.metric("await." + word + ".duration_min", sum(r["duration_min"] for r in rr), "await.csv")
+            self.metric("await." + word + ".duration_min", sum(r["duration_min"] or 0 for r in rr), "await.csv; known durations only")
+            self.metric("await." + word + ".duration_unknown", sum(r["duration_min"] is None for r in rr), "await.csv")
             self.stats("await." + word + ".duration_min", [r["duration_min"] for r in rr], "await.csv")
 
     def system_metrics(self):
@@ -774,7 +778,7 @@ class Audit:
                 spawn=iso(spawn), done=iso(done), review_end=iso(rv[-1]["at"]) if rv else "", queue_start=iso(queue_start), exec_role=role, join_method=join,
                 lead_h=hours(spawn, m["merged"]), build_h=hours(spawn, done),
                 review_h=hours(done, rv[-1]["at"]) if done and rv else 0 if done else None, review_rounds=len(rv) if stage else None,
-                ci_min=sum(r["duration_min"] for r in ci), ci_awaits=len(ci), ci_failed=sum(r["verdict"] in ("FAILED", "TIMEOUT") for r in ci),
+                ci_min=sum(r["duration_min"] or 0 for r in ci), ci_awaits=len(ci), ci_failed=sum(r["verdict"] in ("FAILED", "TIMEOUT") for r in ci),
                 train_failed=train_failed, red_cycles=red, queue_h=hours(queue_start, m["merged"]),
                 first_time_right=None, title=m["title"], source=m["source"], **review_fields()))
 
