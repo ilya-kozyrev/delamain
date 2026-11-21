@@ -1063,7 +1063,7 @@ def fit_prices(by_model):
 
 
 def write_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    hc.atomic_write(path, json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n")
 
 
 def write_brief(source, dest, values):
