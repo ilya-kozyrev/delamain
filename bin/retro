@@ -7,6 +7,7 @@ import bisect
 from collections import Counter, defaultdict
 import csv
 import datetime as dt
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -111,6 +112,10 @@ def content(c):
     if isinstance(c, str):
         return c
     return " ".join(b.get("text", "") for b in (c or []) if isinstance(b, dict) and b.get("type") == "text")
+
+
+def touch_key(tx):
+    return hashlib.sha256(" ".join(tx.split()).encode("utf-8")).hexdigest()
 
 
 def tool_results(c):
@@ -392,7 +397,8 @@ class Audit:
                       and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c or [] if isinstance(c, list))
                       and not tx.startswith(("[Request interrupted", "[Usage limit", "# Takeover brief", "Caveat:"))
                       and (touch_intervals is None or any(a <= t < b for a, b in touch_intervals))):
-                    self.rows["touches"].append(dict(id=source, stage=stage, at=iso(t), text=tx[:1200], source=source, **review_fields()))
+                    self.rows["touches"].append(dict(id=source, stage=stage, at=iso(t), text=tx[:1200], source=source,
+                        source_kind="transcript", content_key=touch_key(tx), **review_fields()))
             if not valid or not isinstance(c, list):
                 continue
             for b in c:
@@ -512,7 +518,8 @@ class Audit:
                     tx = content((common.get("message") or {}).get("content"))
                     if autopilot.owner_spoke(tx) and not tx.startswith(("#", "[$", "Files mentioned", "[Request interrupted")):
                         source = f"{path}:{n}"
-                        self.rows["touches"].append(dict(id=source, stage=stage, at=iso(at), text=tx[:1200], source=source, **review_fields()))
+                        self.rows["touches"].append(dict(id=source, stage=stage, at=iso(at), text=tx[:1200], source=source,
+                            source_kind="transcript", content_key=touch_key(tx), **review_fields()))
         return dict(messages=msgs, compactions=compact, peak_context=peak, input_tokens=max(0, tokens.get("input_tokens", 0) - before.get("input_tokens", 0)),
                     output_tokens=max(0, tokens.get("output_tokens", 0) - before.get("output_tokens", 0)), cost_usd=None, unpriced_messages=msgs, model="")
 
@@ -535,30 +542,33 @@ class Audit:
                     self.rows["questions"].append(row)
                 if e.kind_letter == "Q" and e.state == "answered" and self.inside(closed):
                     self.add_touch(dict(id=f"{st.name}/{e.id}", stage=st.name, at=iso(closed), text=e.status,
-                                        source=str(st / "questions.md"), **review_fields()), precision="day" if len(e.status.rsplit("(", 1)[-1].rstrip(")")) == 10 else "minute")
+                                        source=str(st / "questions.md"), source_kind="register", **review_fields()), precision="day" if len(e.status.rsplit("(", 1)[-1].rstrip(")")) == 10 else "minute")
             entries = hub.lessons_entries(st.name, text(st / "lessons.md")) or []
             for lid, cue, status, helped, hurt, written, head, status_line, lesson in entries:
                 self.rows["lessons"].append(dict(stage=st.name, id=lid, cue=cue, status=status, written_status=written,
                     helped=helped, hurt=hurt, lesson=lesson, source=f"{st / 'lessons.md'}:{head}"))
-        seen_broadcasts = set()
         for st, lines in self.lines.items():
             for r in lines:
                 if self.inside(r["at"]) and r["tag"] == "owner":
-                    broadcast = (r["at"], r["text"][:80])
-                    if broadcast in seen_broadcasts:
-                        continue
-                    seen_broadcasts.add(broadcast)
-                    self.add_touch(dict(id=r["source"], stage=st, at=iso(r["at"]), text=r["text"], source=r["source"], **review_fields()))
+                    self.add_touch(dict(id=r["source"], stage=st, at=iso(r["at"]), text=r["text"], source=r["source"],
+                                        source_kind="journal", **review_fields()))
 
     def add_touch(self, row, precision="minute"):
         t = when(row["at"])
-        # Registers and journals often echo the typed owner turn; retain the primary transcript evidence.
+        row["content_key"] = touch_key(row["text"])
+        # A time match is only a duplicate candidate, never proof of the same request.
         candidates = [r for r in self.rows["touches"] if r["stage"] == row["stage"] and when(r["at"])]
+        nearby = []
         for other in candidates:
             u = when(other["at"])
             if (precision == "minute" and abs((u - t).total_seconds()) <= 1200) or (precision == "day" and u.date() in (t.date(), t.date() - dt.timedelta(days=1))):
-                other["source"] += "; " + row["source"]
-                return
+                nearby.append(other)
+        copies = [r for r in nearby if r.get("source_kind") == "transcript" and row.get("source_kind") != "transcript"
+                  and r["content_key"] == row["content_key"]]
+        if len(copies) == 1:
+            copies[0]["source"] += "; " + row["source"]
+            return
+        row["possible_duplicate_of"] = "; ".join(r["id"] for r in nearby)
         self.rows["touches"].append(row)
 
     def journal_metrics(self):

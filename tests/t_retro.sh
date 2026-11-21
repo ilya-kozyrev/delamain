@@ -175,12 +175,82 @@ def test_r1_2_run_tag_and_uncertainty():
             os.environ['AGENT_HUB_HOME'] = previous
     print('PASS R1-2 custom run tags, confirmed terminals, uncertain caps and own lines, proven parallel exclusion')
 
+def test_r1_3_distinct_owner_touches():
+    """R1-3: proximity alone cannot erase distinct owner decisions or requests."""
+    isolated = (out/'r1-3-home').resolve()
+    stage = isolated/'requests'
+    config = (out/'r1-3-claude').resolve()
+    sid = '33333333-1111-2222-3333-444444444444'
+    transcript = config/'projects/requests'/f'{sid}.jsonl'
+    journal = stage/'coordinator/work/journal-2026-01-01.md'
+    saved = {key: os.environ.get(key) for key in ('AGENT_HUB_HOME', 'CLAUDE_CONFIG_DIR')}
+    put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-1', engine='claude',
+        set_at='2026-01-01T00:00:00Z', cli_session_id=sid)}, 'retired': []})
+    def typed(text):
+        jl(transcript, [dict(type='user', timestamp='2026-01-01T10:00:00Z',
+                            message={'content': text})])
+    def measure(label, count):
+        target = out/('r1-3-'+label)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02')
+        touches = rows(target, 'touches')
+        assert len(touches) == count and value(data(target), 'touches.count') == count, ('R1-3', label, count, touches)
+        assert all(row['needs_review'].lower() == 'true' for row in touches), ('R1-3 classifications still require evidence', touches)
+        return touches
+    try:
+        os.environ.update(AGENT_HUB_HOME=str(isolated), CLAUDE_CONFIG_DIR=str(config))
+        put(journal, '- 10:00 [owner] Approve feature A\n- 10:10 [owner] Start a separate feature B\n')
+        touches = measure('distinct-journal', 2)
+        assert {row['text'] for row in touches} == {'Approve feature A', 'Start a separate feature B'}
+
+        typed('Approve feature A')
+        put(journal, '- 10:10 [owner] Start a separate feature B\n')
+        touches = measure('distinct-transcript-journal', 2)
+        assert {row['text'] for row in touches} == {'Approve feature A', 'Start a separate feature B'}
+        assert any(str(transcript.resolve()) in row['source'] for row in touches)
+        assert any(str(journal.resolve()) in row['source'] for row in touches)
+
+        put(journal, '- 10:10 [owner] Approve feature A\n')
+        touches = measure('confirmed-copy', 1)
+        assert touches[0]['text'] == 'Approve feature A'
+        assert str(transcript.resolve()) in touches[0]['source'] and str(journal.resolve()) in touches[0]['source'], 'R1-3 confirmed copy must retain both evidence sources'
+
+        # Two date-only answers are independent decisions even with identical answer text.
+        put(journal, '- 10:10 [owner] Start a separate feature B\n')
+        put(stage/'questions.md', '''# Questions
+## Q-R-001 — Approve the separate deployment
+- asked: 2026-01-01 08:00
+- status: answered: yes (2026-01-01)
+## Q-R-002 — Approve the unrelated hiring plan
+- asked: 2026-01-01 09:00
+- status: answered: yes (2026-01-01)
+''')
+        touches = measure('independent-date-only-answers', 4)
+        assert {'requests/Q-R-001', 'requests/Q-R-002'} <= {row['id'] for row in touches}, ('R1-3 date-only answers lost', touches)
+        assert {'Approve feature A', 'Start a separate feature B'} <= {row['text'] for row in touches}
+
+        put(stage/'questions.md', '# Questions\n')
+        jl(transcript, [])
+        put(journal, '- 10:00 [owner] Approve feature A\n')
+        put(isolated/'other/roles.json', {'roles': {}, 'retired': []})
+        put(isolated/'other/coordinator/work/journal-2026-01-01.md', '- 10:00 [owner] Approve feature A\n')
+        touches = measure('same-content-different-stages', 2)
+        assert {row['stage'] for row in touches} == {'requests', 'other'}, 'R1-3 stage identity must survive equal content and timestamps'
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+    print('PASS R1-3 distinct owner messages, confirmed copies, date-only answers, stage identity')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
 if regression in (None, '2'):
     test_r1_2_run_tag_and_uncertainty()
-if regression in ('1', '2'):
+if regression in (None, '3'):
+    test_r1_3_distinct_owner_touches()
+if regression in ('1', '2', '3'):
     sys.exit(0)
 
 st = home/'alpha'
