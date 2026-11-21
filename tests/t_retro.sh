@@ -580,6 +580,44 @@ def test_r2_2_complete_project_path():
                 os.environ[key] = previous
     print('PASS R2-2 exact GitLab/GitHub project paths, extra prefixes, insufficient namespace')
 
+def test_r2_3_review_reference_precedence():
+    """R2-3: a numeric reviewer tag cannot override an explicit foreign item."""
+    previous = os.environ.get('AGENT_HUB_HOME')
+    url = 'https://github.com/org/repo-a/pull/7'
+    def scenario(label, review, expected_rounds, expected_end, expected_hours):
+        isolated = (out/('r2-3-home-'+label)).resolve()
+        stage = isolated/'reviews'
+        put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-1',
+            set_at='2026-01-01T00:00:00Z')}, 'retired': []})
+        put(stage/'agents/build/meta.json', dict(role='build', tag='build', engine='claude',
+            started_at='2026-01-01T00:00:00Z'))
+        put(stage/'coordinator/work/journal-2026-01-01.md',
+            f'- 01:00 [build] DONE {url} implemented\n'+
+            f'- 01:30 [review-7] REVIEWED {review}\n'+
+            f'- 02:00 [hub-1] MERGED {url}\n')
+        os.environ['AGENT_HUB_HOME'] = str(isolated)
+        target = out/('r2-3-'+label)
+        run('measure', '--out', target, '--since', '2026-01-01', '--until', '2026-01-02')
+        flow = rows(target, 'flow')
+        assert len(flow) == 1, ('R2-3 single merged item', label, flow)
+        row = flow[0]
+        assert row['exec_role'] == 'build', ('R2-3 executor positive control', label, row)
+        assert int(row['review_rounds']) == expected_rounds, ('R2-3 review reference precedence', label, row)
+        assert row['review_end'] == expected_end, ('R2-3 review end', label, row)
+        assert float(row['review_h']) == expected_hours, ('R2-3 review duration', label, row)
+    try:
+        scenario('foreign-url', 'https://github.com/org/repo-b/pull/7 approved', 0, '', 0)
+        scenario('no-reference', 'approved', 1, '2026-01-01T01:30:00+00:00', .5)
+        scenario('matching-url', url+' approved', 1, '2026-01-01T01:30:00+00:00', .5)
+        scenario('different-bare-number', 'PR #8 approved', 0, '', 0)
+        scenario('matching-bare-number', 'PR #7 approved', 1, '2026-01-01T01:30:00+00:00', .5)
+    finally:
+        if previous is None:
+            os.environ.pop('AGENT_HUB_HOME', None)
+        else:
+            os.environ['AGENT_HUB_HOME'] = previous
+    print('PASS R2-3 explicit review references take precedence over numeric reviewer tags')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -599,7 +637,9 @@ if regression in (None, '2-1'):
     test_r2_1_resumed_hub_cost()
 if regression in (None, '2-2'):
     test_r2_2_complete_project_path()
-if regression in ('1', '2', '3', '4', '5', '6', '7', '2-1', '2-2'):
+if regression in (None, '2-3'):
+    test_r2_3_review_reference_precedence()
+if regression in ('1', '2', '3', '4', '5', '6', '7', '2-1', '2-2', '2-3'):
     sys.exit(0)
 
 st = home/'alpha'
