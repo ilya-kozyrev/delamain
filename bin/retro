@@ -478,7 +478,7 @@ class Audit:
                 if sid and sid in self.hub_costed_sids:
                     scan.pop("cost_usd", None)
                     cost_source = "duplicate SID; cost assigned to earlier registration"
-                elif logged:
+                elif logged and (scan.get("cost_usd") is None or logged["cost"] >= scan["cost_usd"]):
                     scan["cost_usd"] = logged["cost"]
                     cost_source = "headless result: " + logged["source"]
                 if sid and scan.get("cost_usd") is not None:
@@ -492,7 +492,7 @@ class Audit:
         self.metric("hubs.started", sum(self.inside(when(r["set_at"])) for r in rr), "hubs.csv")
         for k in ("messages", "input_tokens", "output_tokens", "compactions", "unpriced_messages"):
             self.metric("hubs." + k, sum(r.get(k, 0) for r in rr), "hubs.csv")
-        self.metric("hubs.cost_usd", sum(r.get("cost_usd") or 0 for r in rr), "hubs.csv; headless result once per registered SID, else window-fitted transcript lower bound")
+        self.metric("hubs.cost_usd", sum(r.get("cost_usd") or 0 for r in rr), "hubs.csv; max(headless cumulative result, window-fitted transcript) once per registered SID")
         self.metric("hubs.missing_transcripts", sum(not r["transcript"] for r in rr), "hubs.csv")
         for kind in ("notif", "watchdog"):
             wakes = [r for r in self.rows["wakes"] if r["kind"] == kind]

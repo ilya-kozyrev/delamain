@@ -360,8 +360,9 @@ B stage completion, C autonomy and D idle/brakes. Compare rates for unequal wind
 source coverage and unknown fields beside each conclusion.
 
 Registered hub session IDs own their dollars once across current and retired registrations. When a headless
-cohort log reports that SID's cumulative cost, `hubs.csv` uses it instead of estimating the same dollars from
-the transcript; otherwise the window-fitted estimate remains a lower bound. Agent rows preserve
+cohort log reports that SID's cumulative cost, `hubs.csv` uses the larger of that result and the window-fitted
+transcript estimate, so a stale result cannot hide resumed activity. Either available source remains a lower
+bound when the other is missing. Agent rows preserve
 `reported_cost_usd`, while `cost_usd` excludes dollars assigned to registered hubs. `cost_source` names the
 hub's source. Totals, hub share and cost/merge use these disjoint amounts.
 
