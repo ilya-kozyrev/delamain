@@ -17,6 +17,7 @@ from pathlib import Path
 import random
 import re
 import sys
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import hubcore as hc
@@ -809,8 +810,8 @@ class Audit:
                         return any(r.rsplit("/", 1)[0] == m["repo"] for r in qualified)
                     if not m["repo"]:
                         return False
-                    return any(r.rsplit("/", 1)[0].endswith(("/" + m["repo"] + "/-/merge_requests",
-                               "/" + m["repo"] + "/merge_requests", "/" + m["repo"] + "/pull")) for r in qualified)
+                    return any(re.sub(r"/(?:-/)?(?:merge_requests|pull)/\d+$", "", urlsplit(r).path).lstrip("/")
+                               == m["repo"] for r in qualified)
                 return (bool(matching) and len(item_repos[iid]) == 1
                         and (m["repo"] or source_stage == m["stage"]))
             candidates = []
