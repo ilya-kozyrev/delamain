@@ -62,7 +62,7 @@ def when(raw):
 
 
 def iso(t):
-    return t.isoformat(timespec="seconds") if t else ""
+    return t.isoformat() if t else ""
 
 
 def read(path, default=None):

@@ -411,6 +411,61 @@ def test_r1_6_missing_classifications():
             os.environ['AGENT_HUB_HOME'] = previous
     print('PASS R1-6 partial/empty classification directories, missing saved/explicit paths, immutable failed outputs')
 
+def test_r1_7_fractional_window():
+    """R1-7: persisted window precision preserves fractional half-open boundaries."""
+    saved = {key: os.environ.get(key) for key in ('AGENT_HUB_HOME', 'CLAUDE_CONFIG_DIR')}
+    def scenario(label, since, until):
+        isolated = (out/('r1-7-home-'+label)).resolve()
+        config = (out/('r1-7-claude-'+label)).resolve()
+        stage = isolated/'precision'
+        sid = '77777777-1111-2222-3333-444444444444'
+        start = dt.datetime.fromisoformat(since.replace('Z', '+00:00'))
+        end = dt.datetime.fromisoformat(until.replace('Z', '+00:00'))
+        middle = start+(end-start)/2
+        put(stage/'roles.json', {'roles': {'hub': dict(tag='hub-1', engine='claude',
+            set_at=since, cli_session_id=sid)}, 'retired': []})
+        put(stage/'agents/build/meta.json', dict(role='build', engine='claude',
+            started_at=middle.isoformat()))
+        transcript = [dict(type='user', timestamp=since, message={'content': 'Include owner at since'})]
+        for index, timestamp in enumerate((since, middle.isoformat(), until)):
+            transcript.append(dict(type='assistant', timestamp=timestamp,
+                message=dict(id=f'message-{index}', model='claude-test', content=[],
+                             usage={'input_tokens': 1})))
+        transcript.append(dict(type='user', timestamp=until, message={'content': 'Exclude owner at until'}))
+        jl(config/'projects/precision'/f'{sid}.jsonl', transcript)
+        os.environ.update(AGENT_HUB_HOME=str(isolated), CLAUDE_CONFIG_DIR=str(config))
+        target = out/('r1-7-'+label)
+        def window():
+            stored = json.loads((target/'window.json').read_text())
+            actual_start = dt.datetime.fromisoformat(stored['since'])
+            actual_end = dt.datetime.fromisoformat(stored['until'])
+            assert actual_start == start and actual_end == end and actual_start != actual_end, ('R1-7 window precision', label, stored)
+            expected_days = (end-start).total_seconds()/86400
+            assert math.isclose(stored['days'], expected_days, rel_tol=1e-12, abs_tol=1e-16), ('R1-7 fractional duration', label, stored['days'], expected_days)
+            return stored['since'], stored['until'], stored['days']
+        run('plan', '--out', target, '--since', since, '--until', until)
+        planned = window()
+        for repetition in range(2):
+            # Both measurements consume the persisted boundaries without overriding them.
+            run('measure', '--out', target)
+            assert window() == planned, ('R1-7 window changed during measure', label, repetition)
+            metrics = data(target)
+            assert value(metrics, 'agents.count') == 1, ('R1-7 fractional agent start lost', label, metrics['agents.count'])
+            assert value(metrics, 'hubs.messages') == 2, ('R1-7 since included/until excluded', label, metrics['hubs.messages'])
+            assert value(metrics, 'touches.count') == 1, ('R1-7 owner boundary inclusion', label, metrics['touches.count'])
+            assert rows(target, 'touches')[0]['text'] == 'Include owner at since'
+    try:
+        scenario('fractional', '2026-01-01T00:00:00.1Z', '2026-01-01T00:00:00.9Z')
+        scenario('microseconds', '2026-01-01T00:00:00.123456Z', '2026-01-01T00:00:00.923456Z')
+        scenario('whole-seconds', '2026-01-01T00:00:00Z', '2026-01-01T00:00:01Z')
+    finally:
+        for key, previous in saved.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+    print('PASS R1-7 fractional/microsecond/whole-second windows, persisted reruns, half-open event boundaries')
+
 regression = os.environ.get('RETRO_REGRESSION')
 if regression in (None, '1'):
     test_r1_1_headless_hub_cost()
@@ -424,7 +479,9 @@ if regression in (None, '5'):
     test_r1_5_half_open_hub_overlap()
 if regression in (None, '6'):
     test_r1_6_missing_classifications()
-if regression in ('1', '2', '3', '4', '5', '6'):
+if regression in (None, '7'):
+    test_r1_7_fractional_window()
+if regression in ('1', '2', '3', '4', '5', '6', '7'):
     sys.exit(0)
 
 st = home/'alpha'
