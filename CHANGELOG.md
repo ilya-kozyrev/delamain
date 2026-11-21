@@ -6,7 +6,8 @@
   verification briefs; `retro measure` writes source-linked quantitative and A–D delivery scorecards, CSVs and
   flat metrics for comparison with the previous audit. The `retro` skill ties evidence extraction, classification,
   independent verification and the next `CHECK-NEXT.md` together. Audited homes stay read-only; missing data
-  stays unknown, and local forge exports are optional without network calls.
+  stays unknown, and local forge exports are optional without network calls. Registered headless hubs have a
+  single dollar source; inferred executor endings and ambiguous owner-message copies remain reviewable.
 
 ## 1.0.27 — 2026-11-08
 

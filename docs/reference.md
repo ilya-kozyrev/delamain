@@ -341,6 +341,8 @@ the discovered prior end, otherwise seven days before `until`. `since` must be e
 Measurement preserves saved exclusions unless explicitly overridden. Check the chosen baseline and exclusions
 before comparing periods. Reader count defaults to `ceil(journal bytes / 400000)` (at least one); stages stay
 whole and reader count is capped by available active stages (one empty reader when no stages are active).
+ISO timestamp microseconds survive planning and repeated measurement. Registrations ending exactly at
+`since` and events exactly at `until` are excluded from the half-open window.
 
 Planning writes `window.json`, filled `brief-common.md`, partitioned `reader-01.md` (and subsequent readers),
 `brief-lessons.md`, `brief-classify.md`, `brief-verify.md`, `report.md` and `check-next.md`. Reader briefs receive
@@ -357,8 +359,21 @@ The Markdown covers quantitative cost/turn/context/wake/friction/latency evidenc
 B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,
 source coverage and unknown fields beside each conclusion.
 
+Registered hub session IDs own their dollars once across current and retired registrations. When a headless
+cohort log reports that SID's cumulative cost, `hubs.csv` uses it instead of estimating the same dollars from
+the transcript; otherwise the window-fitted estimate remains a lower bound. Agent rows preserve
+`reported_cost_usd`, while `cost_usd` excludes dollars assigned to registered hubs. `cost_source` names the
+hub's source. Totals, hub share and cost/merge use these disjoint amounts.
+
+Executor intervals bind journal tags through `meta.tag`. A matching terminal proves the interval's end;
+12/3-hour caps and last-line estimates remain `run_needs_review`, not confirmed legitimate waits. Touches
+are combined only for a unique identical-content copy across source kinds in the same stage; nearby messages
+with different content and independent register answers remain separate, with possible duplicate IDs for review.
+
 Classification is a separate evidence review. `--classifications DIR` reads reviewed `touches.csv`, `gaps.csv`,
 `flow.csv`, `stages.csv`, `tells.csv`, `ready.csv` and `questions.csv`, keyed by the original `id`.
+An explicit or saved classification path must be an existing directory; an invalid path fails before result
+files are written. A partial set of CSVs is supported; explicitly choosing an empty directory resets review.
 Accepted reviewed rows contain `id,class,evidence,needs_review=false` (`0` also means false); rows still marked
 for review are skipped. Reviewed rows require a known id, supported class and nonempty evidence:
 
@@ -391,6 +406,8 @@ journal MERGED candidates are an observed lower bound, and first-time-right stay
 review lines cannot establish zero failures or one review round. Source gaps also constrain costs, owner-touch
 coverage, item joins and historical lesson attribution. The audit reads source homes/transcripts/repositories
 and writes its chosen output directory; it adds no hooks, configuration, forge commands or automatic fixes.
+Journal item joins use numeric IDs separately from qualified repository URLs. Bare `PR #7`/`MR !7` joins
+require an unambiguous namespace; equal numbers in different repositories remain separate candidates.
 
 ## Cost and turn limits
 
