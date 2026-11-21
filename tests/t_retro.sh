@@ -38,7 +38,8 @@ def snapshot():
 st = home/'alpha'
 sid='aaaaaaaa-1111-2222-3333-444444444444'
 put(st/'roles.json', {'roles':{'hub':{'tag':'hub-1','engine':'claude','set_at':'2026-01-01T00:00:00Z','cli_session_id':sid}},'retired':[]})
-put(home/'beta/roles.json', {'roles':{},'retired':[]})
+put(home/'beta/roles.json', {'roles':{},'retired':[{'role':'hub','tag':'hub-2','set_at':'2026-01-01T00:00:00Z','retired_at':'2026-01-02T12:00:00Z'}]})
+put(home/'beta/stage.json', {'closed':{'at':'2026-01-02T12:00:00Z','why':'finished'}})
 put(st/'coordinator/work/journal-2026-01-01.md', '''# Journal
 - 00:00 [hub-1] started headless agent build (sonnet/high)
 - 01:00 [build] DONE MR !7 implemented
@@ -164,7 +165,7 @@ for k,want in {'agents.count':3,'agents.claude.cost_usd':12,'agents.claude.turns
     'latency.events':2,'watchdog.wakes':1,'watchdog.dead_turn_wakes':1,'watchdog.failed_wakes':1,'watchdog.notifications':1,
     'watchdog.jwait_mismatches':1,'guards.decisions':1,'await.FAILED.count':1,'await.PASSED.count':1,
     'questions.asked':1,'questions.decided':1,'lessons.count':2,'lessons.promotable':1,'lessons.retired':1,
-    'tells.count':2,'flow.merged_observed':1,'friction.plugin hook: polling guard':1}.items():
+    'tells.count':2,'flow.merged_observed':1,'friction.plugin hook: polling guard':1,'stages.closed':1}.items():
     assert value(m,k)==want,(k,value(m,k),want)
 assert value(m,'await.FAILED.duration_min')==2.5
 assert value(m,'await.PASSED.duration_min')==62.05
@@ -195,6 +196,7 @@ assert (planned/'CHECK-NEXT-test.md').exists()
 run('measure','--out',planned)
 assert data(planned)['agents.count']['baseline']==4
 assert data(planned)['agents.count']['baseline_per_day']==4
+assert 'baseline' not in data(planned)['flow.merged_observed'], 'forge universe cannot compare to journal-only coverage'
 explicit=out/'explicit'
 run('measure','--out',explicit,'--since','2026-01-01','--until','2026-01-03','--baseline',base,'--exclude-stage','alpha')
 assert data(explicit)['agents.count']['baseline']==4
@@ -210,6 +212,20 @@ with (classify/'touches.csv').open('w') as f:
     writer=csv.DictWriter(f,fieldnames=ts[0].keys());writer.writeheader();writer.writerows(ts)
 run('measure','--out',current,'--forge',forge,'--classifications',classify)
 assert value(data(current),'touches.nudge')==len(ts)
+flow=rows(current,'flow')
+flow[0].update(needs_review='false', **{'class':'verified','evidence':'fixture branch and pipeline export','queue_start':'2026-01-01T01:30:00Z'})
+with (classify/'flow.csv').open('w') as f:
+    writer=csv.DictWriter(f,fieldnames=flow[0].keys());writer.writeheader();writer.writerows(flow)
+stages=rows(current,'stages')
+for row in stages:
+    row.update(needs_review='false', **{'class':'complete','evidence':'fixture plan complete','plan_done':2,'plan_dropped':1,'plan_carried':0,'plan_total':3})
+with (classify/'stages.csv').open('w') as f:
+    writer=csv.DictWriter(f,fieldnames=stages[0].keys());writer.writeheader();writer.writerows(stages)
+run('measure','--out',current)
+assert value(data(current),'flow.first_time_right')==0
+assert value(data(current),'flow.queue_h.median')==.5
+assert value(data(current),'stages.plan_total')==3
+assert json.loads((current/'window.json').read_text())['readers'], 'measure must retain the plan reader split'
 ts[0]['evidence']=''
 with (classify/'touches.csv').open('w') as f:
     writer=csv.DictWriter(f,fieldnames=ts[0].keys());writer.writeheader();writer.writerows(ts)
