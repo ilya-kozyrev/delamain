@@ -20,8 +20,8 @@
   `AGENT_HUB_NIGHT`), a hub silent over 2 h while nothing of its stage runs (no agent, `await`, waiter or alarm of its
   session on any stage, grilling, blocking owner question or `watchdog quiet`; a dead turn is not a stall) is woken once
   per stall episode (until work of the stage runs again) with
-  `nothing runs in <stage>: continue the plan, or watchdog quiet --reason …, or roles retire hub`; a Desktop or Codex hub gets one
-  `nothing runs` notification instead. A pure `jwait --until/--for` alarm now marks itself (`<caller>.alarm.json`) so
+  `nothing runs in <stage>: continue the plan, or watchdog quiet --reason …, or roles retire hub`; a hub that cannot be woken (Desktop, a terminal or
+  unconfirmed Codex host) gets one `nothing runs` notification instead; the hub's own headless run rewritten by that wake is no work. A pure `jwait --until/--for` alarm now marks itself (`<caller>.alarm.json`) so
   the stall rule sees it; R3 ignores that file. A dormant `claude --bg` hub is nudged once before the dormant stop.
 
 - **The watchdog stops waking a hub into a wall and stops repeating itself to the owner's phone.** 08–21.11: ~190

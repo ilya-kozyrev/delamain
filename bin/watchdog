@@ -1188,12 +1188,14 @@ def session_waiter(tick: Tick, rec: dict) -> bool:
     return False
 
 
-def ran_since(stage: str, t) -> bool:
-    """Whether work of the stage started or ended after `t`: an agent's meta.json or an `await` log written since."""
+def ran_since(stage: str, t, hub_meta=None) -> bool:
+    """Whether work of the stage started or ended after `t`: an agent's meta.json or an `await` log written since. The
+    meta of the hub's own headless run (`hub_meta`) is no work: `agent send` rewrites it when the watchdog wakes the hub."""
     if t is None:
         return False
+    own = str(Path(hub_meta["dir"]) / "meta.json") if hub_meta else None
     paths = glob.glob(str(hc.root() / stage / "agents" / "*" / "meta.json")) + glob.glob(str(hc.work_dir(stage) / "await" / "*.log"))
-    return any((mtime_of(p) or t) > t for p in paths)
+    return any((mtime_of(p) or t) > t for p in paths if p != own)
 
 
 def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict, o=None) -> bool:
@@ -1201,12 +1203,12 @@ def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict, o=None) -> bool:
     the stage runs (stall_blocker), it has been silent STALL_AFTER and it is day (outside AGENT_HUB_NIGHT). It is woken
     once per stall episode; a hub that cannot be woken gets one notification instead (at most every NOTIFY_AGAIN). The
     episode ends when work of the stage ran after the wake (an answer of the hub alone does not end it) or the stage is
-    made quiet. A Codex hub (`o`, rule_hub's observation) is only notified. True when it acted."""
+    made quiet. `o` is rule_hub's observation of a Codex hub; woken or notified is decided by the hub's actual transport, not its engine. True when it acted."""
     stall = hs.get("stall") if isinstance(hs.get("stall"), dict) else None
-    if stall and ran_since(stage, parse_ts(stall.get("done"))):
+    meta = hc.detached(stage, rec)
+    if stall and ran_since(stage, parse_ts(stall.get("done")), meta):
         hs.pop("stall", None)  # checked before the silence: a short run between two long silences ends the episode
     sid = rec.get("cli_session_id") or rec.get("session") or ""
-    meta = hc.detached(stage, rec)
     path = session_effort.find_transcript((meta or {}).get("session_id") or sid) if o is None else None
     if path is None and not meta and not (o and o["last"]):
         return False  # no transcript and no run log: the hub's silence cannot be told, so it is not called a stall
@@ -1219,7 +1221,7 @@ def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict, o=None) -> bool:
         return False
     if (hs.get("stall") or {}).get("done") or tool("nightq").in_night(tick.now.replace(tzinfo=None)):
         return False
-    codex, o = o is not None, o or observe(tick, stage, rec)
+    o = o or observe(tick, stage, rec)
     last = newest(o["last"], parse_ts(rec.get("set_at")))
     if o["busy"] is True or o["dead"] or last is None or tick.now - last < STALL_AFTER:
         return False
@@ -1230,7 +1232,7 @@ def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict, o=None) -> bool:
     tag, silent = rec.get("tag") or "hub", minutes(tick.now - last)
     if not tick.dry:
         hs["stall"] = {"since": iso(last), "done": iso(tick.now)}
-    if codex or o["transport"] == "notify" or o["busy"] is not False:
+    if o["transport"] == "notify" or o["busy"] is not False:
         why = o["why"] or ("busy state unknown" if o["busy"] is None else f"{o['host']} host")
         tick.say(stage, "R3", f"nothing runs and {tag} ({o['host']}) has been silent {silent} min; not woken: {why}")
         told = parse_ts(hs.get("stall_told"))
