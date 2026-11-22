@@ -457,33 +457,62 @@ def outside_markup(text: str) -> list:
 # `L-001/L-005`, `L-001/002`) and the verdict word. Without a lesson id it is about the entry it sits under.
 LESSON_VERDICT_RE = re.compile(r"^\s*[-*]\s*verdict\b(.*)$", re.IGNORECASE)
 LESSON_IDS_RE = re.compile(r"\b(L-(?:[A-Z]+-)?)(\d{1,6})((?:/(?:L-(?:[A-Z]+-)?)?\d{1,6})*)\b")
-LESSON_WORD_RE = re.compile(r"\b(helped|hurt|no effect|confounded)\b", re.IGNORECASE)
+LESSON_WORDS = r"helped|hurt|no effect|confounded"
+LESSON_WORD_RE = re.compile(rf"\b({LESSON_WORDS})\b", re.IGNORECASE)
+LESSON_NOT_APPLIED_RE = re.compile(r"\b(?:ignored|skipped|not applied)\b", re.IGNORECASE)
+# One clause of a multi-lesson line: `L-MC-018 helped (…). L-MC-019 helped …`, `…; L-036 helped — …`, `L-005: helped`,
+# `L-004, L-011 no effect`, each at the start of the text or after `.`, `;`, `:` or `)`; the qualifier after the word runs
+# to the clause's evidence (`L-MC-018 hurt when skipped —` is not applied, so no verdict).
+LESSON_CLAUSE_RE = re.compile(
+    rf"(?:^|(?<=[.;:)])\s)\s*((?:{LESSON_ID_PAT}(?:/(?:L-(?:[A-Z]+-)?)?\d{{1,6}})*(?:,\s*)?)+):?\s+({LESSON_WORDS})\b"
+    r"([^—–(.;:]*)", re.IGNORECASE)
 LESSON_SHIFT_RE = re.compile(r"\bhub-\d+\b", re.IGNORECASE)
 LESSON_DATE_RE = re.compile(r"\b\d{4}-\d\d-\d\d\b|(?<![\d.])\d{1,2}\.\d\d(?![\d.])")
 LESSON_PROMOTE_AT = 2   # `helped` from this many different shifts (and no `hurt`) makes a lesson promotable
-LESSON_TEXT_RE = re.compile(r"^- lesson:(.*)$")
-PROMOTED_MAX_BYTES = 2048   # the cap hooks/handoff_size.py puts on hand edits of `## Promoted lessons`
+# The rule text of an entry: `- lesson:`, `- rule:`, `Rule:`, `Правило:`, `- Do:`, `- **Apply:**` at the start of a line,
+# or `Правило:` / `Rule:` after a sentence of a prose paragraph (merge-coord); it runs to the end of its paragraph.
+LESSON_TEXT_RE = re.compile(r"^(?:[-*]\s*)?\**(?:lesson|rule|правило|do|apply)\**\s*:\**(.*)$", re.IGNORECASE)
+LESSON_TEXT_MID_RE = re.compile(r"(?<=[.!?…»)])\s+(?:Правило|Rule):(.*)$")
+LESSON_EVIDENCE_RE = re.compile(r"\s\**(?:Evidence|Доказательств\w*)\b[^:.]{0,40}:.*$")   # `Evidence: jobs …`
+PROMOTED_MAX_BYTES = 4096   # the cap hooks/handoff_size.py puts on hand edits of `## Promoted lessons`
 PROMOTED_HEAD_RE = re.compile(r"##[ \t]+Promoted lessons\b", re.IGNORECASE)
 
 
-def lesson_verdict(rest: str):
-    """([lesson ids], word, shift) of the text after `- verdict`, or None when the line gives no usable verdict. Used
-    shapes: `: hub-35 2026-10-25 helped — …`, `: helped (hub-31, 23.10) — …`, ` (hub-5, 27.10): helped — …`,
-    ` (L-002, hub-20 26.10): helped — …`, ` (hub-19): L-MC-003 helped — …`, `L-001/002 helped`. Only the head before the
-    first spaced dash is read, so the evidence cannot vote. Two different words (`hurt-then-helped`) or `ignored`
-    (the lesson was not applied) give no verdict: a guess either way would retire or promote a rule."""
-    head = re.split(r"\s[—–-]\s", rest, maxsplit=1)[0]
-    found = list(LESSON_WORD_RE.finditer(head))
-    words = {m.group(1).lower() for m in found}
-    if len(words) != 1 or re.search(r"\bignored\b", head, re.IGNORECASE):
-        return None
+def lesson_ids(text: str) -> list:
+    """The lesson ids of `text`: `L-002`, `L-001/L-005`, `L-001/002`, `L-034, L-036`."""
     ids = []
-    for m in LESSON_IDS_RE.finditer(head[:found[0].start()]):   # an id after the word is a reference, not the target
+    for m in LESSON_IDS_RE.finditer(text):
         ids.append(m.group(1) + m.group(2))
-        for tail in m.group(3).split("/")[1:]:
-            ids.append(tail if tail.startswith("L-") else m.group(1) + tail)
-    shift = LESSON_SHIFT_RE.search(head) or LESSON_DATE_RE.search(head)
-    return ids, words.pop(), shift.group(0).lower() if shift else "?"   # no shift named: all such verdicts count as one
+        ids += [t if t.startswith("L-") else m.group(1) + t for t in m.group(3).split("/")[1:]]
+    return ids
+
+
+def lesson_verdicts(rest: str) -> list:
+    """[([lesson ids], word, shift)] of the text after `- verdict`; [] when the line gives no usable verdict. Used shapes:
+    `: hub-35 2026-10-25 helped — …`, `: helped (hub-31, 23.10) — …`, ` (hub-5, 27.10): helped — …`,
+    ` (L-002, hub-20 26.10): helped — …`, ` (hub-19): L-MC-003 helped — …`, `L-001/002 helped`, the word right after the
+    dash (`: hub-5, 2026-11-11 — helped: …`, ` (L-001): hub-2, 2026-11-12 — hurt by vagueness: …`), the shift right
+    after it (`: helped — hub-49 05.11: …`), and one clause per lesson (` (hub-27, 08–11.11): L-MC-018 helped (…).
+    L-MC-019 helped (…)`, `…; L-036 helped — …`). Only the head before the first spaced dash is read, or the words
+    right after that dash, so the evidence cannot vote. Two different words (`hurt-then-helped`) or `ignored` /
+    `skipped` (the lesson was not applied) give no verdict: a guess either way would retire or promote a rule."""
+    parts = re.split(r"\s[—–-]\s", rest, maxsplit=1)
+    head, tail = parts[0], parts[1] if len(parts) > 1 else ""
+    shift = (LESSON_SHIFT_RE.search(head) or re.match(r"\s*(hub-\d+)\b", tail, re.IGNORECASE)
+             or LESSON_DATE_RE.search(head))
+    shift = (shift.group(1) if shift.re.groups else shift.group(0)).lower() if shift else "?"   # none: all count as one
+    found, target = list(LESSON_WORD_RE.finditer(head)), head
+    if found:
+        target = head[:found[0].start()]   # an id after the word is a reference, not the target
+    elif m := re.match(rf"\s*({LESSON_WORDS})\b([^:—–]*)", tail, re.IGNORECASE):
+        found, head = [m], head + " " + m.group(2)   # `hub-5, 2026-11-11 — helped: …`: the word opens the part after the dash
+    out, words = [], {m.group(1).lower() for m in found}
+    if len(words) == 1 and not LESSON_NOT_APPLIED_RE.search(head):
+        out.append((lesson_ids(target), words.pop(), shift))
+    for m in LESSON_CLAUSE_RE.finditer(rest):
+        if not LESSON_NOT_APPLIED_RE.search(m.group(3)):
+            out.append((lesson_ids(m.group(1)), m.group(2).lower(), shift))
+    return out
 
 
 def lessons_entries(stage: str, text: str = None):
@@ -500,7 +529,8 @@ def lessons_entries(stage: str, text: str = None):
         return None
     out, shifts, current, in_lesson = [], {}, None, False   # shifts: id -> {word: {shift}}
     for lineno, line in outside_markup(text):
-        if in_lesson and line[:1].isspace() and line.strip() and not re.match(r"\s*[-*]\s", line):   # a wrapped `- lesson:`
+        listed = re.match(r"\s*[-*]\s", line)
+        if in_lesson and line.strip() and not listed and not line.startswith("#"):   # the rule's paragraph goes on
             out[-1][5] += " " + line.strip()
             continue
         in_lesson = False
@@ -511,11 +541,13 @@ def lessons_entries(stage: str, text: str = None):
             current = None
         elif out and current and not out[-1][2] and (m := LESSON_STATUS_RE.match(line)):
             out[-1][2], out[-1][4] = m.group(1).lower(), lineno
-        elif out and current and not out[-1][5] and (m := LESSON_TEXT_RE.match(line)):
+        elif out and current and not out[-1][5] and (m := LESSON_TEXT_RE.match(line)
+                                                      or not listed and LESSON_TEXT_MID_RE.search(line)):
             out[-1][5], in_lesson = m.group(1).strip(), True
-        elif (m := LESSON_VERDICT_RE.match(line)) and (v := lesson_verdict(m.group(1))):
-            for lid in v[0] or ([current] if current else []):
-                shifts.setdefault(lid, {}).setdefault(v[1], set()).add(v[2])
+        elif m := LESSON_VERDICT_RE.match(line):
+            for ids, word, shift in lesson_verdicts(m.group(1)):
+                for lid in ids or ([current] if current else []):
+                    shifts.setdefault(lid, {}).setdefault(word, set()).add(shift)
     result = []
     for lid, cue, written, head_line, status_line, lesson in out:
         status = written
@@ -523,6 +555,7 @@ def lessons_entries(stage: str, text: str = None):
         helped, hurt = len(by_word.get("helped", ())), len(by_word.get("hurt", ()))
         if status not in ("promoted", "retired"):   # a hand-written promotion stays; a later `hurt` is for the hub to act on
             status = "retired" if hurt else "promotable" if helped >= LESSON_PROMOTE_AT else status
+        lesson = LESSON_EVIDENCE_RE.sub("", lesson).strip()   # `… Evidence: jobs 486305/…` closes a prose rule
         result.append((lid, cue, status, helped, hurt, written, head_line, status_line, lesson))
     return result
 
@@ -607,6 +640,9 @@ def planned_promotion(stage: str, tag: str, snap: tuple, rules_path: Path) -> tu
     lines, done, left = text.splitlines(keepends=True), [], []
     status = f"- status: promoted: hub-rules.md {hc.now():%Y-%m-%d} {tag} (hub takeover)\n"
     for e in (e for e in entries if e[2] == "promotable"):
+        if not e[8]:   # the heading is the cue, not the instruction: a line without it carries the problem, not the fix
+            left.append(f"{e[0]} (no rule text: add a `- lesson:` line, the instruction, under {e[0]} in lessons.md)")
+            continue
         b = promoted_bounds(rules)   # already there (a hand edit, a write of lessons.md that failed): no second line
         listed = b and re.search(rf"\({re.escape(e[0])}, lessons\.md(?:, auto)?\)", rules[b[1]:b[2]])
         candidate = rules if listed else with_promoted_rule(rules, lesson_rule(e))
@@ -1809,6 +1845,9 @@ def _cmd_takeover(a) -> int:
               short="journal")
 
     if not a.dry_run:
+        if left:   # the digest alone was read and ignored 13 times (audit 2026-11-21): the journal reaches the audit too
+            hc.journal_append(stage, tag, "@hub lessons wait for promotion — act on them before planning (lessons.md § "
+                                          "Promoting a lesson): " + "; ".join(left))
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()

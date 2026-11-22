@@ -418,6 +418,51 @@ $B/hub handoff --stage stage-a --n 1 --out $C/dv.md > $R/dv2.out 2>&1
 OPEN=$(grep '^Open lessons to judge:' $C/dv.md)
 case "$OPEN" in *L-001*L-002*L-003*L-004*L-009*L-010*) r=0;; *) r=1;; esac; check $r 0 "…§ 7 lists the open and the promotable lessons"
 case "$OPEN" in *L-005*|*L-006*|*L-007*|*L-008*) r=1;; *) r=0;; esac; check $r 0 "…and not the retired or promoted ones"
+# 11b. the shapes the 2026-11-21 audit found uncounted in the real lessons.md files: the word right after the dash
+# (dolya-finance-project-digital-twin, chur-project-digital-twin: `hub-5, 2026-11-11 — helped:`), the shift right after
+# it (dolya: `helped — hub-49 05.11:`), one clause per lesson (merge-coord, dolya: `L-MC-018 helped (…). L-MC-019 helped`,
+# `…; L-036 helped — …`); a `hurt` in any of them retires the lesson; `hurt when skipped` (not applied) and
+# `hurt then helped` (two words) still give none
+cat > $L <<'MD'
+## L-021 — word after the dash, shift before it
+- status: proposed
+- verdict: hub-3, 2026-11-10 — helped: the request said --urgent, so it hurt nobody
+- verdict (L-021): hub-5, 2026-11-11 — helped: evidence
+
+## L-022 — a hurt after the dash retires the lesson
+- status: proposed
+- verdict (L-022): hub-2, 2026-11-12 — hurt by vagueness: !1204 brief named the gates generically
+- verdict (L-022): hub-3, 2026-11-16 — helped: evidence
+
+## L-023 — shift after the dash
+- status: proposed
+- verdict: helped — hub-49 05.11: evidence
+- verdict: helped (late) — hub-52 06.11: evidence
+- verdict: hurt then helped — hub-53 16:18: two words, no verdict
+
+## L-024 — one line, a clause per lesson
+- status: proposed
+- verdict (hub-27, 08–11.11): L-024 helped (D-MC-025: a). L-025 helped (b). L-026 no effect.
+- verdict (hub-30, 2026-11-15): L-024 helped — a; L-025 hurt when skipped — b; L-026 hurt — c
+- verdict L-025: helped (03–06.11). L-024: helped (x).
+
+## L-025 — the second lesson of those lines
+- status: proposed
+
+## L-026 — the third
+- status: proposed
+MD
+python3 - $B/hub <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("hubmod", sys.argv[1])
+m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hubmod", loader)); loader.exec_module(m)
+got = {e[0]: e[2:5] for e in m.lessons_entries("stage-a")}
+want = {"L-021": ("promotable", 2, 0), "L-022": ("retired", 1, 1), "L-023": ("promotable", 2, 0),
+        "L-024": ("promotable", 3, 0), "L-025": ("promotable", 2, 0), "L-026": ("retired", 0, 1)}
+bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
+assert not bad, bad
+PY
+check $? 0 "real shapes: the word or the shift after the dash, a clause per lesson, hurt after the dash; skipped / two words give none"
 # 12. a real takeover promotes what is promotable (owner, Q-AUDIT-001: the hub does it itself, no question): one line in
 # `## Promoted lessons` of <stage>/hub-rules.md and status `promoted`; a lesson below the threshold is not touched; a re-run
 # adds nothing; a lesson whose line would take the section over 2 KiB stays promotable and the takeover says so
@@ -475,12 +520,41 @@ echo '- written by hand before the status was changed (L-005, lessons.md)' >> $R
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr25.out 2>&1; check $? 0 "promotion: a lesson already listed by hand"
 [ "$(grep -c '(L-005, lessons.md)' $RULES)" = 1 ] && sed -n '/^## L-005/{n;p;}' $L | grep -q '^- status: promoted'; check $? 0 "…gets no second line, only its status"
 # 13. a lesson is published whole or not at all: a cut would drop the condition at its end
-LONG=$(python3 -c 'print("merge the release branch and deploy " + "after checking the backup, the rollback and the logs, " * 40 + "but only after the owner approves the deployment.")')
+LONG=$(python3 -c 'print("merge the release branch and deploy " + "after checking the backup, the rollback and the logs, " * 80 + "but only after the owner approves the deployment.")')
 printf '\n## L-006 — when preparing a release\n- status: proposed\n- lesson: %s\n- verdict: hub-7 2026-11-04 helped — a\n- verdict: hub-8 2026-11-05 helped — b\n' "$LONG" >> $L
 cp $RULES $R/rules.before6; cp $L $R/l.before6
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr6.out 2>&1; check $? 0 "long lesson: takeover"
 grep -q "ATTENTION: lessons left promotable: L-006 (its whole line does not fit ## Promoted lessons of .*: shorten L-006's lesson in lessons.md by hand" $R/pr6.out; check $? 0 "…names it and asks to shorten it"
 cmp -s $RULES $R/rules.before6 && cmp -s $L $R/l.before6; check $? 0 "…and writes no cut rule and no status"
+grep -q "\[hub-2\] @hub lessons wait for promotion .*L-006 (its whole line does not fit" "$(journal)"; check $? 0 "…and journals one line to the hub naming it (the digest alone was ignored)"
+# 13b. a lesson without rule text is never promoted (the audit: 8 of 22 promoted lines were a heading only): the
+# instruction is the `- lesson:` line or a `- rule:` / `Rule:` / `Правило:` one (phase-e, authz, test-speedup, merge-coord,
+# where it closes a prose paragraph and `Evidence:` ends it); a heading with prose and no rule line is refused by name
+cat >> $L <<'MD'
+
+## L-007 — when a release carries a foreign feature
+A release carried another team's feature; the smoke only opened pages and a lead was blocked.
+- verdict: hub-7 2026-11-04 helped — a
+- verdict: hub-8 2026-11-05 helped — b
+
+## L-008 — a new runner joins the shared pool
+A cloud runner went into the pool whole and four jobs failed. Правило: test a new runner with one job first,
+then the pool. Evidence: jobs 486305/486309.
+- verdict: hub-7 2026-11-04 helped — a
+- verdict: hub-8 2026-11-05 helped — b
+
+## L-009 — before a prod window
+- Rule: compare all closed pairs before and after; a green status is not evidence of completeness.
+- verdict: hub-7 2026-11-04 helped — a
+- verdict: hub-8 2026-11-05 helped — b
+MD
+sed -i.bak '/^## L-006/,/^$/d' $L   # the long lesson is out of the way
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr7.out 2>&1; check $? 0 "no rule text: takeover"
+grep -q "ATTENTION: lessons left promotable: L-007 (no rule text: add a \`- lesson:\` line" $R/pr7.out; check $? 0 "…L-007 (heading and prose only) is refused by name"
+grep -q "L-007" $RULES; check $? 1 "…and gets no line"
+grep -q "\[hub-2\] @hub lessons wait for promotion .*L-007 (no rule text" "$(journal)"; check $? 0 "…the refusal is journaled to the hub"
+grep -qF -- "- a new runner joins the shared pool: test a new runner with one job first, then the pool. (L-008, lessons.md, auto)" $RULES; check $? 0 "…a prose Правило: is the rule, Evidence: cut"
+grep -qF -- "- before a prod window: compare all closed pairs before and after; a green status is not evidence of completeness. (L-009, lessons.md, auto)" $RULES; check $? 0 "…a - Rule: line is the rule, a lowercase evidence kept"
 # 14. another writer between the takeover's read and its write (a hub that still runs appends a `hurt`): the plan is made
 # again from the new text, so the lesson is not promoted and the verdict is kept; a second change writes nothing
 mkdir -p $R/stage-r
@@ -540,7 +614,7 @@ python3 - $RULES <<'PY'
 import sys
 p = sys.argv[1]; t = open(p, encoding="utf-8").read()
 i = 0
-while len(t[t.index("## Promoted lessons"):].encode()) < 1990:   # under the 2048 cap, over it with the L-004 line
+while len(t[t.index("## Promoted lessons"):].encode()) < 4040:   # under the 4096 cap, over it with the L-004 line
     t += f"- padding rule {i:02d} (L-9{i:02d})\n"; i += 1
 open(p, "w", encoding="utf-8").write(t + "\n## Later section\n- stays last\n")
 PY

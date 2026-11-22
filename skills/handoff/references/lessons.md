@@ -31,7 +31,11 @@ what you would tell the next hub about how to work, with the moment it rests on.
 - confidence: low | medium | high
 - verdict: hub-4 2026-10-23 helped — evidence     (appended by later shifts; repeatable)
 - verdict (L-001, hub-4 2026-10-23): helped — evidence    (a verdict on another entry: its id in the parentheses)
+- verdict (hub-4, 23.10): L-001 helped (evidence). L-003 no effect.   (several lessons: a clause each)
 ```
+
+The takeover promotes the `- lesson:` line (`- rule:`, `Rule:` or `Правило:` are read the same way); an entry without
+one, only a heading and prose, is never promoted.
 
 Ids run on from the last one in the file. An id is `L-<digits>` (`L-007`) or carries the stage's prefix, as ask ids do
 (`L-MC-005`): `L-<LETTERS>-<digits>`, capitals only. The check of § 7 accepts both and takes either as an answer. A verdict is `helped | hurt | no effect | confounded`; use `confounded` when
@@ -46,7 +50,7 @@ The hub derives the status from the verdict lines (`hub takeover` reads them; no
 |---|---|
 | `helped` from 2 different shifts, no `hurt` | promotable: the next `hub takeover` promotes it (below) |
 | any `hurt` | retired: it leaves "Open lessons to judge"; the digest lists "retired by hurt: L-…" until you settle it (below) |
-| `no effect`, `confounded`, `ignored`, or two words in one verdict | counts for nothing |
+| `no effect`, `confounded`, `ignored`/`skipped`, or two words in one verdict | counts for nothing |
 
 ## Promoting a lesson
 
@@ -57,14 +61,15 @@ The hub derives the status from the verdict lines (`hub takeover` reads them; no
 `- status: promoted: hub-rules.md DATE hub-N (hub takeover)` (one is added under the heading when it has none), and
 the takeover's start line in the journal names the ids. Before planning, read the new lines:
 
-1. A line that reads badly: reword it in place, never longer (the `handoff_size` hook refuses a section over 2 KiB);
+1. A line that reads badly: reword it in place, never longer (the `handoff_size` hook refuses a section over 4 KiB);
    keep its `(L-…, lessons.md, auto)` tail, so that a later `hurt` takes it back.
 2. A lesson a tool could catch (a hook, a script, a check in `hub`) is not a prose rule: delete its line, put a pointer
    in the plugin backlog (an entry in the plugin repository's `ROADMAP.md` or a GitHub issue, naming the lesson and its
    evidence) and change the status to `- status: promoted: backlog <entry or issue URL> DATE`.
 
-A line that would take the section over 2 KiB is not written: the lesson stays promotable, the takeover prints
-"lessons left promotable: L-… (its whole line does not fit …)" and the digest keeps listing it. Shorten the lesson in
+A line that would take the section over 4 KiB is not written, nor one of an entry without a rule line: the lesson
+stays promotable, the takeover prints "lessons left promotable: L-… (its whole line does not fit …)" or "(no rule text
+…)", journals one line `@hub lessons wait for promotion — …` naming them, and the digest keeps listing them. Shorten the lesson in
 lessons.md by hand, keeping its conditions, or retire or merge a line; the next takeover promotes it. If lessons.md or
 hub-rules.md changes while the takeover writes (a hub that still runs adds a verdict), it plans again once, and after a
 second change writes nothing and says so.

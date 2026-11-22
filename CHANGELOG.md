@@ -33,6 +33,17 @@
   attempt). A hub that cannot be woken (Desktop) is notified on the first attempt, then only when more lines wait and at
   most every 4 h (test-speedup hub-1: 20 hourly notifications in a night). "jwait does not match" counts only lines at
   least 3 min old: all 84 such messages were lines still inside the live waiter's settle.
+- **Lessons: verdicts are counted as hubs write them, no heading-only rule is promoted, and a stuck promotion reaches
+  the journal.** The 2026-11-21 audit found > 30 verdicts the parser missed: the word right after the dash
+  (`hub-5, 2026-11-11 — helped: …`), the shift right after it (`helped — hub-49 05.11: …`, all such lines counted as
+  one shift), and every lesson after the first on a multi-lesson line (`L-MC-018 helped (…). L-MC-019 helped …`); a
+  `hurt by vagueness` after the dash never retired its lesson. All are read now (`hurt when skipped`, like `ignored`,
+  still counts for nothing). 8 of 22 promoted lines were a heading without the instruction, because merge-coord and
+  phase-e write `Правило:` / `- Rule:` instead of `- lesson:`: those are read as the rule, and an entry with no rule
+  line is not promoted (the takeover names it). A promotion left waiting — no rule text, or the line does not fit —
+  is journaled as one `@hub lessons wait for promotion` line at each takeover (13 digest warnings in two stages had
+  no reaction), and the `## Promoted lessons` cap is 4 KiB instead of 2 KiB (core-d and dolya filled 2 KiB at their
+  first promotion).
 
 ## 1.0.27 — 2026-11-08
 
