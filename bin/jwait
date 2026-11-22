@@ -44,7 +44,7 @@ sleeps longer pays for re-writing its whole context at every wake, and Claude Co
 ~54 minutes; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 With --journal it marks itself in <root>/.jwait-state/<stage>/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
-waiter is not woken).
+waiter is not woken); without it (an alarm, a --file wait) in <caller>.alarm.json, which only the stall rule reads.
 With --journal it also looks, every 10 s, for a headless agent of the stage whose process is gone without a result
 (killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
 --stream: after each batch, print it and keep waiting until the deadline (default --for 29m: a Monitor lives at most
@@ -315,18 +315,19 @@ def hub_filter(stage: str, tag: str) -> Filter:
 ARMED_GRACE_S = 120  # a waiter may overrun its deadline by the settle time of a last batch
 
 
-def armed_path(caller: str, stage: str):
-    """The armed file of `caller` on `stage`, or None for a stage name that is not a valid one. The stage name is used
+def armed_path(caller: str, stage: str, kind: str = "armed"):
+    """The armed file of `caller` on `stage` (kind "alarm": of a waiter with no journal, which the watchdog's stall rule
+    reads), or None for a stage name that is not a valid one. The stage name is used
     as it is (STAGE_RE is filesystem-safe): a sanitised key would make `release` and `release_` share a directory."""
     if not hc.STAGE_RE.fullmatch(stage or ""):
         return None
-    return hc.root() / ".jwait-state" / stage / f"{safe_name(caller)}.armed.json"
+    return hc.root() / ".jwait-state" / stage / f"{safe_name(caller)}.{kind}.json"
 
 
-def write_armed(caller: str, stage: str, tags: list, deadline: dt.datetime) -> None:
+def write_armed(caller: str, stage: str, tags: list, deadline: dt.datetime, kind: str = "armed") -> None:
     rec = {"pid": os.getpid(), "caller": caller, "stage": stage, "tags": tags, "host_session": hc.session_id(),
            "started": hc.now().isoformat(timespec="seconds"), "deadline": deadline.isoformat(timespec="seconds")}
-    path = armed_path(caller, stage)
+    path = armed_path(caller, stage, kind)
     if path is None:
         return
     try:
@@ -335,9 +336,9 @@ def write_armed(caller: str, stage: str, tags: list, deadline: dt.datetime) -> N
         pass  # a read-only home: the waiter works, the watchdog just cannot see it
 
 
-def clear_armed(caller: str, stage: str) -> None:
+def clear_armed(caller: str, stage: str, kind: str = "armed") -> None:
     """Remove this process's own armed file (another jwait of the same caller may have replaced it since)."""
-    path = armed_path(caller, stage)
+    path = armed_path(caller, stage, kind)
     if path is None:
         return
     try:
@@ -363,11 +364,11 @@ def pid_runs_jwait(pid: int):
     return ("jwait" in cmd) if cmd.strip() else None
 
 
-def armed_live(caller: str, stage: str, at=None, reap: bool = True):
+def armed_live(caller: str, stage: str, at=None, reap: bool = True, kind: str = "armed"):
     """The armed record of `caller`'s journal waiter on `stage` when that waiter lives (its pid runs a jwait and its
     deadline has not passed), else None. A stale file (dead pid, a pid that now runs something else, a passed
     deadline) is removed when `reap`; a process table that cannot be read counts as alive (never wake blind)."""
-    path = armed_path(caller, stage)
+    path = armed_path(caller, stage, kind)
     if path is None:
         return None
     try:
@@ -547,10 +548,10 @@ def main(argv: list) -> int:
     what += [f"file {f}" for f in args.file]
     if has_source:
         scan()  # the baseline read comes first: the line below means "armed", what is written after it is news
-    if args.journal:
-        for sig in (signal.SIGTERM, signal.SIGHUP):
-            signal.signal(sig, _terminate)
-        write_armed(caller, stage, args.tag, deadline)
+    kind = "armed" if args.journal else "alarm"  # an alarm keeps the watchdog's stall wake off, never its R3 wake
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _terminate)
+    write_armed(caller, stage, args.tag, deadline, kind)
     print(f"jwait [{caller}]: waiting for {', '.join(what) or 'the deadline only'} until {fmt_deadline(deadline)}", flush=True)
 
     watch = DeadAgentWatch(stage) if args.journal else None
@@ -587,8 +588,7 @@ def main(argv: list) -> int:
     except KeyboardInterrupt:
         return 130
     finally:
-        if args.journal:
-            clear_armed(caller, stage)
+        clear_armed(caller, stage, kind)
 
 
 def stage_busy(stage: str) -> list:

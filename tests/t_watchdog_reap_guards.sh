@@ -33,6 +33,9 @@ export CLAUDE_CONFIG_DIR=$R/claude-home CLAUDE_SESSIONS_DIR=$R/desktop
 export CLAUDE_BIN=$T/fake_claude_wd.py FAKE_WD_ROWS=$R/rows.json FAKE_WD_LOG=$R/claude.log
 export AGENT_HUB_WATCHDOG=on
 unset AGENT_HUB_NOTIFY_CMD AGENT_HUB_WATCHDOG_REAP AGENT_HUB_WATCHDOG_WAKE_AFTER FAKE_WD_AGENTS FAKE_WD_STOP FAKE_WD_ON_AGENTS FAKE_WD_ON_STOP
+# R7 only: the stall rule (t_watchdog_stall.sh) would notify for this file's long-silent fixture hubs by day; a night that
+# covers the whole day keeps it off, whatever the hour the suite runs at
+export AGENT_HUB_NIGHT=00:00-23:59
 # the tick's clock runs OFFSET minutes ahead of the real one: the real processes of the rows (started when the test did) are
 # then OFFSET minutes old, and the transcripts and journals are dated from that clock
 at_offset(){ python3 -c 'import datetime as d,sys; print((d.datetime.now(d.timezone.utc) + d.timedelta(minutes=int(sys.argv[1]))).strftime("%Y-%m-%dT%H:%M:%S"))' "$1"; }
