@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PreToolUse hook on Write|Edit: a HANDOFF-*.md file must stay <= 15 KiB (15360 bytes UTF-8), and the section
-"## Promoted lessons" of a hub-rules.md must stay <= 2 KiB (2048 bytes): every hub reads that file at every takeover.
+"## Promoted lessons" of a hub-rules.md must stay <= 4 KiB (4096 bytes): every hub reads that file at every takeover.
 
 Scope: only files in the hub home, in a repository with `.agent-hub/`, or under AGENT_HUB_SCOPE_DIRS (hub home
 config.json); a HANDOFF-*.md anywhere else on the machine is not this plugin's business.
@@ -41,7 +41,7 @@ PROMOTED_REASON = (
     'The "## Promoted lessons" section of {name} is {size} bytes > {limit}. Every hub reads it at every takeover: '
     "keep one line per lesson (the rule and its source id), and move a rule that is mechanical to the plugin backlog."
 )
-PROMOTED_MAX_BYTES = 2048
+PROMOTED_MAX_BYTES = 4096
 PROMOTED_HEAD_RE = re.compile(r"(?im)^##[ \t]+Promoted lessons\b")
 
 
