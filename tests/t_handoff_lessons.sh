@@ -504,6 +504,19 @@ assert e["L-002"] == ("promoted", 0, 0) and e["L-001"][1] == 2 and e["L-003"][1]
 rules = "## Promoted lessons\n\n- cue two: b. (L-002, lessons.md, auto)\n"
 done, left, removed, _, new_rules = m.planned_promotion("stage-a", "hub-5", (text, rules), Path("/nonexistent/hub-rules.md"))
 assert removed == [] and "(L-002, lessons.md, auto)" in new_rules, (removed, new_rules)
+# a qualifier in quotes or parentheses still says what it says: no hurt for a lesson not applied, the rule line stays;
+# a quote cannot hide a real verdict word either (round 2 of the review of #187)
+for verdict, marks in (('L-002 hurt ("not applied") — the lesson was skipped', (0, 0)),
+                      ("L-002 hurt («skipped») — b", (0, 0)), ("L-002 hurt (“ignored”) — b", (0, 0)),
+                      ('L-002 hurt (qualification: "not applied") — b', (0, 0)),
+                      ('L-002 hurt "then helped" — b', (0, 0)),
+                      ('L-002 hurt (see "L-003 helped") — a real failure', (0, 1)),
+                      ('L-002 hurt ("a retry helped") — a real failure', (0, 1))):
+    t = text.replace("- verdict (hub-3): L-001 helped", f"- verdict (hub-6): L-001 helped. {verdict}\n- verdict (hub-3): L-001 helped", 1)
+    e = {x[0]: x[3:5] for x in m.lessons_entries("stage-a", t)}
+    assert e["L-002"] == marks and e["L-003"] == (1, 0), (verdict, e)
+    _, _, removed, _, new_rules = m.planned_promotion("stage-a", "hub-5", (t, rules), Path("/nonexistent/hub-rules.md"))
+    assert (removed == []) == (marks[1] == 0), (verdict, removed)
 bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
 assert not bad, bad
 PY

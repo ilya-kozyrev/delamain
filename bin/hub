@@ -516,9 +516,11 @@ def lesson_verdicts(rest: str) -> list:
     if len(words) == 1 and not LESSON_NOT_APPLIED_RE.search(head):
         out.append((lesson_ids(target), words.pop(), shift))
     body = re.sub(r"^\s*(?:\([^)]*\))?\s*:?", "", rest)   # `(hub-27, 08–11.11): L-MC-018 helped …`: the first clause
-    body = re.sub(r'"[^"]*"|«[^»]*»|“[^”]*”', " ", body)   # a quote in the evidence (`the log says "Done. L-002 hurt"`)
-    for m in LESSON_CLAUSE_RE.finditer(body):
-        depth = body[:m.start(1)].count("(") - body[:m.start(1)].count(")")
+    # a quote in the evidence (`the log says "Done. L-002 hurt"`) starts no clause; it is blanked, offsets kept, only for
+    # finding where clauses start: a found clause's qualifier is read whole (`hurt ("not applied")` is not applied)
+    masked = re.sub(r'"[^"]*"|«[^»]*»|“[^”]*”', lambda q: " " * len(q.group(0)), body)
+    for m in LESSON_CLAUSE_RE.finditer(masked):
+        depth = masked[:m.start(1)].count("(") - masked[:m.start(1)].count(")")
         clause = re.split(r"\s[—–]\s|[.;]\s|\)\s+(?=L-)", body[m.end(2):], maxsplit=1)[0]
         if depth <= 0 and not LESSON_NOT_APPLIED_RE.search(clause) and not LESSON_WORD_RE.search(clause.split("(")[0]):
             out.append((lesson_ids(m.group(1)), m.group(2).lower(), shift))
