@@ -41,7 +41,7 @@
   still counts for nothing). 8 of 22 promoted lines were a heading without the instruction, because merge-coord and
   phase-e write `Правило:` / `- Rule:` instead of `- lesson:`: those are read as the rule, and an entry with no rule
   line is not promoted (the takeover names it). A promotion left waiting — no rule text, or the line does not fit —
-  is journaled as one `@hub lessons wait for promotion` line at each takeover (13 digest warnings in two stages had
+  is journaled as one `@hub lessons need action` line at each takeover (13 digest warnings in two stages had
   no reaction), and the `## Promoted lessons` cap is 4 KiB instead of 2 KiB (core-d and dolya filled 2 KiB at their
   first promotion).
 

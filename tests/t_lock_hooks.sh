@@ -62,7 +62,7 @@ pl(){ python3 -c 'import json,sys; sec="## Promoted lessons\n"+"- rule (L-001)\n
 pl $R/stage-a/hub-rules.md 300 | grep -q '"deny"'; check $? 0 "hub-rules.md: a Promoted lessons section over 4 KiB is refused"
 pl $R/stage-a/hub-rules.md 300 | grep -q 'Promoted lessons'; check $? 0 "…and the reason names the section"
 pl $R/stage-a/hub-rules.md 20 | grep -q '"deny"'; check $? 1 "hub-rules.md: a short section passes, however long the rest of the file is"
-pl $R/stage-a/hub-rules.md 200 | grep -q '"deny"'; check $? 1 "hub-rules.md: a 3 KiB section passes (the cap is 4 KiB since the 2026-11-21 audit)"
+pl $R/stage-a/hub-rules.md 200 > $R/pl200.out; r=$?; [ $r = 0 ] && ! grep -q '"deny"' $R/pl200.out; check $? 0 "hub-rules.md: a 3 KiB section passes (the cap is 4 KiB since the 2026-11-21 audit)"
 python3 -c 'import json,sys; print(json.dumps({"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":"## Promoted Lessons (one line each)\r\n"+"- rule (L-001)\r\n"*300}}))' $R/stage-a/hub-rules.md | python3 $HOOKS/handoff_size.py | grep -q '"deny"'; check $? 0 "hub-rules.md: a heading in other case with a suffix, CRLF lines: still capped"
 pl $R/stage-a/notes.md 300 | grep -q '"deny"'; check $? 1 "…another file with that section is not checked"
 printf '## Promoted lessons\n%s\n## Other\n' "$(printf 'y%.0s' $(seq 1 3900))" > $R/hub-rules.md

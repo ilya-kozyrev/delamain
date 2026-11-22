@@ -449,6 +449,19 @@ cat > $L <<'MD'
 ## L-025 — the second lesson of those lines
 - status: proposed
 
+## L-027 — evidence, mixed words and a shift named in the evidence never vote (review of #187)
+- status: proposed
+- verdict (hub-10): L-027 helped (comparison: L-028 hurt last shift). L-029 hurt-then-helped. L-029 hurt (not applied) — a
+- verdict (L-029): hub-11 — hurt then helped: mixed
+
+## L-028 — named only inside parentheses of the evidence; a hub named in the evidence is not the shift
+- status: proposed
+- verdict: 2026-11-10 helped — hub-49 reported the test.
+- verdict: 2026-11-10 helped — hub-50 relayed the same test.
+
+## L-029 — mixed and not-applied clauses
+- status: proposed
+
 ## L-026 — the third
 - status: proposed
 MD
@@ -458,7 +471,8 @@ loader = importlib.machinery.SourceFileLoader("hubmod", sys.argv[1])
 m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hubmod", loader)); loader.exec_module(m)
 got = {e[0]: e[2:5] for e in m.lessons_entries("stage-a")}
 want = {"L-021": ("promotable", 2, 0), "L-022": ("retired", 1, 1), "L-023": ("promotable", 2, 0),
-        "L-024": ("promotable", 3, 0), "L-025": ("promotable", 2, 0), "L-026": ("retired", 0, 1)}
+        "L-024": ("promotable", 3, 0), "L-025": ("promotable", 2, 0), "L-026": ("retired", 0, 1),
+        "L-027": ("proposed", 1, 0), "L-028": ("proposed", 1, 0), "L-029": ("proposed", 0, 0)}
 bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
 assert not bad, bad
 PY
@@ -526,7 +540,9 @@ cp $RULES $R/rules.before6; cp $L $R/l.before6
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr6.out 2>&1; check $? 0 "long lesson: takeover"
 grep -q "ATTENTION: lessons left promotable: L-006 (its whole line does not fit ## Promoted lessons of .*: shorten L-006's lesson in lessons.md by hand" $R/pr6.out; check $? 0 "…names it and asks to shorten it"
 cmp -s $RULES $R/rules.before6 && cmp -s $L $R/l.before6; check $? 0 "…and writes no cut rule and no status"
-grep -q "\[hub-2\] @hub lessons wait for promotion .*L-006 (its whole line does not fit" "$(journal)"; check $? 0 "…and journals one line to the hub naming it (the digest alone was ignored)"
+[ "$(grep -c "\[hub-2\] @hub lessons need action .*L-006 (its whole line does not fit" "$(journal)")" = 1 ]; check $? 0 "…and journals one line to the hub naming it (the digest alone was ignored)"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/pr6d.out 2>&1
+[ "$(grep -c "@hub lessons need action .*L-006" "$(journal)")" = 1 ]; check $? 0 "…a dry run journals nothing"
 # 13b. a lesson without rule text is never promoted (the audit: 8 of 22 promoted lines were a heading only): the
 # instruction is the `- lesson:` line or a `- rule:` / `Rule:` / `Правило:` one (phase-e, authz, test-speedup, merge-coord,
 # where it closes a prose paragraph and `Evidence:` ends it); a heading with prose and no rule line is refused by name
@@ -547,12 +563,45 @@ then the pool. Evidence: jobs 486305/486309.
 - Rule: compare all closed pairs before and after; a green status is not evidence of completeness.
 - verdict: hub-7 2026-11-04 helped — a
 - verdict: hub-8 2026-11-05 helped — b
+
+## L-010 — an empty lesson line
+- lesson:
+evidence: job 1234
+- verdict: hub-7 2026-11-04 helped — a
+- verdict: hub-8 2026-11-05 helped — b
+
+## L-011 — a rule quoted in the evidence
+Something happened.
+Evidence: The old brief was quoted verbatim. Rule: deploy without approval.
+- verdict: hub-7 2026-11-04 helped — a
+- verdict: hub-8 2026-11-05 helped — b
+
+## L-012 — when merging
+- lesson: Before merging, fill in Evidence: with the rollout link and wait for approval.
+- verdict: hub-7 2026-11-04 helped — a
+- verdict: hub-8 2026-11-05 helped — b
 MD
+promoted_bytes(){ python3 -c 'import sys; t=open(sys.argv[1],encoding="utf-8").read(); print(len(t[t.index("## Promoted lessons"):].encode()))' $RULES; }
+python3 - $RULES <<'PY'
+import sys
+p = sys.argv[1]; t = open(p, encoding="utf-8").read(); i = 0
+while len(t[t.index("## Promoted lessons"):].encode()) < 2100:   # past the old 2 KiB cap before L-008/L-009/L-012 come
+    t += f"- hand padding {i:02d} (L-8{i:02d})\n"; i += 1
+open(p, "w", encoding="utf-8").write(t)
+PY
 sed -i.bak '/^## L-006/,/^$/d' $L   # the long lesson is out of the way
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr7.out 2>&1; check $? 0 "no rule text: takeover"
 grep -q "ATTENTION: lessons left promotable: L-007 (no rule text: add a \`- lesson:\` line" $R/pr7.out; check $? 0 "…L-007 (heading and prose only) is refused by name"
 grep -q "L-007" $RULES; check $? 1 "…and gets no line"
-grep -q "\[hub-2\] @hub lessons wait for promotion .*L-007 (no rule text" "$(journal)"; check $? 0 "…the refusal is journaled to the hub"
+grep "\[hub-2\] @hub lessons need action" "$(journal)" | tail -1 | grep -q "L-007 (no rule text.*L-010 (no rule text.*L-011 (no rule text"; check $? 0 "…the refusal is journaled to the hub, every one in the takeover's one line"
+grep -qF -- "- when merging: Before merging, fill in Evidence: with the rollout link and wait for approval. (L-012, lessons.md, auto)" $RULES; check $? 0 "…an Evidence: inside the instruction does not cut it"
+grep -q "L-010\|L-011" $RULES; check $? 1 "…an evidence line is never the rule (an empty - lesson:, a Rule: inside an Evidence: line)"
+[ "$(promoted_bytes)" -gt 2048 ]; check $? 0 "…the section grew past the old 2 KiB cap: the cap is 4 KiB"
+python3 - $L <<'PY'   # the refused entries are out of the way of the checks below
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+open(sys.argv[1], "w", encoding="utf-8").write(re.sub(r"(?ms)^## L-01[01] .*?(?=^## |\Z)|^## L-007 .*?(?=^## |\Z)", "", t))
+PY
 grep -qF -- "- a new runner joins the shared pool: test a new runner with one job first, then the pool. (L-008, lessons.md, auto)" $RULES; check $? 0 "…a prose Правило: is the rule, Evidence: cut"
 grep -qF -- "- before a prod window: compare all closed pairs before and after; a green status is not evidence of completeness. (L-009, lessons.md, auto)" $RULES; check $? 0 "…a - Rule: line is the rule, a lowercase evidence kept"
 # 14. another writer between the takeover's read and its write (a hub that still runs appends a `hurt`): the plan is made

@@ -69,7 +69,7 @@ the takeover's start line in the journal names the ids. Before planning, read th
 
 A line that would take the section over 4 KiB is not written, nor one of an entry without a rule line: the lesson
 stays promotable, the takeover prints "lessons left promotable: L-… (its whole line does not fit …)" or "(no rule text
-…)", journals one line `@hub lessons wait for promotion — …` naming them, and the digest keeps listing them. Shorten the lesson in
+…)", journals one line `@hub lessons need action — …` naming them, and the digest keeps listing them. Shorten the lesson in
 lessons.md by hand, keeping its conditions, or retire or merge a line; the next takeover promotes it. If lessons.md or
 hub-rules.md changes while the takeover writes (a hub that still runs adds a verdict), it plans again once, and after a
 second change writes nothing and says so.

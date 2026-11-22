@@ -461,11 +461,12 @@ LESSON_WORDS = r"helped|hurt|no effect|confounded"
 LESSON_WORD_RE = re.compile(rf"\b({LESSON_WORDS})\b", re.IGNORECASE)
 LESSON_NOT_APPLIED_RE = re.compile(r"\b(?:ignored|skipped|not applied)\b", re.IGNORECASE)
 # One clause of a multi-lesson line: `L-MC-018 helped (…). L-MC-019 helped …`, `…; L-036 helped — …`, `L-005: helped`,
-# `L-004, L-011 no effect`, each at the start of the text or after `.`, `;`, `:` or `)`; the qualifier after the word runs
-# to the clause's evidence (`L-MC-018 hurt when skipped —` is not applied, so no verdict).
+# `L-004, L-011 no effect`, each at the start of the text or after `.` or `;`, outside parentheses (`(compare: L-002 hurt)`
+# is evidence); the qualifier after the word runs to the clause's evidence: `L-MC-018 hurt when skipped —` (not applied)
+# or `L-002 hurt-then-helped` (two words) give no verdict.
 LESSON_CLAUSE_RE = re.compile(
-    rf"(?:^|(?<=[.;:)])\s)\s*((?:{LESSON_ID_PAT}(?:/(?:L-(?:[A-Z]+-)?)?\d{{1,6}})*(?:,\s*)?)+):?\s+({LESSON_WORDS})\b"
-    r"([^—–(.;:]*)", re.IGNORECASE)
+    rf"(?:^|(?<=[.;])\s)\s*((?:{LESSON_ID_PAT}(?:/(?:L-(?:[A-Z]+-)?)?\d{{1,6}})*(?:,\s*)?)+):?\s+({LESSON_WORDS})\b"
+    r"([^—–.;:]*)", re.IGNORECASE)
 LESSON_SHIFT_RE = re.compile(r"\bhub-\d+\b", re.IGNORECASE)
 LESSON_DATE_RE = re.compile(r"\b\d{4}-\d\d-\d\d\b|(?<![\d.])\d{1,2}\.\d\d(?![\d.])")
 LESSON_PROMOTE_AT = 2   # `helped` from this many different shifts (and no `hurt`) makes a lesson promotable
@@ -473,7 +474,8 @@ LESSON_PROMOTE_AT = 2   # `helped` from this many different shifts (and no `hurt
 # or `Правило:` / `Rule:` after a sentence of a prose paragraph (merge-coord); it runs to the end of its paragraph.
 LESSON_TEXT_RE = re.compile(r"^(?:[-*]\s*)?\**(?:lesson|rule|правило|do|apply)\**\s*:\**(.*)$", re.IGNORECASE)
 LESSON_TEXT_MID_RE = re.compile(r"(?<=[.!?…»)])\s+(?:Правило|Rule):(.*)$")
-LESSON_EVIDENCE_RE = re.compile(r"\s\**(?:Evidence|Доказательств\w*)\b[^:.]{0,40}:.*$")   # `Evidence: jobs …`
+LESSON_EVIDENCE_RE = re.compile(r"(?:^|(?<=[.!?…»)])\s)\s*\**(?:Evidence|Доказательств\w*)\b[^:.]{0,40}:.*$",
+                                re.IGNORECASE)   # `…бэкапа. Evidence: jobs …`, not `fill in Evidence: with the link`
 PROMOTED_MAX_BYTES = 4096   # the cap hooks/handoff_size.py puts on hand edits of `## Promoted lessons`
 PROMOTED_HEAD_RE = re.compile(r"##[ \t]+Promoted lessons\b", re.IGNORECASE)
 
@@ -498,19 +500,22 @@ def lesson_verdicts(rest: str) -> list:
     `skipped` (the lesson was not applied) give no verdict: a guess either way would retire or promote a rule."""
     parts = re.split(r"\s[—–-]\s", rest, maxsplit=1)
     head, tail = parts[0], parts[1] if len(parts) > 1 else ""
-    shift = (LESSON_SHIFT_RE.search(head) or re.match(r"\s*(hub-\d+)\b", tail, re.IGNORECASE)
-             or LESSON_DATE_RE.search(head))
+    shift = (LESSON_SHIFT_RE.search(head) or LESSON_DATE_RE.search(head)   # `— hub-49 05.11: …`, not `— hub-49 said …`
+             or re.match(r"\s*(hub-\d+)\b[^:—–]{0,24}:", tail, re.IGNORECASE))
     shift = (shift.group(1) if shift.re.groups else shift.group(0)).lower() if shift else "?"   # none: all count as one
     found, target = list(LESSON_WORD_RE.finditer(head)), head
     if found:
         target = head[:found[0].start()]   # an id after the word is a reference, not the target
     elif m := re.match(rf"\s*({LESSON_WORDS})\b([^:—–]*)", tail, re.IGNORECASE):
-        found, head = [m], head + " " + m.group(2)   # `hub-5, 2026-11-11 — helped: …`: the word opens the part after the dash
+        found = [m] + list(LESSON_WORD_RE.finditer(m.group(2)))   # `hub-5, 2026-11-11 — helped: …`: it opens the part
+        head += " " + m.group(2)                                       # after the dash; `— hurt then helped:` is two words
     out, words = [], {m.group(1).lower() for m in found}
     if len(words) == 1 and not LESSON_NOT_APPLIED_RE.search(head):
         out.append((lesson_ids(target), words.pop(), shift))
-    for m in LESSON_CLAUSE_RE.finditer(rest):
-        if not LESSON_NOT_APPLIED_RE.search(m.group(3)):
+    body = re.sub(r"^\s*(?:\([^)]*\))?\s*:?", "", rest)   # `(hub-27, 08–11.11): L-MC-018 helped …`: the first clause
+    for m in LESSON_CLAUSE_RE.finditer(body):
+        depth = body[:m.start(1)].count("(") - body[:m.start(1)].count(")")
+        if depth <= 0 and not LESSON_NOT_APPLIED_RE.search(m.group(3)) and not LESSON_WORD_RE.search(m.group(3)):
             out.append((lesson_ids(m.group(1)), m.group(2).lower(), shift))
     return out
 
@@ -530,7 +535,8 @@ def lessons_entries(stage: str, text: str = None):
     out, shifts, current, in_lesson = [], {}, None, False   # shifts: id -> {word: {shift}}
     for lineno, line in outside_markup(text):
         listed = re.match(r"\s*[-*]\s", line)
-        if in_lesson and line.strip() and not listed and not line.startswith("#"):   # the rule's paragraph goes on
+        evidence = LESSON_EVIDENCE_RE.match(line.strip(" -*"))   # an `Evidence:` line is never part of a rule
+        if in_lesson and line.strip() and not listed and not evidence and not line.startswith("#"):   # the rule goes on
             out[-1][5] += " " + line.strip()
             continue
         in_lesson = False
@@ -542,7 +548,7 @@ def lessons_entries(stage: str, text: str = None):
         elif out and current and not out[-1][2] and (m := LESSON_STATUS_RE.match(line)):
             out[-1][2], out[-1][4] = m.group(1).lower(), lineno
         elif out and current and not out[-1][5] and (m := LESSON_TEXT_RE.match(line)
-                                                      or not listed and LESSON_TEXT_MID_RE.search(line)):
+                                                      or not listed and not evidence and LESSON_TEXT_MID_RE.search(line)):
             out[-1][5], in_lesson = m.group(1).strip(), True
         elif m := LESSON_VERDICT_RE.match(line):
             for ids, word, shift in lesson_verdicts(m.group(1)):
@@ -1846,8 +1852,11 @@ def _cmd_takeover(a) -> int:
 
     if not a.dry_run:
         if left:   # the digest alone was read and ignored 13 times (audit 2026-11-21): the journal reaches the audit too
-            hc.journal_append(stage, tag, "@hub lessons wait for promotion — act on them before planning (lessons.md § "
-                                          "Promoting a lesson): " + "; ".join(left))
+            try:
+                hc.journal_append(stage, tag, "@hub lessons need action — the takeover could not settle them (lessons.md "
+                                              "§ Promoting a lesson): " + "; ".join(left))
+            except (OSError, hc.Failure, hc.UsageError) as err:
+                print(f"ATTENTION: cannot journal the lessons left: {err}")
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
