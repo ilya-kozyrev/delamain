@@ -419,7 +419,7 @@ $B/jwait --journal --tag hub-1 --tag hub --hub-events --settle 1 --for 5s --sinc
 check "$(grep -c '@hub ALARM merge window' $O/at2.out)" 1 "the hub's jwait delivers the ALARM line"
 # a time in the past today is tomorrow (jwait's parser): the alarm is armed, not refused; kill it -> CANCELLED, no wake
 : > $J
-out=$($B/await --at 00:00:01 --label "tomorrow" 2>&1); check $? 0 "--at HH:MM:SS already past today means tomorrow, as in jwait --until"
+out=$($B/await --at "$(in_s -60)" --label "tomorrow" 2>&1); check $? 0 "--at HH:MM:SS a minute ago means tomorrow, as in jwait --until"
 pid=$(echo "$out" | sed -n 's/^await: started supervisor pid \([0-9]*\).*/\1/p')
 sleep 1; check "$(grep -c '' $J)" 0 "negative: an armed alarm writes nothing"
 kill "$pid"; waitline 'CANCELLED tomorrow'; check $? 0 "a killed alarm journals CANCELLED"

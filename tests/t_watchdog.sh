@@ -127,6 +127,8 @@ prompt(){  # NAME LINE WANT-RUNS TEXT: a line a minute old, one tick
 prompt spdone "[exec-1] DONE work/x-REPORT.md" 2 "a DONE line a minute old wakes the hub at the first tick"
 prompt spfail "[exec-1] @hub tests FAILED on main" 2 "a FAILED line (jwait.HELD_WAKE_RE) a minute old wakes it"
 prompt spawait "[hub-3-await] @hub PASSED gh-ci-wait 7 (exit 0, 80s)" 2 "an await verdict a minute old wakes it, whatever its --ok word"
+prompt spalarm "[hub-3-await] @hub ALARM merge window (exit 0, 14m, log x.log)" 2 "an \`await --at\` alarm line (ALARM is no status word, the -await tag makes it a prompt line) wakes a hub that died meanwhile"
+prompt spalarmx "[exec-1] @hub-3 ALARM merge window" 1 "negative: the word ALARM from another tag is a plain line, only the -await tag makes it a prompt"
 prompt spowner "[owner] @hub-3 смотри Q-1" 2 "a line of the owner a minute old wakes it"
 prompt spplain "[exec-1] @hub-3 please look at this" 1 "negative: a plain line a minute old does not wake"
 prompt spheld "[sh-peer-hub-4] @hub fyi my side is merged" 1 "negative: a held line a minute old does not wake"

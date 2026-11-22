@@ -236,6 +236,11 @@ Added with the CI-wait tool; the core `SKILL.md` carries the short form.
    `gh-ci-wait N --require 'NAME' …` (never `gh pr checks --watch`: it exits 0 on a cancelled check; see *Waiting for CI* in `docs/launch-modes.md`).
 4. `kill <supervisor pid>` (printed by `await`) stops a wait and journals `CANCELLED <label>` without `@hub`: no wake;
    a missing line after the deadline means the supervisor was SIGKILLed — read the log path from the start message.
+5. An alarm that must fire even if the hub dies: `await --at HH:MM|ISO --label "merge window"` (no COMMAND; the time is
+   `jwait --until`'s, a past clock time is tomorrow, a past ISO date is refused). The supervisor sleeps to the time and
+   journals `@hub ALARM <label>` signed `<tag>-await`, which the watchdog treats as a prompt line: a dead hub is woken
+   at the next tick. `jwait --until` is a process of the hub session and dies with it, so use it only while the hub
+   is alive anyway; `kill <pid>` of an `--at` supervisor journals CANCELLED and wakes nobody.
 
 ## Optional modules
 
