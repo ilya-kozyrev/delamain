@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.28 — 2026-11-22
+
 - **Reproducible hub retrospectives.** `retro plan` prepares a window and bounded reader/lessons/efficiency/
   verification briefs; `retro measure` writes source-linked quantitative and A–D delivery scorecards, CSVs and
   flat metrics for comparison with the previous audit. The `retro` skill ties evidence extraction, classification,
@@ -23,7 +25,6 @@
   `nothing runs in <stage>: continue the plan, or watchdog quiet --reason …, or roles retire hub`; a hub that cannot be woken (Desktop, a terminal or
   unconfirmed Codex host) gets one `nothing runs` notification instead; the hub's own headless run rewritten by that wake is no work. A pure `jwait --until/--for` alarm now marks itself (`<caller>.alarm.json`) so
   the stall rule sees it; R3 ignores that file. A dormant `claude --bg` hub is nudged once before the dormant stop.
-
 - **The watchdog stops waking a hub into a wall and stops repeating itself to the owner's phone.** 08–21.11: ~190
   wakes into dead turns and ~170 `wake failed` notifications (core-d hub-35: 14 wakes and 14 notifications on one line
   during an account verification block). Now a hub whose last turn hit the usage limit is not woken, nor the owner
