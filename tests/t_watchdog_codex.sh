@@ -211,7 +211,9 @@ for ending in endings:
  os.utime(p,(stamp,stamp));before_calls=calls()
  out=command('watchdog','run','--stage','r4-control',extra={'AGENT_HUB_WATCHDOG_NOW':tick_now.isoformat(),
              'AGENT_HUB_WATCHDOG_API_ERROR':'on','AGENT_HUB_NOTIFY_LOCAL':'off'})
- assert calls()==before_calls and 'woke ' not in out,(ending,out,calls())
+ # the hub is idle and silent: the stall rule (not R4) may wake it once with its own text; never a dead-turn retry
+ assert 'dead turn' not in out and all('nothing runs in r4-control' in c[-1] for c in calls()[len(before_calls):]),(ending,out,calls())
+ assert len(calls())-len(before_calls)<=1,calls()
 print('PASS real R4 ticks never retry user interruption, ordinary completion or failures without eligibility')
 # Exact persisted shape observed on CLI 0.160.0: terminal overload, with the same turn's start.
 started_at=int((tick_now-timedelta(minutes=70)).timestamp())
