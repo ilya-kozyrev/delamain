@@ -1523,7 +1523,9 @@ def limit_stop(r: dict):
     again at 12:14 PM.` (normalize_event keeps it in `errors`). Any other error, a 429 included, is not one."""
     if not isinstance(r, dict) or not r.get("is_error"):
         return None
-    texts = [r.get("result")] + [e.get("message") if isinstance(e, dict) else e for e in r.get("errors") or []]
+    # Codex: only the failure's own message (`errors`); its `result` is the assistant's last text, not an error text
+    texts = ([e.get("message") if isinstance(e, dict) else e for e in r.get("errors") or []]
+             if r.get("_engine") == "codex" else [r.get("result")])
     for text in texts:
         if isinstance(text, str) and LIMIT_RE.search(text):
             m = LIMIT_RESET_RE.search(text)

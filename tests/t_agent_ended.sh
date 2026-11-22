@@ -114,6 +114,18 @@ exit_note lim-x 1 '{"type": "thread.started", "thread_id": "t1"}
 {"type": "error", "message": "You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 29th, 2026 11:21 PM."}
 {"type": "turn.failed", "error": {"message": "You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 29th, 2026 11:21 PM."}}' codex > /dev/null
 grep -q 'EXIT lim-x: LIMIT, resets Oct 29th, 2026 11:21 PM; code 1' "$(J)"; check $? 0 "a Codex failed turn (usage limit): LIMIT, resets <time>"
+# Codex: the failure's own message decides, not the assistant's last text (review of #185)
+CXA='{"type": "item.completed", "item": {"type": "agent_message", "text": "Investigating the hit your limit message in the log"}}'
+exit_note lim-xa 1 '{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}
+'"$CXA"'
+{"type": "turn.failed", "error": {"message": "network connection lost"}}' codex > /dev/null
+grep -q 'EXIT lim-xa: error, error; code 1' "$(J)" && ! grep 'EXIT lim-xa: ' "$(J)" | grep -q LIMIT; check $? 0 "codex: an assistant text that mentions the limit does not make an ordinary failure a LIMIT"
+exit_note lim-xb 1 '{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"type": "agent_message", "text": "Checking the hit your limit wording, back shortly"}}
+{"type": "turn.failed", "error": {"message": "You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at 12:14 PM."}}' codex > /dev/null
+grep -q 'EXIT lim-xb: LIMIT, resets 12:14 PM; code 1' "$(J)"; check $? 0 "codex: the reset time comes from the failure's message even after an unrelated assistant text"
 exit_note lim-e 1 '{"type": "result", "subtype": "success", "is_error": true, "api_error_status": 429, "result": "API Error: 429 too many requests, retry later"}' > /dev/null
 grep -q 'EXIT lim-e: success, error; code 1' "$(J)" && ! grep -q 'LIMIT' <(grep 'EXIT lim-e: ' "$(J)"); check $? 0 "control: an ordinary 429 error stays \"success, error\", not LIMIT"
 exit_note lim-t 0 '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "I read about the hit your limit message: ok"}' > /dev/null
