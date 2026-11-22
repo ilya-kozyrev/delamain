@@ -27,6 +27,7 @@ setup(){
   H=$(cd "$(dirname $H)" && pwd -P)/$(basename $H)  # as `hub succeed` resolves it
   W=$R/work; mkdir -p $W; : > $NOTIFY_LOG
 }
+has_blocked(){ python3 -c 'import json,sys; print("blocked" in json.load(open(sys.argv[1])))' $R/stage-a/auto-handoff.json; }
 notified(){ grep -c "^delamain: stage-a — handoff blocked$" $NOTIFY_LOG; }
 hub_tag(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["roles"]["hub"].get("tag"))' $R/stage-a/roles.json; }
 # no visible successor: nothing headless (no agent spawn), the predecessor still the hub, the reservation given back
@@ -241,6 +242,28 @@ check "$?:$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:1:1" "same refus
 grep -q "already journaled and the owner notified.*not repeated" $R/dup.out; check $? 0 "same refusal twice: the second run says it was already reported"
 FAKE_BG=dirtrust succeed --model opus > /dev/null 2>&1
 check "$?:$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:2:2" "a different reason: journaled and notified again"
+# review #189 round 2 (1): a refusal found in the session's own logs (after its id was recorded) is deduplicated too
+setup
+FAKE_LOGS=notloggedin succeed --model opus > /dev/null 2>&1; FAKE_LOGS=notloggedin succeed --model opus > /dev/null 2>&1
+check "$?:$(call stop count):$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:2:1:1" "logs refusal twice: both sessions stopped, one journal line, one notification"
+# …and a start that passes its checks forgets the refusal: the same one later is news again
+succeed --model opus > /dev/null 2>&1; check "$?:$(pending kind)" "0:bg" "after a good start: the successor is recorded"
+check "$(has_blocked)" False "after a good start: the refusal is forgotten"
+# review #189 round 2 (2): a refusal before any worktree (login) keeps the worktree of the earlier trust refusal
+setup; mkrepo
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1
+first_cwd=$(call --bg cwd)
+FAKE_LOGIN=no $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 1 "trust, then login refusal: refused"
+FAKE_BG=untrusted FAKE_TRUSTED="$first_cwd" $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1
+check "$?:$(call --bg cwd):$(pending kind)" "0:$first_cwd:bg" "trust, then login refusal: the retry still reuses the worktree the CLI named"
+# a takeover ends the refused handoff: its worktree (maybe the new hub's own, started there by hand) is not reused
+setup; mkrepo
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1
+first_cwd=$(call --bg cwd)
+check "$(has_blocked)" True "takeover: the refusal is on record before it"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $H > /dev/null 2>&1
+check "$(has_blocked)" False "after a takeover: the refusal and its worktree are forgotten"
+
 # review #189 (1): --replace stops a successor that took over, then the new start is refused: its record and chain
 # place stay (a second --replace works), and the line does not claim the old hub still leads
 setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > /dev/null 2>&1

@@ -236,6 +236,9 @@ def on_takeover(stage: str, n: int, auto: bool = False, session: str = "", locke
     even when it gets the number of a successor that has not taken over yet."""
     with contextlib.nullcontext() if locked else state_lock(stage):
         data = load_state(stage)
+        if data.pop("blocked", None) is not None:
+            # a takeover ends the refused handoff: its worktree may be the new hub's (one started there by hand)
+            save_state(stage, data)
         pend = data.get("pending") or {}
         if (pend.get("surface") == "desktop" and pend.get("kind") == "desktop"
                 and pend.get("taken_over") and pend.get("n") == n and session == pend.get("id")
@@ -1225,7 +1228,15 @@ def _record(stage: str, succ: int, pend: dict, reservation: Optional[dict] = Non
             if previous.get("grilling_owner_asked") and previous.get("handoff") == pend.get("handoff"):
                 pend = dict(pend, grilling_owner_asked=previous["grilling_owner_asked"])
             data["pending"] = pend
-            data.pop("blocked", None)  # a successor started: a later refusal is news again
+            save_state(stage, data)
+
+
+def _clear_blocked(stage: str) -> None:
+    """Forget the refusal owner_blocked recorded: a successor started (its checks passed) or the shift was taken over —
+    a later refusal is news again, and the refused start's worktree is no longer this command's to reuse."""
+    with state_lock(stage):
+        data = load_state(stage)
+        if data.pop("blocked", None) is not None:
             save_state(stage, data)
 
 
@@ -1444,6 +1455,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             _record(stage, succ, pend, reservation)  # the id first: a crash while the link is read leaves it findable
             pend["link"] = s.wait_link(got["id"])
             _record(stage, succ, pend, reservation)
+            _clear_blocked(stage)
             report(stage, s, pend, takeover_timeout())
             return 0
         except Start as e:
@@ -1480,6 +1492,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     pend = {"n": succ, "kind": "headless", "at": started, "handoff": str(handoff), "model": model, "k": k, "prepare_s": prep_s,
             "why": why, "cwd": str(s.cwd), "engine": engine, "mode": mode, "approval_policy": approval, "sandbox_policy": sandbox_policy, "effort": effort, **got}
     _record(stage, succ, pend, reservation)
+    _clear_blocked(stage)
     report(stage, s, pend, takeover_timeout())
     return 0
 
@@ -2069,9 +2082,12 @@ def owner_blocked(stage: str, tag: str, succ: int, why: str, retry: str, worktre
     journaled nor notified twice; state `blocked` remembers it and the refused start's worktree, for the retry."""
     line = (f"BLOCKED auto-handoff: @owner no visible successor — {why}. {stays or tag + ' stays the hub'}; nothing "
             f"headless was started. Fix the reason, then retry: {retry}")
-    note = {"n": succ, "why": why, "worktree": worktree}
     with state_lock(stage):
         data = load_state(stage)
+        prev = data.get("blocked") or {}
+        if not worktree and prev.get("n") == succ:
+            worktree = prev.get("worktree") or ""  # a refusal before any worktree (login) keeps the earlier one
+        note = {"n": succ, "why": why, "worktree": worktree}
         seen = {k: (data.get("blocked") or {}).get(k) for k in ("n", "why")} == {"n": succ, "why": why}
         data["blocked"] = dict(note, at=(data.get("blocked") or {}).get("at") if seen else hc.now().isoformat(timespec="seconds"))
         save_state(stage, data)
