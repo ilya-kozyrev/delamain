@@ -15,6 +15,15 @@
   from a failure or plan the resume. The exit line is now `EXIT <role>: LIMIT, resets 6:20pm (Europe/Moscow); code 1, …`
   (`LIMIT, reset unknown` without a time) for Claude's limit result and Codex's "usage limit" failed turn; `EXIT` stays
   the first word, so wake patterns are unchanged.
+- **The watchdog stops waking a hub into a wall and stops repeating itself to the owner's phone.** 08–21.11: ~190
+  wakes into dead turns and ~170 `wake failed` notifications (core-d hub-35: 14 wakes and 14 notifications on one line
+  during an account verification block). Now a hub whose last turn hit the usage limit is not woken, nor the owner
+  notified, before the reset its error names ("resets 6:20pm (Europe/Moscow)") plus 5 min; an account error
+  (`verification_required`, `authentication_failed`, `oauth_org_not_allowed`) is never woken and the owner gets one
+  `account blocked` per episode. `wake failed` reaches the owner once per episode (the journal and the log keep every
+  attempt). A hub that cannot be woken (Desktop) is notified on the first attempt, then only when more lines wait and at
+  most every 4 h (test-speedup hub-1: 20 hourly notifications in a night). "jwait does not match" counts only lines at
+  least 3 min old: all 84 such messages were lines still inside the live waiter's settle.
 
 ## 1.0.27 — 2026-11-08
 
