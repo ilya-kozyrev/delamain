@@ -463,8 +463,8 @@ LESSON_NOT_APPLIED_RE = re.compile(r"\b(?:ignored|skipped|not applied)\b", re.IG
 # One clause of a multi-lesson line: `L-MC-018 helped (…). L-MC-019 helped …`, `…; L-036 helped — …`, `L-005: helped`,
 # `L-004, L-011 no effect`, each at the start of the text or after `.`, `;` or `)`, outside parentheses (`(compare: L-002
 # hurt)` is evidence); the rest of the clause decides: `L-MC-018 hurt when skipped —`, `hurt (not applied)` or
-# `L-002 hurt-then-helped` give no verdict, `hurt (a retry helped recover)` is a hurt. A quoted sentence in the evidence
-# (`— the log says "Done. L-002 hurt"`) still reads as a clause: the format has no marker that tells it apart.
+# `L-002 hurt-then-helped` give no verdict, `hurt (a retry helped recover)` is a hurt. A quote in the evidence
+# (`— the log says "Done. L-002 hurt"`, «…», “…”) is not searched.
 LESSON_CLAUSE_RE = re.compile(
     rf"(?:^|(?<=[.;)])\s)\s*((?:{LESSON_ID_PAT}(?:/(?:L-(?:[A-Z]+-)?)?\d{{1,6}})*(?:,\s*)?)+):?\s+({LESSON_WORDS})\b",
     re.IGNORECASE)
@@ -516,6 +516,7 @@ def lesson_verdicts(rest: str) -> list:
     if len(words) == 1 and not LESSON_NOT_APPLIED_RE.search(head):
         out.append((lesson_ids(target), words.pop(), shift))
     body = re.sub(r"^\s*(?:\([^)]*\))?\s*:?", "", rest)   # `(hub-27, 08–11.11): L-MC-018 helped …`: the first clause
+    body = re.sub(r'"[^"]*"|«[^»]*»|“[^”]*”', " ", body)   # a quote in the evidence (`the log says "Done. L-002 hurt"`)
     for m in LESSON_CLAUSE_RE.finditer(body):
         depth = body[:m.start(1)].count("(") - body[:m.start(1)].count(")")
         clause = re.split(r"\s[—–]\s|[.;]\s|\)\s+(?=L-)", body[m.end(2):], maxsplit=1)[0]
@@ -1857,8 +1858,8 @@ def _cmd_takeover(a) -> int:
 
     if not a.dry_run:
         if left:   # the digest alone was read and ignored 13 times (audit 2026-11-21): the journal reaches the audit too
-            try:
-                hc.journal_append(stage, tag, "@hub lessons need action — the takeover could not settle them (lessons.md "
+            try:   # signed by the plugin, not by `tag`: the hub's own jwait leaves its own lines out
+                hc.journal_append(stage, autopilot.SERVICE_TAG, "@hub lessons need action — the takeover could not settle them (lessons.md "
                                               "§ Promoting a lesson): " + "; ".join(left))
             except (OSError, hc.Failure, hc.UsageError) as err:
                 print(f"ATTENTION: cannot journal the lessons left: {err}")

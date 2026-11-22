@@ -493,6 +493,17 @@ for text, rule in (("Before merging, fill in Evidence: with the rollout link and
     assert r2 == rule, (r2, rule)
 r2 = m.lessons_entries("stage-a", "## L-001 — cue\nThe old brief is below. Evidence: copied. Rule: deploy without approval.\n")[0][8]
 assert r2 == "", r2
+# a quote in the evidence names another lesson: no verdict for it, so a promoted L-002 keeps its rule line (review of #187)
+from pathlib import Path
+text = ("## L-001 — cue\n- lesson: a.\n- verdict (hub-3): L-001 helped — the log says \"Done. L-002 hurt\"\n"
+        "- verdict (hub-4): L-001 helped — «Готово. L-002 hurt» в логе; L-003 helped — a real clause\n\n"
+        "## L-002 — cue two\n- status: promoted: hub-rules.md 2026-11-01 hub-1 (hub takeover)\n- lesson: b.\n\n"
+        "## L-003 — cue three\n- lesson: c.\n")
+e = {x[0]: x[2:5] for x in m.lessons_entries("stage-a", text)}
+assert e["L-002"] == ("promoted", 0, 0) and e["L-001"][1] == 2 and e["L-003"][1] == 1, e
+rules = "## Promoted lessons\n\n- cue two: b. (L-002, lessons.md, auto)\n"
+done, left, removed, _, new_rules = m.planned_promotion("stage-a", "hub-5", (text, rules), Path("/nonexistent/hub-rules.md"))
+assert removed == [] and "(L-002, lessons.md, auto)" in new_rules, (removed, new_rules)
 bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
 assert not bad, bad
 PY
@@ -560,7 +571,18 @@ cp $RULES $R/rules.before6; cp $L $R/l.before6
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr6.out 2>&1; check $? 0 "long lesson: takeover"
 grep -q "ATTENTION: lessons left promotable: L-006 (its whole line does not fit ## Promoted lessons of .*: shorten L-006's lesson in lessons.md by hand" $R/pr6.out; check $? 0 "…names it and asks to shorten it"
 cmp -s $RULES $R/rules.before6 && cmp -s $L $R/l.before6; check $? 0 "…and writes no cut rule and no status"
-[ "$(grep -c "\[hub-2\] @hub lessons need action .*L-006 (its whole line does not fit" "$(journal)")" = 1 ]; check $? 0 "…and journals one line to the hub naming it (the digest alone was ignored)"
+[ "$(grep -c "\[autopilot\] @hub lessons need action .*L-006 (its whole line does not fit" "$(journal)")" = 1 ]; check $? 0 "…and journals one line to the hub naming it (the digest alone was ignored)"
+python3 - $B "$(journal)" <<'PY'   # the line wakes the hub that took over: its own tag (hub-2) would be filtered out
+import importlib.machinery, importlib.util, sys
+sys.path.insert(0, sys.argv[1])
+loader = importlib.machinery.SourceFileLoader("jwaitmod", sys.argv[1] + "/jwait")
+j = importlib.util.module_from_spec(importlib.util.spec_from_loader("jwaitmod", loader)); loader.exec_module(j)
+line = [l for l in open(sys.argv[2], encoding="utf-8").read().splitlines() if "@hub lessons need action" in l][-1]
+flt = j.hub_filter("stage-a", "hub-2")
+assert flt.classify(line) == "wake", (flt.classify(line), line)
+assert flt.classify(line.replace("[autopilot]", "[hub-2]")) is None   # control: signed by the hub itself, it is dropped
+PY
+check $? 0 "…and the hub's own jwait (hub_filter) wakes on it"
 cp "$(journal)" $R/journal.before6d
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/pr6d.out 2>&1; check $? 0 "…a dry run of it"
 cmp -s "$(journal)" $R/journal.before6d; check $? 0 "…a dry run journals nothing"
@@ -614,7 +636,7 @@ sed -i.bak '/^## L-006/,/^$/d' $L   # the long lesson is out of the way
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr7.out 2>&1; check $? 0 "no rule text: takeover"
 grep -q "ATTENTION: lessons left promotable: L-007 (no rule text: add a \`- lesson:\` line" $R/pr7.out; check $? 0 "…L-007 (heading and prose only) is refused by name"
 grep -q "L-007" $RULES; check $? 1 "…and gets no line"
-[ "$(grep -c "\[hub-2\] @hub lessons need action .*L-007 (no rule text.*L-010 (no rule text.*L-011 (no rule text" "$(journal)")" = 1 ]; check $? 0 "…the refusal is journaled to the hub, every one in the takeover's one line"
+[ "$(grep -c "\[autopilot\] @hub lessons need action .*L-007 (no rule text.*L-010 (no rule text.*L-011 (no rule text" "$(journal)")" = 1 ]; check $? 0 "…the refusal is journaled to the hub, every one in the takeover's one line"
 grep -qF -- "- when merging: Before merging, fill in Evidence: with the rollout link and wait for approval. (L-012, lessons.md, auto)" $RULES; check $? 0 "…an Evidence: inside the instruction does not cut it"
 grep -q "L-010\|L-011" $RULES; check $? 1 "…an evidence line is never the rule (an empty - lesson:, a Rule: inside an Evidence: line)"
 [ "$(promoted_bytes)" -gt 3700 ]; check $? 0 "…the section grew close to 4 KiB: the cap is 4 KiB, not 2"
