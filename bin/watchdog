@@ -16,7 +16,8 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it; a prompt line (a status word, an await verdict, the
       owner) wakes an idle hub at the next tick; a line wakes the hub once (delivered when the hub acts after the wake)
-  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it
+  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it; a usage limit not
+      before the reset its error names + 5 min, an account error never (the owner is notified once per episode)
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
   R6  an engine's plan week crosses to "ahead of pace" or "runs out before the reset" (bin/limit_pace.py) → one
@@ -336,7 +337,8 @@ def notify_message(stage: str, kind: str, silent_min: int = 0, lines: int = 0) -
     if kind == "silent":
         tail = f"hub silent {silent_min} min" + (f", {lines} lines waiting" if lines else "")
     else:
-        tail = {"turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck"}[kind]
+        tail = {"turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck",
+                "account": "account blocked"}[kind]
     return f"delamain: {stage} — {tail}"
 
 
@@ -464,9 +466,58 @@ def dead_turn(path):
             continue
         if o.get("type") == "assistant" and o.get("isApiErrorMessage") is True:
             err = re.sub(r"[^\w .:-]", "", str(o.get("error") or "api error"))[:40] or "api error"
-            return parse_ts(o.get("timestamp")) or mtime_of(path), err
+            content = (o.get("message") or {}).get("content") if isinstance(o.get("message"), dict) else None
+            text = " ".join(str(c.get("text") or "") for c in content if isinstance(c, dict)) if isinstance(content, list) else ""
+            return parse_ts(o.get("timestamp")) or mtime_of(path), err, text[:300]
         return None
     return None
+
+
+# An API error a wake cannot cure: the account itself is blocked (the owner acts), or the usage limit has not reset yet
+ACCOUNT_ERRORS = frozenset({"verification_required", "authentication_failed", "oauth_org_not_allowed"})
+LIMIT_SLACK = dt.timedelta(minutes=5)  # a rate-limited hub is woken this long after the reset its error names
+RESET_RE = re.compile(r"\bresets\s+(?:([A-Z][a-z]{2})\w*\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)"
+                      r"(?:\s*\(([\w/+-]+)\))?", re.I)
+
+
+def limit_reset(at: dt.datetime, text: str):
+    """The reset a `rate_limit` error names ("You've hit your 5-hour limit · resets 6:20pm (Europe/Moscow)"): the first
+    such time after the error, in the zone it names (else the hub's). None when the text names none."""
+    m = RESET_RE.search(text or "")
+    if not m:
+        return None
+    mon, day, hh, mm, ampm, zone = m.groups()
+    tz = hc.TZ
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(zone)
+        except Exception:  # noqa: BLE001 — an unknown zone name: the hub's own
+            pass
+    hour = int(hh) % 12 + (12 if ampm.lower() == "pm" else 0)
+    local = at.astimezone(tz)
+    try:
+        if mon:
+            month = dt.datetime.strptime(mon[:3].title(), "%b").month
+            t = local.replace(month=month, day=int(day), hour=hour, minute=int(mm or 0), second=0, microsecond=0)
+            if t < local - dt.timedelta(days=1):
+                t = t.replace(year=t.year + 1)
+            return t
+        t = local.replace(hour=hour, minute=int(mm or 0), second=0, microsecond=0)
+    except ValueError:
+        return None
+    return t if t > local else t + dt.timedelta(days=1)
+
+
+def dead_hold(dead):
+    """Why a dead turn must not be woken: ("account", None) for an error of the account, ("limit", until) for a usage
+    limit until 5 min after its reset; None when a wake may cure it (a server error, a limit with no reset named)."""
+    if not dead:
+        return None
+    if dead[1] in ACCOUNT_ERRORS:
+        return "account", None
+    reset = limit_reset(dead[0], dead[2]) if dead[1] == "rate_limit" and len(dead) > 2 else None
+    return ("limit", reset + LIMIT_SLACK) if reset else None
 
 
 def running_row(rows, sid: str):
@@ -601,6 +652,8 @@ def claude_rows(tick: Tick):
 # ---------------------------------------------------------------- what waits for the hub
 
 HELD_WAKE_AFTER = dt.timedelta(minutes=30)  # jwait's stream deadline (29m) and its settle
+MISMATCH_AFTER = dt.timedelta(minutes=3)  # a live jwait saves a line as seen after its settle (20 s) + the stamp's minute
+NOTIFY_AGAIN = dt.timedelta(hours=4)  # a hub that cannot be woken: the least time between two notifications of an episode
 
 
 def prompt_line(flt, tag: str, text: str) -> bool:
@@ -970,6 +1023,7 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     if not (lines or night or codex or (maybe_dead and now - maybe_dead[0] >= tick.wake_after)):
         if not maybe_dead:  # a young API-error record may still belong to an episode that is going on
             hs["episode"] = None  # nothing waits: the dearer questions (is it busy, which host) are not asked
+            hs.pop("blocked", None)
             rule_dormant(tick, stage, rec)
         return
     o = observe(tick, stage, rec)
@@ -988,7 +1042,8 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     silent = o["busy"] is not True and (now - last >= tick.wake_after or (o["busy"] is False and any(ln[4] for ln in lines)))
     dead = raw_dead if raw_dead and now - raw_dead[0] >= tick.wake_after else None
     armed = live_waiter(tick, stage, rec)
-    unmatched = [ln for ln in lines if ln[3] != "held"]  # a held line waits in a live jwait by design (HELD_MAX)
+    # a held line waits in a live jwait by design (HELD_MAX); a young one may be in the waiter's settle, not yet seen
+    unmatched = [ln for ln in lines if ln[3] != "held" and now - ln[0] >= MISMATCH_AFTER]
     if armed and unmatched and not dead and (tick.dry or hs.get("mismatch") != unmatched[0][1]):
         hs["mismatch"] = unmatched[0][1]
         tick.journal(stage, f"{tag}'s jwait does not match {len(unmatched)} lines addressed to it, waiting since "
@@ -998,14 +1053,39 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
         if ep and not (lines or night or raw_dead):
             hs["episode"] = None
         return
+    hold = dead_hold(raw_dead)
+    if not (hold and hold[0] == "account"):
+        hs.pop("blocked", None)
+    if hold:
+        # a wake cannot cure it: no wake, no "wake failed"; an account block is told to the owner once
+        if ep and ep.get("result") == "pending" and not tick.dry:
+            ep["result"] = f"held: {raw_dead[1]}"
+        if hold[0] == "account":
+            if not hs.get("blocked"):
+                tick.say(stage, "R4", f"{tag}'s last turn ended on {raw_dead[1]}: not woken, the account needs the owner")
+                tick.journal(stage, f"{tag} is not woken: its last turn ended on {raw_dead[1]} (the account needs the owner)")
+                tick.notify(stage, "R4", notify_message(stage, "account"))
+                if not tick.dry:
+                    hs["blocked"] = iso(now)
+            return
+        if now < hold[1]:
+            if hs.get("held") != iso(hold[1]):
+                tick.say(stage, "R4", f"{tag} hit the usage limit: not woken before {hold[1].astimezone(hc.TZ):%H:%M}")
+                if not tick.dry:
+                    hs["held"] = iso(hold[1])
+            return
     if ep is None:
         ep = hs["episode"] = {"start": iso(now), "attempts": 0, "acted_at": None, "next_try_at": None,
                               "result": None, "since": iso(lines[0][0]) if lines else None}
     if ep.get("result") == "pending" and acted and not tick.dry and now - acted >= dt.timedelta(seconds=VERIFY_AFTER_S):
         ep["result"] = "failed: no activity of the hub after the wake"
-        tick.journal(stage, f"wake of {tag} failed (no activity of the hub within {VERIFY_AFTER_S // 60} min); owner notified")
+        first = not ep.get("fail_notified")
+        tick.journal(stage, f"wake of {tag} failed (no activity of the hub within {VERIFY_AFTER_S // 60} min)"
+                            + ("; owner notified" if first else ""))
         tick.say(stage, "R3", f"wake of {tag} showed no activity")
-        tick.notify(stage, "R3", notify_message(stage, "wake-failed"))
+        if first:  # once per episode: every later failure is in the log and the journal only
+            ep["fail_notified"] = True
+            tick.notify(stage, "R3", notify_message(stage, "wake-failed"))
     nxt = parse_ts(ep.get("next_try_at"))
     if nxt and now < nxt:
         return
@@ -1029,7 +1109,12 @@ def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, de
         kind = "turn" if dead and not lines and not night else "silent"
         why = o["why"] or ("busy state unknown" if o["busy"] is None else f"{o['host']} host")
         tick.say(stage, "R4" if dead else "R3", f"{tag} ({o['host']}) is not woken: {why}")
-        tick.notify(stage, "R4" if dead else "R3", notify_message(stage, kind, silent_min, len(lines)))
+        told = parse_ts(ep.get("notified_at"))
+        # the owner is told on the first attempt, then only when more lines wait, and at most every NOTIFY_AGAIN
+        if told is None or (len(lines) > int(ep.get("notified_lines") or 0) and now - told >= NOTIFY_AGAIN):
+            tick.notify(stage, "R4" if dead else "R3", notify_message(stage, kind, silent_min, len(lines)))
+            if not tick.dry:
+                ep.update(notified_at=iso(now), notified_lines=len(lines))
         if not tick.dry:
             ep["result"] = "notified"
         return
@@ -1045,10 +1130,13 @@ def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, de
             # only the lines the wake quoted (wake_text): one past WAKE_LINES keeps its right to a later wake
             ep["woke"] = {**(ep.get("woke") or {}), **{line_id(ln[0], ln[1]): iso(ln[0]) for ln in lines[:WAKE_LINES]}}
     else:
+        first = not ep.get("fail_notified")
         tick.say(stage, rule, f"wake of {tag} failed ({res['how']}): {res['detail']}", argv=res["how"])
-        tick.journal(stage, f"wake of {tag} failed ({res['how']}, {res['detail']}); owner notified")
-        tick.notify(stage, rule, notify_message(stage, "wake-failed"))
+        tick.journal(stage, f"wake of {tag} failed ({res['how']}, {res['detail']})" + ("; owner notified" if first else ""))
+        if first:  # once per episode: every later failure is in the log and the journal only
+            tick.notify(stage, rule, notify_message(stage, "wake-failed"))
         if not tick.dry:
+            ep["fail_notified"] = True
             ep["result"] = f"failed: {res['detail'][:120]}"
 
 

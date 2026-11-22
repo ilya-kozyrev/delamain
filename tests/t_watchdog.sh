@@ -595,7 +595,7 @@ bo 45;  check "$(resumed)" 3 "backoff: …the third at +45 min (30 min after the
 bo 104; check "$(resumed)" 3 "backoff: …none at +104 min"
 bo 105; check "$(resumed)" 4 "backoff: …the fourth at +105 min (60 min after the third)"
 check "$(count 'wake of hub-4 failed' "$(J sbo)")" 4 "backoff: every failed attempt is journaled"
-check "$(count 'delamain: sbo — wake failed' "$R/notify.log")" 4 "backoff: …and the owner notified each time"
+check "$(count 'delamain: sbo — wake failed' "$R/notify.log")" 1 "backoff: …and the owner notified once per episode"
 # the hub shows activity after a wake: the episode is over, a later silence starts a new one at once
 FX_NOW=$(utc_iso 106) FX transcript $B81 0 ok                           # entries at +103, +104 min
 bo 110; check "$(state_val stages sbo hub episode)" "" "backoff: activity after the wake resets the episode"
