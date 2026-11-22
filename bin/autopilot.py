@@ -4,9 +4,12 @@ At the context budget's warn threshold the hook tells a stage hub to hand over a
 fill the TODOs, `hub succeed`. Do not compact to extend the shift. Codex console successors are detached `agent spawn --engine codex` sessions;
 actual app hubs prepare a native desktop request that the current app agent executes.
 Claude starts the successor as a background Remote Control session
-(`claude --bg --remote-control`), reachable from the phone or claude.ai and from a terminal (`claude attach <id>`);
-when that cannot start, as a headless hub (`agent spawn`) the owner talks to through `ask` and `agent send`. Either
-starts from the main checkout of the hub's directory in a new worktree of its own (outside git: in the directory).
+(`claude --bg --remote-control`), reachable from the phone or claude.ai and from a terminal (`claude attach <id>`).
+When that cannot start or does not take over, nothing headless starts in its place (owner, Q-AUDIT-010): the
+predecessor stays the hub, one `@owner` journal line gives the CLI's own reason and the command to retry, the owner is
+notified once (the watchdog's channels) and `hub succeed` exits 1. A headless hub (`agent spawn`) is started only when
+asked for: `--headless`, or the Codex engine's detached successor. Either starts from the main checkout of the hub's
+directory in a new worktree of its own (outside git: in the directory).
 
 Settings (the hub home's config.json or the environment only — a cloned repository must not start background
 sessions or choose their permission mode):
@@ -445,8 +448,8 @@ def fallback_mode(model: str) -> str:
 # ---------------------------------------------------------------- instructions for the hub (the hook)
 
 def succeed_command(stage: str, model: Optional[str], mode: Optional[str], cwd: Optional[str], engine=None,
-                    effort: Optional[str] = None) -> str:
-    parts = [tool("hub"), "succeed", "--stage", stage, "--handoff", "<the draft>"]
+                    effort: Optional[str] = None, handoff: Optional[str] = None) -> str:
+    parts = [tool("hub"), "succeed", "--stage", stage, "--handoff", shlex.quote(handoff) if handoff else "<the draft>"]
     if engine:
         parts += ["--engine", engine]
     if model:
@@ -514,15 +517,16 @@ def instruction(stage: str, model: Optional[str], mode: Optional[str], cwd: Opti
     return (f"Autopilot is on (AGENT_HUB_AUTO_HANDOFF). {when}: (1) `{tool('hub')} handoff --stage {stage}` and fill "
             "its TODOs; "
             f"(2) `{succeed_command(stage, model, mode, cwd, effort=effort)}`{unread} ({bash}) — it starts the successor (a background Remote Control "
-            "session, else a headless hub) and prints a `jwait` command; (3) run that `jwait` with Bash "
+            "session; never a headless one on its own) and prints a `jwait` command; (3) run that `jwait` with Bash "
             "run_in_background: true. When it delivers the successor's start line, tell the owner one line — the "
             "successor's name and link from `hub succeed`, and plainly where it is: a background Remote Control session; "
             "in Claude Desktop it is listed under the repository's address group (for a repository not hosted on "
             "github.com a separate group from the folder group), on the phone in the Remote Control list — and stop: "
             "no more tool calls, release no locks (the "
             f"successor's takeover moves them). If it ends with ALARM: `{tool('hub')} succeed --stage {stage} --fallback` "
-            f"({bash}). If "
-            "`hub succeed` reports the chain limit, stop after the handoff and wait for the owner. "
+            f"({bash}). If `hub succeed` exits 1 (no visible successor: it journals the reason for the owner and stays "
+            "with you) or reports the chain limit, tell the owner that line and wait for them; never start a successor "
+            "another way. "
             f"At {block_k} only `hub handoff`, `hub succeed`, `jlog`, `jwait` and the HANDOFF file pass.")
 
 
@@ -539,6 +543,10 @@ def clean(text: str) -> str:
 def tail(text: str, limit: int = TAIL_CHARS) -> str:
     lines = [ln.strip() for ln in clean(text).splitlines() if ln.strip()]
     return hc.one_line(" / ".join(lines[-15:]))[-limit:]
+
+
+# «Added folder not trusted: <path>»: the CLI names the folder it refused (21.11: the hub home of --add-dir)
+UNTRUSTED_RE = re.compile(r"not trusted:[ \t]*(\S[^\n]*?)[ \t]*$", re.I | re.M)
 
 
 class Start(Exception):
@@ -567,7 +575,6 @@ genuine data/resource/safety gates and human stop."""
 
 
 class Successor:
-    prepare_failed = False  # .agents/prepare failed in this start's bg_cwd
 
     def __init__(self, stage: str, n: int, handoff: Path, model: str, mode: str, cwd: Path, k: int, limit: int,
                  succ: Optional[int] = None, effort: Optional[str] = None):
@@ -652,7 +659,7 @@ class Successor:
 
     def bg_cwd(self, create: bool = True) -> Path:
         """Where `claude --bg` starts: the plain worktree `agent spawn --worktree` makes (<root>/.worktrees/<branch>,
-        bin/agent make_worktree; the headless successor gets the same one), created here unless `create` is false (dry
+        bin/agent make_worktree), created here unless `create` is false (dry
         run) and readied as agent spawn readies it — its slot recorded, .agents/linked linked, .agents/prepare run
         and the worktree marked prepared on success; outside git `cwd`. Not `claude --bg --worktree`: the host isolates
         such a session and refuses its `git -C <main clone>` and `$(…)` (bg-isolation probe)."""
@@ -674,12 +681,8 @@ class Successor:
                 meta = {"role": role, "engine": "claude", "worktree": {"path": str(path), "branch": branch, "slot": slot}}
                 d = hc.work_dir(self.stage) / f"{role}-prepare"  # its prepare.log; set aside as …failed-<time> on failure
                 d.mkdir(parents=True, exist_ok=True)
-                try:
-                    ag.prepare_worktree(self.stage, self.tag, meta, common, prepared, ag.prepare_timeout(self.root),
-                                        False, d)
-                except hc.Failure:
-                    self.prepare_failed = True  # the headless fallback does not run it again in this start
-                    raise
+                ag.prepare_worktree(self.stage, self.tag, meta, common, prepared, ag.prepare_timeout(self.root),
+                                    False, d)
         except (hc.UsageError, hc.Failure) as e:
             raise Start(f"no worktree for the successor: {e}")
         return path
@@ -716,10 +719,11 @@ class Successor:
                 self.notes.append(f"bypassPermissions needs its disclaimer accepted once (`claude "
                                   f"--dangerously-skip-permissions` in a terminal) — started in {mode} instead")
                 continue
-            if "not trusted" in out.lower():
-                raise Start(f"{self.root or cwd} is not trusted by the claude CLI — run `claude` there once and accept the trust "
-                            f"prompt (`claude --bg` exited {res.returncode})")
-            raise Start(f"`claude --bg` exited {res.returncode}: {tail(out, 300) or 'no output'}")
+            why = f"`claude --bg` exited {res.returncode}: {tail(out, 300) or 'no output'}"
+            m = UNTRUSTED_RE.search(out)  # the folder the CLI names (an --add-dir one too), never a guess
+            if m:
+                why += f" — run `claude` in {m.group(1)} once and accept its trust prompt"
+            raise Start(why)
         m = BG_ID_RE.search(out)
         bg_id = m.group(1) if m else self.id_from_agents()
         if not bg_id:
@@ -745,7 +749,7 @@ class Successor:
 
     def stop_late(self) -> list:
         """After a `claude --bg` that hung and is not listed: stop whatever of that name shows up after all, so no
-        background successor runs beside the headless one. Returns the ids stopped."""
+        background successor runs on while the predecessor stays the hub. Returns the ids stopped."""
         ids = [r.get("id") or r.get("sessionId") for r in self.our_rows()]
         for bg_id in ids:
             self.remove(bg_id, rm=False)
@@ -778,9 +782,9 @@ class Successor:
         path = hc.work_dir(self.stage) / f"hub-{self.succ}-takeover-brief.md"
         hc.atomic_write(path, f"""# Takeover brief: "{self.title}" — stage {self.stage}
 
-You are the next hub of stage `{self.stage}`. "Hub {self.stage} #{self.n}" handed over automatically and stopped; a
-background Remote Control session could not start ({why}), so you run headless. The owner may be away: they reach you
-through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
+You are the next hub of stage `{self.stage}`. "Hub {self.stage} #{self.n}" handed over automatically and stopped; you
+run headless because {why}. The owner may be away: they reach you through `ask` (the question register) and
+`agent send hub-{self.succ} "…"`.
 
 1. Load the hub skill (`/delamain:hub`) and take over: `{self.takeover_cmd()}`
    (`self` is this session: $CLAUDE_CODE_SESSION_ID, else the $AGENT_SESSION_ID `agent spawn` exports).
@@ -805,16 +809,9 @@ through `ask` (the question register) and `agent send hub-{self.succ} "…"`.
         if self.effort:
             argv += ["--effort", self.effort]
         if self.root:
-            # agent spawn's own worktree: <root>/.worktrees/<branch>, a new branch from origin's default branch; the
-            # one a failed background start already made is reused
-            branch = self.wt_name or free_worktree_name(self.root, self.rc_name)
+            # agent spawn's own worktree: <root>/.worktrees/<branch>, a new branch from origin's default branch
+            branch = free_worktree_name(self.root, self.rc_name)
             argv += ["--worktree", branch]
-            if self.prepare_failed:
-                # the same prepare just failed in this start: once more would double its time; the next spawn into
-                # the worktree runs it (it stays marked unprepared)
-                argv.append("--no-prepare")
-                self.notes.append(f"{worktree_prep.PREPARE} failed in {self.root / '.worktrees' / branch}: the headless "
-                                  "successor starts without it; the next spawn into that worktree runs it again")
             self.worktree = self.root / ".worktrees" / branch
         res = subprocess.run(argv, capture_output=True, text=True, env=dict(self.env, HUB_TAG=self.tag),
                              stdin=subprocess.DEVNULL)
@@ -1063,12 +1060,17 @@ def wait_hint(stage: str, pend: dict) -> str:
                f"`{tool('hub')} succeed --stage {stage} --again --handoff <the handoff>` unless {alive}"))
 
 
-def _agent_module():
-    loader = importlib.machinery.SourceFileLoader("agent_cli", str(hc.BIN / "agent"))
-    spec = importlib.util.spec_from_loader("agent_cli", loader)
+def _bin_module(name: str):
+    """A bin/ script without .py (agent, watchdog) loaded as a module."""
+    loader = importlib.machinery.SourceFileLoader(f"{name}_cli", str(hc.BIN / name))
+    spec = importlib.util.spec_from_loader(f"{name}_cli", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
+
+
+def _agent_module():
+    return _bin_module("agent")
 
 
 def successor_alive(stage: str, pend: dict, cwd) -> bool:
@@ -1423,7 +1425,6 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         for note in effort_notes:
             print(f"[plan] {note}")
         return 0
-    loud = None
     if engine == "codex":
         why = "the Codex engine uses a detached successor"
     elif headless:
@@ -1439,12 +1440,12 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             report(stage, s, pend, takeover_timeout())
             return 0
         except Start as e:
-            why = str(e)
-            loud = (f"auto-handoff: WARNING background successor not started — {why}; falling back to a headless hub (agent "
-                    "spawn): it is NOT listed in Claude Desktop or Remote Control. To get a visible one, fix the reason above and "
-                    f"run `{tool('hub')} succeed --stage {stage} --replace --force`")
-    # a headless successor is the designed outcome for codex / --headless: no warning, and no advice to replace it
-    line = loud or f"auto-handoff: headless successor by design: {why}"
+            # never a headless one in its place (owner, Q-AUDIT-010): the predecessor stays, the owner is told
+            _release(stage, succ, k, started)
+            return owner_blocked(stage, tag, f"the background successor did not start: {e}",
+                                 succeed_command(stage, model, mode, str(cwd), effort=effort, handoff=str(handoff)))
+    # a headless successor is what codex / --headless asked for
+    line = f"auto-handoff: headless successor by design: {why}"
     hc.journal_append(stage, tag, line)
     print(line + "\n")
     phase = {"n": succ, "kind": "starting", "at": hc.now().isoformat(timespec="seconds"),
@@ -2036,9 +2037,27 @@ def headless_or_owner(stage: str, s: Successor, why: str, replacing: bool = Fals
         raise
 
 
+def owner_blocked(stage: str, tag: str, why: str, retry: str) -> int:
+    """No visible successor: nothing headless starts in its place (owner, Q-AUDIT-010; earlier Q-AUDIT-002). The
+    predecessor stays the hub; one journal line addressed to the owner with the reason and the command to retry, one
+    notification through the watchdog's channels (only the stage name and an event word leave the machine). Exit 1."""
+    line = (f"BLOCKED auto-handoff: @owner no visible successor — {why}. {tag} stays the hub; nothing headless was "
+            f"started. Fix the reason, then retry: {retry}")
+    hc.journal_append(stage, tag, line)
+    try:
+        wd = _bin_module("watchdog")
+        sent = wd.notify(wd.notify_message(stage, "blocked"), False)
+        how = ", ".join(f"{name} {'ok' if ok else 'failed: ' + detail}" for name, ok, detail in sent) or "no channel set"
+    except Exception as e:  # a broken channel must not hide the journal line
+        how = f"failed: {e}"
+    print(f"{line}\n(owner notified: {how})\n\nNext: tell the owner this line in one message and wait for them. You "
+          "stay the hub: do not start a successor any other way.")
+    return 1
+
+
 def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None, owner_asked: bool = False) -> int:
-    """The background successor did not take over in time: journal its log tail, stop it, start a headless one from
-    the same handoff (the chain is not counted again). Only for this hub's own successor (hub-<succ>, default n + 1).
+    """The background successor did not take over in time: journal its log tail, stop it (history kept) and keep this
+    hub (owner_blocked) — no headless one in its place. Only for this hub's own successor (hub-<succ>, default n + 1).
     Reserved under the lock like `hub succeed`, so a retry after a killed run is refused rather than doubled."""
     now = hc.now().isoformat(timespec="seconds")
     succ = succ or n + 1
@@ -2099,11 +2118,8 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None,
             return 0
         s.remove(bg["id"], rm=False)
     why = why or f"background session {bg['id']} wrote no takeover line in {timeout_s} s"
-    hc.journal_append(stage, s.tag, f"auto-handoff: {why}; stopped it (`claude attach {bg['id']}` shows it); "
-                                    f"claude logs tail: {logs or '—'}; falling back to a headless hub")
-    got = headless_or_owner(stage, s, why, reservation=reservation)
-    new = {"n": s.succ, "kind": "headless", "at": hc.now().isoformat(timespec="seconds"), "handoff": bg["handoff"],
-           "model": bg["model"], "k": s.k, "why": why, "cwd": str(s.cwd), "bg_id": bg["id"], "effort": s.effort, **got}
-    _record(stage, s.succ, new, reservation)
-    report(stage, s, new, timeout_s)
-    return 0
+    _release(stage, succ, reservation.get("k"), reservation["at"])
+    return owner_blocked(stage, s.tag, f"{why}; stopped it (`claude attach {bg['id']}` shows it); claude logs tail: "
+                                       f"{logs or '—'}",
+                         succeed_command(stage, bg["model"], bg.get("mode"), bg.get("cwd"), effort=s.effort,
+                                         handoff=bg["handoff"]))

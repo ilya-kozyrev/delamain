@@ -1,8 +1,8 @@
 #!/bin/bash
 # `hub succeed` starts the successor in a git worktree of the stage's project: the directory comes from the worktree the
 # registered hub recorded at takeover (not from the hub shell's directory, which drifts), the budget hook names that one in
-# the command it suggests, a directory outside git (or in another project) is refused, and a fall back to a headless hub is
-# loud. Real git repositories in temp dirs; the CLI is tests/fake_claude_bg.py.
+# the command it suggests, a directory outside git (or in another project) is refused, and a background successor that cannot
+# start is reported to the owner, never replaced by a headless hub. Real git repositories in temp dirs; the CLI is tests/fake_claude_bg.py.
 . "$(dirname "$0")/lib.sh"
 unset AGENT_HUB_NO_PROJECT PLUGIN_ROOT CLAUDE_PLUGIN_ROOT FAKE_BG FAKE_LOGIN FAKE_LOGS FAKE_TRUSTED $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|AUTO\|SUCCESSOR\|STATE\)[A-Z_]*\)=.*/\1/p')
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on CLAUDE_EFFORT=high
@@ -126,20 +126,19 @@ printf '# Handoff "Hub stage-b #1" → "Hub stage-b #2" — stage-b\n\n## 0. Fir
 ( cd $G/nogit && CLAUDE_CODE_SESSION_ID=22222222-2222-4222-8222-222222222222 $B/hub succeed --stage stage-b --handoff $HB --model opus --dry-run ) > $G/np2.out 2>&1
 check $? 0 "--no-project stage: a directory outside git is accepted"
 
-# ---- 7. a fall back to a headless hub is loud, in the output and in the journal
-reset; export FAKE_BG=untrusted
+# ---- 7. a background successor that cannot start: no headless hub, the owner is told (output and journal)
+reset; export FAKE_BG=untrusted AGENT_HUB_NOTIFY_LOCAL=off; unset AGENT_HUB_NOTIFY_CMD
 python3 - $R/stage-a/roles.json $WT <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); d["roles"]["hub"]["worktree"] = sys.argv[2]; json.dump(d, open(sys.argv[1], "w"))
 PY
-succeed_in $WT > $G/loud.out 2>&1; check "$?:$(state kind)" "0:headless" "untrusted root: falls back to a headless hub"
-grep -q "^auto-handoff: WARNING background successor not started — $G/proj is not trusted.*falling back to a headless hub.*NOT listed in Claude Desktop.*hub succeed --stage stage-a --replace --force" $G/loud.out; check $? 0 "fallback: the command's output is a warning with the reason and the fix"
-J | grep -q "auto-handoff: WARNING background successor not started — $G/proj is not trusted.*NOT listed in Claude Desktop.*--replace --force"; check $? 0 "fallback: the journal line carries the same"
+succeed_in $WT > $G/loud.out 2>&1; check "$?:$(state kind):$([ -e $R/stage-a/agents/hub-2 ] && echo spawned)" "1:None:" "untrusted: exit 1, no successor recorded, nothing headless"
+grep -q "^BLOCKED auto-handoff: @owner no visible successor — .*Workspace not trusted. Run \`claude\` in $G/proj/.worktrees/stage-a-hub-2[-0-9]* .*hub-1 stays the hub; nothing headless was started.*retry: .*hub succeed --stage stage-a --handoff $H " $G/loud.out; check $? 0 "untrusted: the output carries the CLI's reason and the retry"
+J | grep -q "BLOCKED auto-handoff: @owner no visible successor — .*Workspace not trusted.*retry: "; check $? 0 "untrusted: the journal line carries the same"
 unset FAKE_BG
 reset
 rm -rf $R/stage-a/agents; succeed_in $WT --headless > $G/hl.out 2>&1; check "$?:$(state kind)" "0:headless" "--headless: a headless successor"
-grep -q "headless successor by design: --headless was given" $G/hl.out && ! grep -q "WARNING\|--replace --force" $G/hl.out; check $? 0 "--headless: a neutral line, no warning and no advice to replace it"
-J | tail -20 | grep -q "headless successor by design" && ! J | grep -q "WARNING background successor not started — --headless"; check $? 0 "--headless: the journal carries no warning either"
+grep -q "headless successor by design: --headless was given" $G/hl.out && ! grep -q "BLOCKED" $G/hl.out; check $? 0 "--headless: a neutral line, nothing for the owner to fix"
 
 # ---- 8. git that did not answer is not "not inside a git repository"
 PYBIN=$(command -v python3); NOGITPATH=$(mktemp -d)
@@ -152,7 +151,7 @@ PY
 case "$MSG" in *"git did not answer"*) rc=0;; *) rc=1;; esac; check $rc 0 "no git on PATH: the message says git did not answer"
 case "$MSG" in *"not inside a git repository"*) rc=1;; *) rc=0;; esac; check $rc 0 "…and does not claim the directory is outside a repository"
 rm -rf $R/stage-a/agents  # the headless run above left its agent directory
-# ---- 9. --fallback starts nothing from the shell's directory: a refused directory must not block it (legacy hub, project
+# ---- 9. --fallback reads nothing from the shell's directory: a refused directory must not block it (legacy hub, project
 # unknown, shell drifted outside git). Start the bg successor from the worktree first.
 reset; rm -rf $R/stage-a/agents; cp $G/roles.json.hub $R/stage-a/roles.json
 succeed_in $WT > $G/fb0.out 2>&1; check "$?:$(state kind)" "0:bg" "setup: a bg successor is pending"
@@ -161,7 +160,7 @@ import json, sys
 d = json.load(open(sys.argv[1])); d["roles"]["hub"].pop("worktree"); json.dump(d, open(sys.argv[1], "w"))
 PY
 ( cd $G/nogit && $B/hub succeed --stage stage-a --fallback --why "no takeover" ) > $G/fb.out 2>&1; rc=$?
-check "$rc:$(state kind)" "0:headless" "--fallback from a drifted non-git shell, legacy hub: works (headless successor)"
+check "$rc:$(state kind):$(grep -c 'BLOCKED auto-handoff: @owner no visible successor — no takeover; stopped it' $G/fb.out)" "1:None:1" "--fallback from a drifted non-git shell, legacy hub: works (bg stopped, the owner told)"
 ! grep -q "is not inside a git repository" $G/fb.out; check $? 0 "--fallback: no directory refusal"
 
 exit $fail

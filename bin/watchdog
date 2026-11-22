@@ -341,7 +341,7 @@ def notify_message(stage: str, kind: str, silent_min: int = 0, lines: int = 0) -
         tail = f"hub silent {silent_min} min" + (f", {lines} lines waiting" if lines else "")
     else:
         tail = {"stall": "nothing runs", "turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck",
-                "account": "account blocked"}[kind]
+                "account": "account blocked", "blocked": "handoff blocked"}[kind]
     return f"delamain: {stage} — {tail}"
 
 

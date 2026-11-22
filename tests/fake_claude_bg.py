@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Stand-in for the `claude` CLI in the autopilot tests (CLAUDE_BIN=<this>): `--bg`, `logs`, `agents --json`,
-`auth status`, `stop`, `rm`; a `-p` run is handed to fake_claude.py (the headless fallback's `agent spawn`).
+`auth status`, `stop`, `rm`; a `-p` run is handed to fake_claude.py (a `--headless` successor's `agent spawn`).
 Never starts anything: every call is appended as one JSON line to $FAKE_BG_LOG (argv, cwd, the identity variables).
 
 FAKE_BG=ok (default)      `--bg` prints "backgrounded · bg-1234abcd · <name>"
 FAKE_BG=bypass            `--bg --permission-mode bypassPermissions` exits 1 with the disclaimer error
 FAKE_BG=untrusted         `--bg` exits 1 "Workspace not trusted" unless the cwd is $FAKE_TRUSTED or under it
+FAKE_BG=dirtrust          `--bg` exits 1 "Added folder not trusted: <the --add-dir folder>" (the CLI, 21.11)
 FAKE_BG=noid              `--bg` prints nothing; `agents --json` lists the session
 FAKE_BG=hang              `--bg` sleeps FAKE_HANG seconds (5) and prints nothing
 FAKE_AGENTS (late|stale|none|prev|prevbusy|prevgone|fail), FAKE_PREV_SID, FAKE_AGENTS_SEQ, FAKE_ON_LOGS: see the `agents` and `logs` branches
@@ -80,6 +81,9 @@ elif "--bg" in argv:
     here = os.path.realpath(os.getcwd())  # the trust of a directory covers its subdirectories, as in the CLI
     if mode == "untrusted" and here != trusted and not here.startswith(trusted + os.sep):
         sys.stderr.write(f"Workspace not trusted. Run `claude` in {os.getcwd()} once and accept the trust prompt\n")
+        sys.exit(1)
+    if mode == "dirtrust" and "--add-dir" in argv:
+        sys.stderr.write(f"Error: Added folder not trusted: {argv[argv.index('--add-dir') + 1]}\n")
         sys.exit(1)
     if mode == "hang":  # `claude --bg` that does not return (the caller's timeout kills it)
         time.sleep(float(os.environ.get("FAKE_HANG", "5")))

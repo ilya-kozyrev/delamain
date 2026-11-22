@@ -162,11 +162,12 @@ effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else the effort this hub runs at n
 succeed exits 1 and starts nothing) and the prompt "/delamain:hub take over stage … [agent-hub auto-handoff k/N]" (the marker keeps the name used before the rename for
 one release), reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
-When the background session cannot start (CLI not logged in, the main checkout untrusted) it says so loudly (WARNING, in
-the output and the journal: the successor is not listed in Claude Desktop) and starts a headless hub
-with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
-becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
-tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it
+When the background session cannot start (CLI not logged in, a folder the CLI does not trust) nothing headless starts in
+its place: this hub stays, one `BLOCKED auto-handoff: @owner …` journal line carries the CLI's own message and the command
+to retry, the owner is notified once (the watchdog's channels), exit 1. A headless hub (`agent spawn --cwd <main checkout>
+--worktree <stage>-hub-<n+1>`) starts only with --headless. bypassPermissions without its accepted disclaimer
+becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: stops the background session (history kept)
+and reports the same way, with its log tail. Only the registered hub may run it
 ($CLAUDE_CODE_SESSION_ID, else $HUB_TAG; exit 2 otherwise; a sub-agent of the hub shares its session id and passes —
 the hub never delegates it), only with AGENT_HUB_AUTO_HANDOFF on (exit 2; --force for the owner by hand), one
 successor per shift: a second call while one is
@@ -2728,8 +2729,8 @@ def main(argv: list) -> int:
     sc.add_argument("--desktop-worktree", action="store_true", help="native worktree only when explicitly requested by the owner")
     sc.add_argument("--branch", help="desktop worktree starting branch, only when explicitly requested and existing")
     sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn); from Codex Desktop requires home owner opt-in")
-    sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
-                                                            "and start a headless one")
+    sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it, "
+                                                            "keep this hub and tell the owner")
     sc.add_argument("--why", help="with --fallback: the reason for the journal")
     sc.add_argument("--again", action="store_true", help="the recorded successor did not take over and is not running: "
                                                          "drop its record and start a new one")
