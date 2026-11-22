@@ -1103,7 +1103,9 @@ hub:
    logged in, a folder it does not trust) or does not take over by the deadline (`hub succeed --fallback` stops it,
    history kept), the old hub stays the hub, journals one `BLOCKED auto-handoff: @owner …` line with the CLI's own
    message (the folder it names) and the exact command to retry, notifies you once through the
-   [watchdog's channels](#watchdog) (`delamain: <stage> — handoff blocked`) and waits for you. A headless hub
+   [watchdog's channels](#watchdog) (`delamain: <stage> — handoff blocked`) and waits for you. The same refusal again is not journaled or notified twice;
+   the retry starts in the worktree the refused start made (the folder the CLI named). A refused `--replace` keeps
+   the stopped successor's record, so `--replace` can run again. A headless hub
    (`agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>`, reached through `ask` and `agent send`) starts only
    when asked for: `hub succeed --headless`, or the Codex engine's detached successor.
 5. At most `AGENT_HUB_AUTO_HANDOFF_CHAIN` automatic handoffs in a row (default 10). At the limit the hub writes its
