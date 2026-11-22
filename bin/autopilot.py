@@ -1225,6 +1225,7 @@ def _record(stage: str, succ: int, pend: dict, reservation: Optional[dict] = Non
             if previous.get("grilling_owner_asked") and previous.get("handoff") == pend.get("handoff"):
                 pend = dict(pend, grilling_owner_asked=previous["grilling_owner_asked"])
             data["pending"] = pend
+            data.pop("blocked", None)  # a successor started: a later refusal is news again
             save_state(stage, data)
 
 
@@ -1430,6 +1431,12 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     elif headless:
         why = "--headless was given"
     else:
+        blocked = load_state(stage).get("blocked") or {}
+        if blocked.get("n") == succ and blocked.get("worktree") and s.root \
+                and (s.root / ".worktrees" / blocked["worktree"]).is_dir():
+            # the worktree of this successor's refused start, where nothing runs: the folder the CLI named and the
+            # owner may have trusted since — a new `-2` would not be
+            s.wt_name = blocked["worktree"]
         try:
             got = s.start_bg()
             pend = {"n": succ, "kind": "bg", "at": started, "handoff": str(handoff), "model": model, "k": k, "prepare_s": prep_s,
@@ -1441,9 +1448,25 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
             return 0
         except Start as e:
             # never a headless one in its place (owner, Q-AUDIT-010): the predecessor stays, the owner is told
-            _release(stage, succ, k, started)
-            return owner_blocked(stage, tag, f"the background successor did not start: {e}",
-                                 succeed_command(stage, model, mode, str(cwd), effort=effort, handoff=str(handoff)))
+            again_cmd = succeed_command(stage, model, mode, str(cwd), effort=effort, handoff=str(handoff))
+            stays = None
+            if replaced:
+                # the successor --replace stopped keeps its record (and chain place): `--replace` once more finds it
+                # not running and starts a new one; the registry still names it as the hub
+                with state_lock(stage):
+                    data = load_state(stage)
+                    if owns_pending(data.get("pending") or {}, reservation):
+                        data["pending"] = retry
+                        save_state(stage, data)
+                reg = (hc.roles_load(stage)["roles"].get("hub") or {}).get("tag") or "?"
+                if reg != tag:  # it had taken over: the registry names a hub that no longer runs
+                    stays = (f"--replace stopped hub-{succ} ({replaced}); {reg} is still the registered hub and no "
+                             "longer runs; its record is kept for the retry")
+                again_cmd += " --replace"
+            else:
+                _release(stage, succ, k, started)
+            return owner_blocked(stage, tag, succ, f"the background successor did not start: {e}", again_cmd,
+                                 worktree=s.wt_name if s.worktree else "", stays=stays)
     # a headless successor is what codex / --headless asked for
     line = f"auto-handoff: headless successor by design: {why}"
     hc.journal_append(stage, tag, line)
@@ -2037,12 +2060,25 @@ def headless_or_owner(stage: str, s: Successor, why: str, replacing: bool = Fals
         raise
 
 
-def owner_blocked(stage: str, tag: str, why: str, retry: str) -> int:
+def owner_blocked(stage: str, tag: str, succ: int, why: str, retry: str, worktree: str = "",
+                  stays: Optional[str] = None) -> int:
     """No visible successor: nothing headless starts in its place (owner, Q-AUDIT-010; earlier Q-AUDIT-002). The
-    predecessor stays the hub; one journal line addressed to the owner with the reason and the command to retry, one
-    notification through the watchdog's channels (only the stage name and an event word leave the machine). Exit 1."""
-    line = (f"BLOCKED auto-handoff: @owner no visible successor — {why}. {tag} stays the hub; nothing headless was "
-            f"started. Fix the reason, then retry: {retry}")
+    predecessor stays the hub (`stays` says otherwise after --replace); one journal line addressed to the owner with the
+    reason and the command to retry, one notification through the watchdog's channels (only the stage name and an event
+    word leave the machine). Exit 1. The same refusal again (same successor, same reason) is printed but neither
+    journaled nor notified twice; state `blocked` remembers it and the refused start's worktree, for the retry."""
+    line = (f"BLOCKED auto-handoff: @owner no visible successor — {why}. {stays or tag + ' stays the hub'}; nothing "
+            f"headless was started. Fix the reason, then retry: {retry}")
+    note = {"n": succ, "why": why, "worktree": worktree}
+    with state_lock(stage):
+        data = load_state(stage)
+        seen = {k: (data.get("blocked") or {}).get(k) for k in ("n", "why")} == {"n": succ, "why": why}
+        data["blocked"] = dict(note, at=(data.get("blocked") or {}).get("at") if seen else hc.now().isoformat(timespec="seconds"))
+        save_state(stage, data)
+    if seen:
+        print(f"{line}\n(the same refusal was already journaled and the owner notified at {data['blocked']['at'][11:16]}: "
+              "not repeated)\n\nNext: wait for the owner. You stay the hub: do not start a successor any other way.")
+        return 1
     hc.journal_append(stage, tag, line)
     try:
         wd = _bin_module("watchdog")
@@ -2119,7 +2155,7 @@ def fallback(stage: str, n: int, why: Optional[str], succ: Optional[int] = None,
         s.remove(bg["id"], rm=False)
     why = why or f"background session {bg['id']} wrote no takeover line in {timeout_s} s"
     _release(stage, succ, reservation.get("k"), reservation["at"])
-    return owner_blocked(stage, s.tag, f"{why}; stopped it (`claude attach {bg['id']}` shows it); claude logs tail: "
+    return owner_blocked(stage, s.tag, succ, f"{why}; stopped it (`claude attach {bg['id']}` shows it); claude logs tail: "
                                        f"{logs or '—'}",
                          succeed_command(stage, bg["model"], bg.get("mode"), bg.get("cwd"), effort=s.effort,
                                          handoff=bg["handoff"]))

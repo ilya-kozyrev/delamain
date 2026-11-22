@@ -228,6 +228,29 @@ no_headless "added folder untrusted"
 J | grep -qF "\`claude --bg\` exited 1: Error: Added folder not trusted: $R — run \`claude\` in $R once and accept its trust prompt"; check $? 0 "added folder untrusted: the message names the folder the CLI named (the hub home)"
 J | grep -q "$MR is not trusted"; check $? 1 "added folder untrusted: the repository is not blamed"
 unset FAKE_BG
+# review #189 (2): the retry after the owner trusted the folder the CLI named starts in that same worktree, not a -2
+setup; mkrepo
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 1 "trust retry: refused first"
+first_cwd=$(call --bg cwd)
+FAKE_BG=untrusted FAKE_TRUSTED="$first_cwd" $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/tr.out 2>&1
+check "$?:$(call --bg cwd):$(pending kind)" "0:$first_cwd:bg" "trust retry: trusting exactly the folder the CLI named is enough — the retry reuses that worktree"
+# review #189 (3): the same refusal again is neither journaled nor notified twice; a different reason is
+setup
+FAKE_LOGIN=no succeed --model opus > /dev/null 2>&1; FAKE_LOGIN=no succeed --model opus > $R/dup.out 2>&1
+check "$?:$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:1:1" "same refusal twice: exit 1, one journal line, one notification"
+grep -q "already journaled and the owner notified.*not repeated" $R/dup.out; check $? 0 "same refusal twice: the second run says it was already reported"
+FAKE_BG=dirtrust succeed --model opus > /dev/null 2>&1
+check "$?:$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:2:2" "a different reason: journaled and notified again"
+# review #189 (1): --replace stops a successor that took over, then the new start is refused: its record and chain
+# place stay (a second --replace works), and the line does not claim the old hub still leads
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > /dev/null 2>&1
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > /dev/null 2>&1
+FAKE_LOGIN=no FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/rpf.out 2>&1
+check "$?:$(call stop count):$(hub_tag):$(pending n):$(pending kind):$(pending taken_over | cut -c1-2):$(chain)" "1:1:hub-2:2:bg:20:1" "replace refused: the stopped successor's record and chain place are kept"
+grep -q "hub-1 stays the hub" $R/rpf.out; check $? 1 "replace refused: no false claim that hub-1 stays the hub"
+grep -q "\-\-replace stopped hub-2 .*hub-2 is still the registered hub and no longer runs.*retry: .* --replace$" $R/rpf.out; check $? 0 "replace refused: says what was stopped and gives a --replace retry"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/rpf2.out 2>&1
+check "$?:$(call --bg count):$(pending kind):$(chain)" "0:2:bg:1" "replace refused: the printed --replace retry starts a new successor"
 # --headless (the owner asked for one) still starts a headless hub
 setup; succeed --model opus --headless > $R/hl.out 2>&1; check "$?:$(call --bg count):$(pending kind):$(pending role)" "0:none:headless:hub-2" "--headless: a headless successor recorded"
 check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "--headless: agent spawn registered hub-2"
