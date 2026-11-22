@@ -1512,11 +1512,33 @@ def run_started(meta: dict) -> bool:
     return False
 
 
+LIMIT_RE = re.compile(r"hit your (?:[\w-]+ )?(?:usage )?limit", re.I)
+LIMIT_RESET_RE = re.compile(r"(?:resets|try again at)\s+([^\n·]*?)\s*\.?\s*(?:$|\n|·)", re.I)
+
+
+def limit_stop(r: dict):
+    """The usage-limit end of a run: None for any other result, else its reset time as the CLI printed it ("6:20pm
+    (Europe/Moscow)", "12:14 PM"), "" when the message has none. Claude: an error result whose text is `You've hit your
+    5-hour limit · resets 6:20pm (Europe/Moscow)` (HTTP 429); Codex: a failed turn, `You've hit your usage limit. … try
+    again at 12:14 PM.` (normalize_event keeps it in `errors`). Any other error, a 429 included, is not one."""
+    if not isinstance(r, dict) or not r.get("is_error"):
+        return None
+    # Codex: only the failure's own message (`errors`); its `result` is the assistant's last text, not an error text
+    texts = ([e.get("message") if isinstance(e, dict) else e for e in r.get("errors") or []]
+             if r.get("_engine") == "codex" else [r.get("result")])
+    for text in texts:
+        if isinstance(text, str) and LIMIT_RE.search(text):
+            m = LIMIT_RESET_RE.search(text)
+            return m.group(1).strip() if m else ""
+    return None
+
+
 def note_exit(a) -> int:
     """Called by the launch shell after claude exits (either engine). A run that ended cleanly (code 0, a successful
     result) with a status word of its own in the journal needs no line. One that ended cleanly without one is journaled
     as the neutral `ENDED <role>` (`REVIEWED <role>` for a review role): the agent stopped and the hub wakes on it, but
-    nothing looks wrong. EXIT stays for an abnormal end (a code, an error result, no result)."""
+    nothing looks wrong. EXIT stays for an abnormal end (a code, an error result, no result); one that the usage limit
+    stopped says `LIMIT, resets <time>` (`LIMIT, reset unknown`) in place of `success, error`."""
     stage = hc.check_stage(a.stage or hc.default_stage())
     meta = load_meta(stage, a.role)
     info = read_log(Path(meta["dir"]) / "log.jsonl")
@@ -1539,8 +1561,12 @@ def note_exit(a) -> int:
         word = "REVIEWED" if is_review_role(meta) else "ENDED"
         why = "finished, outcome in its last answer" if OUTCOME_RE.search(last) else "finished, no status word in the journal"
     else:
-        word, why = "EXIT", (f"{r.get('subtype')}, error" if r.get("is_error") else
+        reset = limit_stop(r)
+        word, why = "EXIT", ((f"LIMIT, resets {reset}" if reset else "LIMIT, reset unknown") if reset is not None else
+                             f"{r.get('subtype')}, error" if r.get("is_error") else
                              (r.get("subtype") or "no result — died or killed"))
+        if reset is not None:
+            last = ""  # the last text is the limit message itself: the line already says it
     print(hc.journal_append(stage, meta["tag"], f"{word} {a.role}: {why}; code {a.code}, turns {turns_text(info)}"
                             f"{'; last: ' + last[:160] if last else ''} — agent status {a.role}"))
     return 0

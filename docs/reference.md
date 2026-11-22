@@ -553,7 +553,8 @@ stopped, nothing looks wrong, and the hub reads the last text of the run with `a
 outcome (a `VERDICT:` or status-word line) the line says `finished, outcome in its last answer`. A message `agent send`
 queued while the run was winding down and that the run did not read is replayed at once: the wrapper resumes the agent
 with it (`[inbox] @<role> (session resumed, …, unread replayed: N)`); a replay that fails is one `EXIT` line, not retried. `EXIT <role>: …` is for
-an abnormal end: a non-zero code, an error result, no result. `PROGRESS …` lines are not status words (the brief footer
+an abnormal end: a non-zero code, an error result, no result. A run the usage limit stopped (either engine) says so:
+`EXIT <role>: LIMIT, resets <time as the CLI printed it>` (`LIMIT, reset unknown` without one), not `success, error`. `PROGRESS …` lines are not status words (the brief footer
 tells agents to put milestones in the report or in such a line), so they neither wake the hub nor stand in for the
 final status. When the process is killed together with the wrapper (`kill -9` of its group), the first
 observer — `agent status` or the poll of `jwait --journal` (every 10 s) — journals `EXIT <role>: killed (no result)`

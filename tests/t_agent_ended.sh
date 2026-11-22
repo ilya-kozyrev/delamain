@@ -96,9 +96,42 @@ exit_note errc 1 '{"type": "result", "subtype": "success", "is_error": false, "n
 grep -q 'EXIT errc: .*code 1' "$(J)"; check $? 0 "a success result with a non-zero code stays EXIT"
 exit_note errok 0 '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "ok"}' > /dev/null
 grep -q 'ENDED errok: .*code 0' "$(J)"; check $? 0 "positive control: the same result with code 0 is ENDED"
+asst(){ python3 -c 'import json,sys; print(json.dumps({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": sys.argv[1]}]}}))' "$1"; }
+# a run the usage limit stopped (audit 2026-11-21 § 7 item 6): EXIT stays the first word, the line says LIMIT and the reset
+# time instead of "success, error"; a recorded Claude result, a recorded Codex failed turn, no time, an ordinary error
+LIM='{"type": "result", "subtype": "success", "is_error": true, "api_error_status": 429, "terminal_reason": "api_error", "num_turns": 7, "result": "You\u2019ve hit your 5-hour limit \u00b7 resets 6:20pm (Europe/Moscow)"}'
+exit_note lim-c 1 "$(asst "You've hit your 5-hour limit · resets 6:20pm (Europe/Moscow)")
+$LIM" > /dev/null
+grep -q '\[lim-c\] EXIT lim-c: LIMIT, resets 6:20pm (Europe/Moscow); code 1, turns 1 — agent status lim-c' "$(J)"; check $? 0 "a Claude usage-limit end: EXIT <role>: LIMIT, resets <time>"
+grep 'EXIT lim-c: ' "$(J)" | grep -Eq "$PAT"; check $? 0 "…EXIT is still the first word: the hub's wake pattern matches"
+grep 'EXIT lim-c: ' "$(J)" | grep -q 'success, error'; check $? 1 "…and it no longer says success, error"
+exit_note lim-s 1 '{"type": "result", "subtype": "success", "is_error": true, "api_error_status": 429, "result": "You'"'"'ve hit your session limit \u00b7 resets 9pm (Europe/Moscow)"}' > /dev/null
+grep -q 'EXIT lim-s: LIMIT, resets 9pm (Europe/Moscow); code 1' "$(J)"; check $? 0 "the session-limit wording, a time without minutes"
+exit_note lim-n 1 '{"type": "result", "subtype": "success", "is_error": true, "api_error_status": 429, "result": "You'"'"'ve hit your limit"}' > /dev/null
+grep -q 'EXIT lim-n: LIMIT, reset unknown; code 1' "$(J)"; check $? 0 "a limit message without a time: LIMIT, reset unknown"
+exit_note lim-x 1 '{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}
+{"type": "error", "message": "You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 29th, 2026 11:21 PM."}
+{"type": "turn.failed", "error": {"message": "You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Oct 29th, 2026 11:21 PM."}}' codex > /dev/null
+grep -q 'EXIT lim-x: LIMIT, resets Oct 29th, 2026 11:21 PM; code 1' "$(J)"; check $? 0 "a Codex failed turn (usage limit): LIMIT, resets <time>"
+# Codex: the failure's own message decides, not the assistant's last text (review of #185)
+CXA='{"type": "item.completed", "item": {"type": "agent_message", "text": "Investigating the hit your limit message in the log"}}'
+exit_note lim-xa 1 '{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}
+'"$CXA"'
+{"type": "turn.failed", "error": {"message": "network connection lost"}}' codex > /dev/null
+grep -q 'EXIT lim-xa: error, error; code 1' "$(J)" && ! grep 'EXIT lim-xa: ' "$(J)" | grep -q LIMIT; check $? 0 "codex: an assistant text that mentions the limit does not make an ordinary failure a LIMIT"
+exit_note lim-xb 1 '{"type": "thread.started", "thread_id": "t1"}
+{"type": "turn.started"}
+{"type": "item.completed", "item": {"type": "agent_message", "text": "Checking the hit your limit wording, back shortly"}}
+{"type": "turn.failed", "error": {"message": "You\u2019ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at 12:14 PM."}}' codex > /dev/null
+grep -q 'EXIT lim-xb: LIMIT, resets 12:14 PM; code 1' "$(J)"; check $? 0 "codex: the reset time comes from the failure's message even after an unrelated assistant text"
+exit_note lim-e 1 '{"type": "result", "subtype": "success", "is_error": true, "api_error_status": 429, "result": "API Error: 429 too many requests, retry later"}' > /dev/null
+grep -q 'EXIT lim-e: success, error; code 1' "$(J)" && ! grep -q 'LIMIT' <(grep 'EXIT lim-e: ' "$(J)"); check $? 0 "control: an ordinary 429 error stays \"success, error\", not LIMIT"
+exit_note lim-t 0 '{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "I read about the hit your limit message: ok"}' > /dev/null
+grep -q 'ENDED lim-t: ' "$(J)"; check $? 0 "control: a clean run that merely mentions the words is not a limit stop"
 # the quoted `last:` is the line with the outcome (VERDICT, a status word, a report path), not a closing delegation line
 RES='{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1, "result": "ok"}'
-asst(){ python3 -c 'import json,sys; print(json.dumps({"type": "assistant", "message": {"id": "m1", "content": [{"type": "text", "text": sys.argv[1]}]}}))' "$1"; }
 exit_note review-qv 0 "$(asst $'Review done.\nVERDICT: merge after fixes\nDelegation: nothing delegated, level 3')
 $RES" > /dev/null
 grep -q 'REVIEWED review-qv: .*; last: VERDICT: merge after fixes ' "$(J)"; check $? 0 "last: quotes the VERDICT line, not the delegation line after it"
