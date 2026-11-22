@@ -10,6 +10,9 @@ unset PLUGIN_ROOT CLAUDE_PLUGIN_ROOT $(env | sed -n 's/^\(AGENT_HUB_\(CONTEXT\|A
 export CLAUDE_BIN=$T/fake_claude_bg.py CLAUDE_SESSIONS_DIR=$(mktemp -d) AGENT_HUB_SUCCESSOR_TIMEOUT=2 AGENT_HUB_AUTO_HANDOFF=on
 # the effort of the hub running `hub succeed` (the Bash tool's $CLAUDE_EFFORT): the successor's, unless something says otherwise
 export CLAUDE_EFFORT=high
+# the owner's notification channel (bin/watchdog's): a file instead of a real one; no desktop banner from a test
+export AGENT_HUB_NOTIFY_LOCAL=off NOTIFY_LOG=$(mktemp -d)/notify.log
+export AGENT_HUB_NOTIFY_CMD='["sh","-c","printf \"%s\\n\" \"$0\" >> \"$NOTIFY_LOG\"","{message}"]'
 NO_PS=$(fake_ps /dev/null)  # a PATH directory whose ps shows no claude process: with CLAUDE_EFFORT unset nothing answers
 BR_BIN=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$B")  # the plugin bin/ as the tools resolve it
 HUB1=11111111-1111-4111-8111-111111111111; HUB2=22222222-2222-4222-8222-222222222222
@@ -22,8 +25,13 @@ setup(){
   H=$R/stage-a/coordinator/HANDOFF-hub-stage-a-2026-10-01-1200.md
   printf '# Handoff "Hub stage-a #1" → "Hub stage-a #2" — stage-a\n\n## 0. First steps\n1. take over\n' > $H
   H=$(cd "$(dirname $H)" && pwd -P)/$(basename $H)  # as `hub succeed` resolves it
-  W=$R/work; mkdir -p $W
+  W=$R/work; mkdir -p $W; : > $NOTIFY_LOG
 }
+has_blocked(){ python3 -c 'import json,sys; print("blocked" in json.load(open(sys.argv[1])))' $R/stage-a/auto-handoff.json; }
+notified(){ grep -c "^delamain: stage-a — handoff blocked$" $NOTIFY_LOG; }
+hub_tag(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["roles"]["hub"].get("tag"))' $R/stage-a/roles.json; }
+# no visible successor: nothing headless (no agent spawn), the predecessor still the hub, the reservation given back
+no_headless(){ check "$([ -e $R/stage-a/agents/hub-2 ] && echo spawned || echo none):$(call -p-run count):$($B/roles --stage stage-a get hub | head -c 36):$(pending n):$(chain)" "none:none:$HUB1:None:0" "$1: no agent spawn, hub-1 still the hub, no reservation, chain given back"; }
 J(){ cat "$(journal stage-a)" 2>/dev/null; }
 chain(){ python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("chain"))' $R/stage-a/auto-handoff.json 2>/dev/null || echo none; }
 pending(){ python3 -c 'import json,sys; p=json.load(open(sys.argv[1])).get("pending") or {}; print(p.get(sys.argv[2]))' $R/stage-a/auto-handoff.json "$1" 2>/dev/null || echo none; }
@@ -138,9 +146,9 @@ python3 -c 'import json,sys; json.dump({"chain":0,"pending":{"n":5,"kind":"bg","
 $B/hub succeed --stage stage-a --fallback > $R/fbn.out 2>&1; check "$?:$(call stop count)" "1:none" "fallback: another shift's successor is not touched"
 # nothing starts at all: the reservation and its count are given back, the journal says BLOCKED
 setup
-FAKE_LOGIN=no FAKE_CLAUDE=die succeed --model opus > $R/none.out 2>&1; check $? 1 "no successor at all: exit 1"
+FAKE_LOGIN=no succeed --model opus > $R/none.out 2>&1; check $? 1 "no successor at all: exit 1"
 check "$(chain):$(pending n)" "0:None" "no successor at all: count given back, no pending record"
-J | grep -q "BLOCKED auto-handoff: no successor started (the headless successor did not start either"; check $? 0 "no successor at all: journal says BLOCKED and why"
+J | grep -q "BLOCKED auto-handoff: @owner no visible successor — the background successor did not start: the claude CLI is not logged in"; check $? 0 "no successor at all: journal says BLOCKED and why"
 
 # ================================================================== chain limit
 setup; export AGENT_HUB_AUTO_HANDOFF_CHAIN=1
@@ -204,24 +212,84 @@ mkrepo(){ M=$R/main; mkdir -p $M; git -C $M init -q; git -C $M -c user.email=t@t
 mkrepo
 FAKE_TRUSTED=$M $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 0 "trusted root: exit 0"
 check "$(call --bg count):$(call --bg cwd):$(pending kind)" "1:$MR/.worktrees/stage-a-hub-2:bg" "trusted root: started in a worktree of the main checkout at once"
-# an untrusted root -> headless hub, and the journal says why
+# a failing `claude --bg` never becomes a headless hub (owner, Q-AUDIT-010): the predecessor stays, one @owner line
+# with the CLI's own message and the command to retry, one notification, exit 1
 setup; mkrepo
-$B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/hl.out 2>&1; check $? 0 "untrusted root: exit 0 (headless fallback)"
-check "$(call --bg count):$(pending kind):$(pending role)" "1:headless:hub-2" "untrusted root: one --bg, then the headless successor recorded"
-J | grep -q "background successor not started — $MR is not trusted by the claude CLI — run \`claude\` there once and accept the trust prompt.*falling back to a headless hub"; check $? 0 "untrusted root: journal names the root, the fix and the fallback"
-check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "untrusted root: agent spawn registered hub-2"
+$B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus --effort xhigh > $R/hl.out 2>&1; check "$?:$(call --bg count)" "1:1" "untrusted root: one --bg, exit 1"
+no_headless "untrusted root"
+check "$(hub_tag)" hub-1 "untrusted root: the registered hub is still hub-1"
+J | grep -q "\[hub-1\] BLOCKED auto-handoff: @owner no visible successor — the background successor did not start: \`claude --bg\` exited 1: Workspace not trusted. Run \`claude\` in $MR/.worktrees/stage-a-hub-2 once.*hub-1 stays the hub; nothing headless was started. Fix the reason, then retry: $BR_BIN/hub succeed --stage stage-a --handoff $H --model opus --effort xhigh --permission-mode default --cwd [^ ]*/wt$"; check $? 0 "untrusted root: one journal line for the owner — the CLI's message verbatim and the exact retry command"
+check "$(J | grep -c 'BLOCKED auto-handoff')" 1 "untrusted root: exactly one journal line"
+check "$(notified)" 1 "untrusted root: the owner notified once"
+grep -q "stay the hub: do not start a successor any other way" $R/hl.out; check $? 0 "untrusted root: tells the hub to stay and wait for the owner"
+# the folder the CLI names, not a guess: 21.11 the CLI refused the hub home passed by --add-dir
+setup; mkrepo
+FAKE_BG=dirtrust $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/dt.out 2>&1; check $? 1 "added folder untrusted: exit 1"
+no_headless "added folder untrusted"
+J | grep -qF "\`claude --bg\` exited 1: Error: Added folder not trusted: $R — run \`claude\` in $R once and accept its trust prompt"; check $? 0 "added folder untrusted: the message names the folder the CLI named (the hub home)"
+J | grep -q "$MR is not trusted"; check $? 1 "added folder untrusted: the repository is not blamed"
+unset FAKE_BG
+# review #189 (2): the retry after the owner trusted the folder the CLI named starts in that same worktree, not a -2
+setup; mkrepo
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 1 "trust retry: refused first"
+first_cwd=$(call --bg cwd)
+FAKE_BG=untrusted FAKE_TRUSTED="$first_cwd" $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > $R/tr.out 2>&1
+check "$?:$(call --bg cwd):$(pending kind)" "0:$first_cwd:bg" "trust retry: trusting exactly the folder the CLI named is enough — the retry reuses that worktree"
+# review #189 (3): the same refusal again is neither journaled nor notified twice; a different reason is
+setup
+FAKE_LOGIN=no succeed --model opus > /dev/null 2>&1; FAKE_LOGIN=no succeed --model opus > $R/dup.out 2>&1
+check "$?:$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:1:1" "same refusal twice: exit 1, one journal line, one notification"
+grep -q "already journaled and the owner notified.*not repeated" $R/dup.out; check $? 0 "same refusal twice: the second run says it was already reported"
+FAKE_BG=dirtrust succeed --model opus > /dev/null 2>&1
+check "$?:$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:2:2" "a different reason: journaled and notified again"
+# review #189 round 2 (1): a refusal found in the session's own logs (after its id was recorded) is deduplicated too
+setup
+FAKE_LOGS=notloggedin succeed --model opus > /dev/null 2>&1; FAKE_LOGS=notloggedin succeed --model opus > /dev/null 2>&1
+check "$?:$(call stop count):$(J | grep -c 'BLOCKED auto-handoff'):$(notified)" "1:2:1:1" "logs refusal twice: both sessions stopped, one journal line, one notification"
+# …and a start that passes its checks forgets the refusal: the same one later is news again
+succeed --model opus > /dev/null 2>&1; check "$?:$(pending kind)" "0:bg" "after a good start: the successor is recorded"
+check "$(has_blocked)" False "after a good start: the refusal is forgotten"
+# review #189 round 2 (2): a refusal before any worktree (login) keeps the worktree of the earlier trust refusal
+setup; mkrepo
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1
+first_cwd=$(call --bg cwd)
+FAKE_LOGIN=no $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1; check $? 1 "trust, then login refusal: refused"
+FAKE_BG=untrusted FAKE_TRUSTED="$first_cwd" $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1
+check "$?:$(call --bg cwd):$(pending kind)" "0:$first_cwd:bg" "trust, then login refusal: the retry still reuses the worktree the CLI named"
+# a takeover ends the refused handoff: its worktree (maybe the new hub's own, started there by hand) is not reused
+setup; mkrepo
+FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $R/wt --model opus > /dev/null 2>&1
+first_cwd=$(call --bg cwd)
+check "$(has_blocked)" True "takeover: the refusal is on record before it"
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $H > /dev/null 2>&1
+check "$(has_blocked)" False "after a takeover: the refusal and its worktree are forgotten"
+
+# review #189 (1): --replace stops a successor that took over, then the new start is refused: its record and chain
+# place stay (a second --replace works), and the line does not claim the old hub still leads
+setup; CLAUDE_CODE_SESSION_ID=$HUB1 succeed --model opus > /dev/null 2>&1
+CLAUDE_CODE_SESSION_ID=$HUB2 $B/hub takeover --stage stage-a --session self --auto-handoff --handoff $H > /dev/null 2>&1
+FAKE_LOGIN=no FAKE_AGENTS=prev FAKE_PREV_SID=bg-1234abcd CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/rpf.out 2>&1
+check "$?:$(call stop count):$(hub_tag):$(pending n):$(pending kind):$(pending taken_over | cut -c1-2):$(chain)" "1:1:hub-2:2:bg:20:1" "replace refused: the stopped successor's record and chain place are kept"
+grep -q "hub-1 stays the hub" $R/rpf.out; check $? 1 "replace refused: no false claim that hub-1 stays the hub"
+grep -q "\-\-replace stopped hub-2 .*hub-2 is still the registered hub and no longer runs.*retry: .* --replace$" $R/rpf.out; check $? 0 "replace refused: says what was stopped and gives a --replace retry"
+CLAUDE_CODE_SESSION_ID=$HUB1 $B/hub succeed --stage stage-a --cwd $W --replace --model opus > $R/rpf2.out 2>&1
+check "$?:$(call --bg count):$(pending kind):$(chain)" "0:2:bg:1" "replace refused: the printed --replace retry starts a new successor"
+# --headless (the owner asked for one) still starts a headless hub
+setup; succeed --model opus --headless > $R/hl.out 2>&1; check "$?:$(call --bg count):$(pending kind):$(pending role)" "0:none:headless:hub-2" "--headless: a headless successor recorded"
+check "$($B/roles --stage stage-a get hub-2 2>/dev/null | head -c 36 | wc -c | tr -d ' ')" 36 "--headless: agent spawn registered hub-2"
 BR=$R/stage-a/coordinator/work/hub-2-takeover-brief.md
 grep -qF "$BR_BIN/hub takeover --stage stage-a --session self --auto-handoff --handoff $H" $BR && grep -qF "[agent-hub auto-handoff 1/10]" $BR; check $? 0 "headless: brief has the takeover command and the marker"  # rename:keep
+grep -q "run headless because --headless was given" $BR; check $? 0 "headless: the brief says why it runs headless"
 grep -q "agent send hub-2" $R/hl.out; check $? 0 "headless: tells how the owner reaches it"
-check "$(chain)" 1 "headless: counts in the chain"
-unset FAKE_BG
-# not logged in -> no --bg at all
-setup; FAKE_LOGIN=no succeed --model opus > /dev/null 2>&1; check $? 0 "not logged in: exit 0"
-check "$(call --bg count):$(pending kind)" "none:headless" "not logged in: falls back before any --bg"
-J | grep -q "the claude CLI is not logged in.*claude auth login"; check $? 0 "not logged in: journaled with the fix"
-# the session itself says "Not logged in" -> stopped, removed, headless
+check "$(chain):$(notified)" "1:0" "headless: counts in the chain, no owner notification"
+# not logged in -> no --bg at all, nothing headless
+setup; FAKE_LOGIN=no succeed --model opus > /dev/null 2>&1; check "$?:$(call --bg count)" "1:none" "not logged in: exit 1, no --bg"
+no_headless "not logged in"
+J | grep -q "@owner .*the claude CLI is not logged in.*claude auth login"; check $? 0 "not logged in: journaled with the fix"
+# the session itself says "Not logged in" -> stopped, removed, nothing headless
 setup; FAKE_LOGS=notloggedin succeed --model opus > /dev/null 2>&1
-check "$(call stop count):$(call rm count):$(pending kind)" "1:1:headless" "logs say not logged in: bg session stopped and removed, headless started"
+check "$?:$(call stop count):$(call rm count)" "1:1:1" "logs say not logged in: exit 1, bg session stopped and removed"
+no_headless "logs say not logged in"
 # no link in the logs by the deadline -> still the bg successor, the journal says where to look
 setup; FAKE_LOGS=none succeed --model opus > /dev/null 2>&1
 J | grep -q "Remote Control link not shown yet (\`claude logs bg-1234abcd\`)"; check $? 0 "no link: journal points at claude logs"
@@ -232,9 +300,6 @@ check "$(pending id)" bg-from-list "no id printed: id read from claude agents --
 # an AGENT_HUB_MODEL_MAP alias reaches claude --bg as the id it names
 setup; AGENT_HUB_MODEL_MAP=fast=claude-sonnet-9-9 succeed --model fast > /dev/null 2>&1
 call --bg argv | grep -q -- "--model claude-sonnet-9-9 "; check $? 0 "model map: claude --bg gets the mapped id"
-# --headless right away
-setup; succeed --model opus --headless > /dev/null 2>&1
-check "$(call --bg count):$(pending kind)" "none:headless" "--headless: agent spawn without trying --bg"
 # a refusing reason policy must not stop the chain: the successor keeps the hub's effort (high), above this default
 setup; AGENT_HUB_REASON_POLICY=refuse AGENT_HUB_EFFORT_DEFAULTS='{"opus": "low"}' succeed --model opus --headless > $R/rsn.out 2>&1
 check "$(pending kind)" headless "reason policy refuse: the headless successor still starts"
@@ -242,13 +307,17 @@ grep -q 'hub successor' $R/stage-a/agents/hub-2/meta.json; check $? 0 "…with a
 # AGENT_HUB_SPAWN_MCP is for executors: a headless hub successor keeps the MCP servers its predecessor had
 setup; AGENT_HUB_SPAWN_MCP=none succeed --model opus --headless > /dev/null 2>&1
 grep -q '"mcp": "inherit"' $R/stage-a/agents/hub-2/meta.json; check $? 0 "AGENT_HUB_SPAWN_MCP=none: the headless successor still inherits MCP servers"
-# no takeover by the deadline -> --fallback: log tail journaled, bg stopped (kept), headless from the same handoff
+# no takeover by the deadline -> --fallback: bg stopped (kept), nothing headless, the owner told with the log tail
 setup; succeed --model opus > /dev/null 2>&1
-$B/hub succeed --stage stage-a --fallback > $R/fb.out 2>&1; check $? 0 "fallback: exit 0"
+$B/hub succeed --stage stage-a --fallback > $R/fb.out 2>&1; check $? 1 "fallback: exit 1"
 check "$(call stop count):$(call rm count)" "1:none" "fallback: bg session stopped, not removed"
-J | grep -q "auto-handoff: background session bg-1234abcd wrote no takeover line in 2 s; stopped it.*claude logs tail: /remote-control is active"; check $? 0 "fallback: journal has the reason and the log tail"
-check "$(pending kind):$(pending bg_id):$(chain)" "headless:bg-1234abcd:1" "fallback: headless successor, chain not counted twice"
-$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check $? 1 "fallback after the headless one: nothing further"
+no_headless "fallback"
+J | grep -q "BLOCKED auto-handoff: @owner no visible successor — background session bg-1234abcd wrote no takeover line in 2 s; stopped it.*claude logs tail: /remote-control is active.*hub-1 stays the hub.*retry: $BR_BIN/hub succeed --stage stage-a --handoff $H --model opus --effort high"; check $? 0 "fallback: one @owner line with the reason, the log tail and the retry"
+check "$(notified)" 1 "fallback: the owner notified once"
+$B/hub succeed --stage stage-a --fallback > $R/fb2.out 2>&1; check "$?:$(grep -c 'nothing to fall back from' $R/fb2.out)" "1:1" "fallback twice: nothing further"
+# an explicit --headless successor that does not take over: --fallback starts nothing either
+setup; succeed --model opus --headless > /dev/null 2>&1
+$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check $? 1 "fallback after a --headless one: nothing further"
 J | grep -q "the headless successor hub-2 did not take over either — waiting for the owner"; check $? 0 "…journaled"
 
 # ================================================================== the successor's effort
@@ -273,7 +342,7 @@ setup; AGENT_HUB_SUCCESSOR_EFFORT=bogus succeed --model opus > $R/bad.out 2>&1; 
 setup; succeed --model opus --effort xhigh --dry-run > $R/dry.out 2>&1; grep -qF -- "--model opus --effort xhigh --settings" $R/dry.out; check "$?:$(call --bg count)" "0:none" "effort: the dry run shows it"
 setup; AGENT_HUB_SUCCESSOR_EFFORT=max succeed --model opus --headless > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "max:max" "effort: the headless hub (agent spawn) gets it"
 setup; succeed --model opus --effort xhigh > /dev/null 2>&1
-$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; check "$(meta_effort):$(pending effort)" "xhigh:xhigh" "effort: --fallback's headless hub keeps the effort of the background one"
+$B/hub succeed --stage stage-a --fallback > /dev/null 2>&1; J | grep -q "retry: .*hub succeed .* --effort xhigh "; check $? 0 "effort: --fallback's retry command keeps the effort of the background one"
 
 # --fallback of a record without an effort (state from before the upgrade) with a bad setting: refused before the
 # reservation, so the retry is not blocked
@@ -285,7 +354,8 @@ PY
 AGENT_HUB_SUCCESSOR_EFFORT=bogus $B/hub succeed --stage stage-a --fallback > $R/fbb.out 2>&1
 check "$?:$(grep -c "AGENT_HUB_SUCCESSOR_EFFORT 'bogus'" $R/fbb.out):$(pending kind):$(call stop count)" "2:1:bg:none" "effort: --fallback with a bad setting is refused before the reservation"
 CLAUDE_EFFORT=max $B/hub succeed --stage stage-a --fallback > /dev/null 2>&1
-check "$?:$(pending kind):$(pending effort)" "0:headless:max" "effort: …and the retry is not blocked (an old record gets the hub's own effort)"
+check "$?:$(call stop count):$(pending n)" "1:1:None" "effort: …and the retry is not blocked (it stops the session and reports)"
+J | grep -q "retry: .*hub succeed .* --effort max "; check $? 0 "effort: …an old record gets the hub's own effort"
 
 # the hub's own effort is inherited, and said so; with no way to read it nothing starts (no silent default)
 setup; CLAUDE_EFFORT=xhigh succeed --model opus > $R/inh.out 2>&1
@@ -365,15 +435,6 @@ succeed --model opus > $R/r4b.out 2>&1; check "$?:$(grep -c "wait for its takeov
 # (1) --fallback reserves under the lock: a second run while one runs is refused
 setup; setst 1 falling-back 20 id=bg-1234abcd
 $B/hub succeed --stage stage-a --fallback > $R/r1.out 2>&1; check "$?:$(grep -c 'being started right now' $R/r1.out):$(call stop count)" "1:1:none" "r2(1): --fallback while another --fallback runs is refused, nothing stopped"
-# (1) an earlier --fallback started the headless hub and was killed before recording it: the retry finds it running
-setup
-FAKE_HOLD=40 succeed --model opus --headless > /dev/null 2>&1
-setst 1 bg 700 id=bg-1234abcd cwd=$W
-FAKE_HOLD=40 $B/hub succeed --stage stage-a --fallback > $R/r1b.out 2>&1; rc=$?
-check "$rc:$(pending kind):$(chain)" "0:headless:1" "r2(1): agent spawn's 'already running' = the successor is there, not a failure"
-J | grep -q "BLOCKED"; check $? 1 "r2(1): …no BLOCKED line"
-grep -q "already running (started by an earlier run)" $R/r1b.out; check $? 0 "r2(1): …and it says so"
-$B/agent stop hub-2 --stage stage-a > /dev/null 2>&1
 # (2) --again drops the record of a successor that is not running; a running one is refused
 setup; setst 1 headless 700 role=hub-2
 succeed --model opus --again > $R/r2.out 2>&1; check "$?:$(pending kind):$(chain)" "0:bg:1" "r2(2): --again — a dead headless successor's record dropped, a new one started, counted once"
@@ -400,14 +461,14 @@ PY
 setup; FAKE_BG=hang FAKE_HANG=3 FAKE_AGENTS=late bgrun > /dev/null 2>&1
 check "$(pending kind):$(pending id)" "bg:bg-from-list" "r2(6): hung --bg — the session started since is taken"
 setup; FAKE_BG=hang FAKE_HANG=3 FAKE_AGENTS=stale bgrun > /dev/null 2>&1
-check "$(pending kind):$(call stop count)" "headless:none" "r2(6): hung --bg — a same-named session from an earlier chain is not taken"
+check "$(pending n):$(call stop count):$(call -p-run count)" "None:none:none" "r2(6): hung --bg — a same-named session from an earlier chain is not taken, nothing headless"
 J | grep -q "lists no session of it"; check $? 0 "r2(6): …journaled"
 setup; printf 'none
 late
 ' > $R/seq; FAKE_BG=hang FAKE_HANG=3 FAKE_AGENTS_SEQ=$R/seq bgrun > /dev/null 2>&1
-check "$(pending kind):$(call stop count)" "headless:1" "r2(6): hung --bg — a session listed late is stopped before the headless start"
+check "$(pending n):$(call stop count):$(call -p-run count)" "None:1:none" "r2(6): hung --bg — a session listed late is stopped, nothing headless"
 setup; FAKE_BG=noid FAKE_AGENTS=stale succeed --model opus > /dev/null 2>&1
-check "$(pending kind)" headless "r2(6): no id printed and only an earlier chain's session listed — not taken"
+check "$(pending n):$(call -p-run count)" "None:none" "r2(6): no id printed and only an earlier chain's session listed — not taken, nothing headless"
 # (7) the headless successor's takeover does not depend on $CLAUDE_CODE_SESSION_ID
 setup; succeed --model opus --headless > /dev/null 2>&1
 SIDX=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["session_id"])' $R/stage-a/agents/hub-2/meta.json)
@@ -450,12 +511,8 @@ $B/hub succeed --stage stage-a --handoff $H --cwd $M/.claude/worktrees/x --model
 grep -q "start \"Hub stage-a #2\" from $MR in a new worktree $MR/.worktrees/stage-a-hub-2:" $R/dry.out; check $? 0 "worktree: --dry-run shows the root and the worktree"
 grep -q -- "--worktree" $R/dry.out; check $? 1 "worktree: --dry-run shows no --worktree"
 [ -e $M/.worktrees/stage-a-hub-2 ]; check $? 1 "worktree: --dry-run creates no worktree"
-# a background start that fails after its worktree exists: the headless successor takes that worktree, not a -2
-setup; wtrepo
-FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $M/.worktrees/x --model opus > $R/wf.out 2>&1
-check "$(pending kind):$(pending worktree):$(real "$(call -p-run cwd)")" "headless:$MR/.worktrees/stage-a-hub-2:$MR/.worktrees/stage-a-hub-2" "worktree: the headless fallback reuses the background start's worktree"
 # the background successor's worktree is readied as agent spawn readies it: .agents/prepare runs before `claude --bg`,
-# the worktree is marked prepared, and a fallback that reuses it keeps that state (a prepare that failed runs again)
+# the worktree is marked prepared; a prepare that fails starts nothing
 prepper(){ setup; wtrepo; mkdir -p $M/.agents
   printf '#!/bin/sh\n[ -n "$FAIL_ONCE" ] && [ ! -e %s/failed ] && { touch %s/failed; echo boom; exit 1; }\necho "$AGENT_ROLE $AGENT_HUB_SLOT $(pwd -P)" >> %s/prep.log\n' $R $R $R > $M/.agents/prepare
   chmod +x $M/.agents/prepare; git -C $M add .agents; git -C $M -c user.email=t@t -c user.name=t commit -q -m prepare; }
@@ -465,15 +522,13 @@ $B/hub succeed --stage stage-a --handoff $H --cwd $M/.worktrees/x --model opus >
 check "$?:$(cat $R/prep.log 2>/dev/null | wc -l | tr -d ' '):$(prepared $MR/.worktrees/stage-a-hub-2):$(call --bg count)" "0:1:True:1" "prepare: ran once in the new worktree, marked prepared, then --bg"
 grep -q "^hub-2 [0-9][0-9]* $MR/.worktrees/stage-a-hub-2$" $R/prep.log; check $? 0 "prepare: run in the worktree with its role and slot"
 prepper
-FAKE_BG=untrusted FAKE_TRUSTED=/nowhere $B/hub succeed --stage stage-a --handoff $H --cwd $M/.worktrees/x --model opus > $R/wp2.out 2>&1
-check "$(pending kind):$(cat $R/prep.log 2>/dev/null | wc -l | tr -d ' ')" "headless:1" "prepare: the headless fallback reuses the prepared worktree without preparing it again"
-prepper
 FAIL_ONCE=1 $B/hub succeed --stage stage-a --handoff $H --cwd $M/.worktrees/x --model opus > $R/wp3.out 2>&1
-check "$(call --bg count):$(pending kind):$(pending worktree):$(cat $R/prep.log 2>/dev/null | wc -l | tr -d ' '):$(prepared $MR/.worktrees/stage-a-hub-2)" "none:headless:$MR/.worktrees/stage-a-hub-2:0:False" "prepare: a failed prepare starts no --bg; the fallback in the same worktree does not run it again (still unprepared)"
+check "$(call --bg count):$(call -p-run count):$(pending n):$(cat $R/prep.log 2>/dev/null | wc -l | tr -d ' '):$(prepared $MR/.worktrees/stage-a-hub-2)" "none:none:None:0:False" "prepare: a failed prepare starts no --bg and nothing headless (still unprepared)"
 J | grep -q "worktree prepare of .*stage-a-hub-2 failed"; check $? 0 "prepare: the failure is journaled"
-grep -q "the next spawn into that worktree runs it again" $R/wp3.out; check $? 0 "prepare: hub succeed says the next spawn retries it"
+J | grep -q "@owner no visible successor — the background successor did not start: no worktree for the successor"; check $? 0 "prepare: …and reported to the owner"
 # the start budget: a repository with an executable .agents/prepare adds its timeout to the reservation and to the
 # Bash timeout the hub is told to give `hub succeed`; without one both stay as they were
+prepper; $B/hub succeed --stage stage-a --handoff $H --cwd $M/.worktrees/x --model opus > /dev/null 2>&1
 check "$(pending prepare_s)" 300 "prepare budget: the reservation records the prepare timeout"
 ap(){ python3 - "$BR_BIN" "$@" <<'PY2'
 import sys
@@ -522,10 +577,10 @@ J | grep -q "chain reset"; check $? 1 "legacy tag: no chain reset"
 legacy 'hub'
 $B/hub succeed --stage stage-a --handoff $H25 --cwd $W --model opus > /dev/null 2>&1
 check "$(call --bg argv | grep -c -- '--remote-control stage-a-hub-26 '):$(J | grep -c '\[hub-25\] auto-handoff 1/10')" "1:1" "no number in the tag: --handoff's outgoing #25 wins over the guess"
-# …and when that successor never takes over, --fallback stops it and starts the headless hub (the numberless tag is the
-# old hub's, not a successor that registered meanwhile)
+# …and when that successor never takes over, --fallback stops it (the numberless tag is the old hub's, not a successor
+# that registered meanwhile) and starts nothing headless
 $B/hub succeed --stage stage-a --fallback > $R/lgf.out 2>&1; rc=$?
-check "$rc:$(call stop count):$(pending kind):$(pending role)" "0:1:headless:hub-26" "no number in the tag: --fallback stops the bg hub-26 and starts the headless one"
+check "$rc:$(call stop count):$(pending n):$(call -p-run count)" "1:1:None:none" "no number in the tag: --fallback stops the bg hub-26, nothing headless"
 # a hint for choosing the numbers that `hub succeed` can follow (it has no --n)
 legacy 'hub'; rm -f $R/stage-a/coordinator/HANDOFF-*.md; printf '# no title\n' > $R/plain.md
 $B/hub succeed --stage stage-a --handoff $R/plain.md --cwd $W --model opus > $R/nn.out 2>&1

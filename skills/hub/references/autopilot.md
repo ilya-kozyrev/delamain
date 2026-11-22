@@ -31,6 +31,10 @@ why, and wait for them ("cannot determine the effort" means your own effort is u
 with the same number and chain position; never launch a replacement by hand with a bare `claude --bg`. Run `hub succeed`
 yourself, never from a sub-agent.
 
+`hub succeed` never starts a headless successor on its own (only `--headless` does): when the background one cannot
+start or take over (`--fallback`), it exits 1 with one `BLOCKED auto-handoff: @owner …` line naming the CLI's reason
+and the retry command, and notifies the owner. You stay the hub: tell the owner that line and wait.
+
 **Grilling.** While you grill the owner (`hub grilling start` … `hub grilling end`), the budget message says to finish
 the grilling instead, and `hub succeed`/`hub handoff` refuse unless `--owner-asked` — only when the owner asked for the
 handoff in this conversation. At the context ceiling write the handoff at once with the grilling in § 0 (topic,

@@ -44,6 +44,15 @@
   is journaled as one `@hub lessons need action` line at each takeover (13 digest warnings in two stages had
   no reaction), and the `## Promoted lessons` cap is 4 KiB instead of 2 KiB (core-d and dolya filled 2 KiB at their
   first promotion).
+- **An automatic handoff never starts a headless hub the owner cannot see.** On 21.11 `claude --bg` refused and
+  `hub succeed` fell back to a headless `agent spawn` hub that was not listed in Claude Desktop or Remote Control; the
+  owner, on Remote Control, could not find or reach it (Q-AUDIT-010; the same was decided in Q-AUDIT-002). Now, when the
+  background successor cannot start, and on `--fallback` when it did not take over (it is stopped, history kept), the
+  predecessor stays the hub, journals one `BLOCKED auto-handoff: @owner …` line with the reason and the exact command to
+  retry, notifies the owner once through the watchdog's channels (`delamain: <stage> — handoff blocked`) and exits 1.
+  A headless successor starts only with `--headless` or as the Codex engine's detached successor. The reason is the
+  CLI's own message, and a refused folder is the one the CLI names: the 21.11 refusal was «Added folder not trusted:
+  <hub home>» (the `--add-dir` folder), reported then as the project repository being untrusted.
 
 ## 1.0.27 — 2026-11-08
 
