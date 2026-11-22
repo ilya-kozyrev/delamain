@@ -1030,6 +1030,9 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     ep = hs.get("episode")
     acted = parse_ts((ep or {}).get("acted_at"))
     raw_dead = o["dead"] if flag("AGENT_HUB_WATCHDOG_API_ERROR") else None
+    hold = dead_hold(raw_dead)
+    if not (hold and hold[0] == "account"):
+        hs.pop("blocked", None)  # seen without an account error: a later block is a new episode, whatever this tick does
     if acted and o["last"] and o["last"] > acted and not (raw_dead and raw_dead[0] > acted):
         # the hub showed activity after the last action: that episode is over, and the lines that wake carried were
         # delivered: they never wake it again (a hub that answered them without its digest jwait leaves them unseen).
@@ -1053,11 +1056,9 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
         if ep and not (lines or night or raw_dead):
             hs["episode"] = None
         return
-    hold = dead_hold(raw_dead)
-    if not (hold and hold[0] == "account"):
-        hs.pop("blocked", None)
-    if hold:
-        # a wake cannot cure it: no wake, no "wake failed"; an account block is told to the owner once
+    if hold and (hold[0] == "account" or now < hold[1]):
+        # a wake cannot cure it: no wake, no "wake failed"; an account block is told to the owner once. A usage limit
+        # past its reset is no hold: the wake after it is verified like any other
         if ep and ep.get("result") == "pending" and not tick.dry:
             ep["result"] = f"held: {raw_dead[1]}"
         if hold[0] == "account":
@@ -1068,12 +1069,11 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
                 if not tick.dry:
                     hs["blocked"] = iso(now)
             return
-        if now < hold[1]:
-            if hs.get("held") != iso(hold[1]):
-                tick.say(stage, "R4", f"{tag} hit the usage limit: not woken before {hold[1].astimezone(hc.TZ):%H:%M}")
-                if not tick.dry:
-                    hs["held"] = iso(hold[1])
-            return
+        if hs.get("held") != iso(hold[1]):
+            tick.say(stage, "R4", f"{tag} hit the usage limit: not woken before {hold[1].astimezone(hc.TZ):%H:%M}")
+            if not tick.dry:
+                hs["held"] = iso(hold[1])
+        return
     if ep is None:
         ep = hs["episode"] = {"start": iso(now), "attempts": 0, "acted_at": None, "next_try_at": None,
                               "result": None, "since": iso(lines[0][0]) if lines else None}

@@ -46,6 +46,7 @@ check "$(resumed)" 0 "limit: no wake before the reset + 5 min (ticks at +0…+64
 check "$(count slim < "$R/notify.log")" 0 "limit: …and no notification before it"
 check "$(J slim | count 'woke\|failed')" 0 "limit: …and no wake record in the journal"
 tick slim 66; check "$(resumed)" 1 "limit: one wake after the reset + 5 min"
+tick slim 72; check "$(count 'slim — wake failed' < "$R/notify.log")" 1 "limit: a wake after the reset that shows no activity is reported failed (review #186)"
 L2=$(U 2); bhub slim2 $L2; FX transcript $L2 16 error rate_limit "You've hit your 5-hour limit"
 : > "$R/claude.log"; tick slim2 0; check "$(resumed)" 1 "limit control: a usage limit that names no reset is woken as before"
 python3 - "$B" <<'PY'
@@ -77,6 +78,15 @@ done
 FX transcript $A 0 ok; tick "sacc-oauth_org_not_allowed" 410
 FX transcript $A 0 error oauth_org_not_allowed "blocked again"; tick "sacc-oauth_org_not_allowed" 430
 check "$(count "account blocked" < "$R/notify.log")" 2 "account: a new block after the hub recovered is a new episode (notified again)"
+# review #186: the hub recovers while it is busy with lines waiting (a tick that returns before it could be woken),
+# then is blocked again: a new episode, notified again
+B9=$(U 19); bhub sacc2 $B9; FX transcript $B9 16 error verification_required "API Error: blocked"
+FX jline sacc2 16 "[exec-1] DONE a line while the hub is blocked"; : > "$R/notify.log"
+tick sacc2 0
+FX transcript $B9 0 ok; FX rows "$FAKE_WD_ROWS" "${B9:0:8}" "$B9" background busy "$CWD"; tick sacc2 5
+FX transcript $B9 0 error verification_required "API Error: blocked again"; FX rows "$FAKE_WD_ROWS" "${B9:0:8}" "$B9" background idle "$CWD"
+tick sacc2 30
+check "$(count 'sacc2 — account blocked' < "$R/notify.log")" 2 "account: recovered while busy, then blocked again → notified again"
 
 # ---------------------------------------------------------------- 3. "wake failed": once per episode
 W1=$(U 30); bhub swf $W1; FX jline swf 16 "[exec-1] @hub-4 a line while the wake fails"
