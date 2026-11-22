@@ -457,7 +457,19 @@ cat > $L <<'MD'
 ## L-028 — named only inside parentheses of the evidence; a hub named in the evidence is not the shift
 - status: proposed
 - verdict: 2026-11-10 helped — hub-49 reported the test.
-- verdict: 2026-11-10 helped — hub-50 relayed the same test.
+- verdict: 2026-11-10 helped — hub-50 said: the same test.
+
+## L-030 — a hurt with a parenthetical is a hurt; `)` ends a clause; two shifts of one date are two
+- status: proposed
+- verdict (hub-10): L-030 hurt (a retry helped recover). L-031 helped (today) L-032 hurt (qualification: not applied) — a
+- verdict: helped (05.11) — hub-49 05.11: first shift
+- verdict: helped (05.11) — hub-52 05.11: second shift
+
+## L-031 — after a closing parenthesis
+- status: proposed
+
+## L-032 — not applied, said with a colon inside the parentheses
+- status: proposed
 
 ## L-029 — mixed and not-applied clauses
 - status: proposed
@@ -472,7 +484,15 @@ m = importlib.util.module_from_spec(importlib.util.spec_from_loader("hubmod", lo
 got = {e[0]: e[2:5] for e in m.lessons_entries("stage-a")}
 want = {"L-021": ("promotable", 2, 0), "L-022": ("retired", 1, 1), "L-023": ("promotable", 2, 0),
         "L-024": ("promotable", 3, 0), "L-025": ("promotable", 2, 0), "L-026": ("retired", 0, 1),
-        "L-027": ("proposed", 1, 0), "L-028": ("proposed", 1, 0), "L-029": ("proposed", 0, 0)}
+        "L-027": ("proposed", 1, 0), "L-028": ("proposed", 1, 0), "L-029": ("proposed", 0, 0),
+        "L-030": ("retired", 2, 1), "L-031": ("proposed", 1, 0), "L-032": ("proposed", 0, 0)}
+for text, rule in (("Before merging, fill in Evidence: with the rollout link and wait.", "Before merging, fill in Evidence: with the rollout link and wait."),
+                   ("Evidence from the dry run is mandatory: attach the logs.", "Evidence from the dry run is mandatory: attach the logs."),
+                   ("Wait for owner approval; Evidence: deploy log.", "Wait for owner approval;")):
+    r2 = m.lessons_entries("stage-a", f"## L-001 — cue\n- lesson: {text}\n")[0][8]
+    assert r2 == rule, (r2, rule)
+r2 = m.lessons_entries("stage-a", "## L-001 — cue\nThe old brief is below. Evidence: copied. Rule: deploy without approval.\n")[0][8]
+assert r2 == "", r2
 bad = {k: (got.get(k), v) for k, v in want.items() if got.get(k) != v}
 assert not bad, bad
 PY
@@ -541,8 +561,9 @@ $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr
 grep -q "ATTENTION: lessons left promotable: L-006 (its whole line does not fit ## Promoted lessons of .*: shorten L-006's lesson in lessons.md by hand" $R/pr6.out; check $? 0 "…names it and asks to shorten it"
 cmp -s $RULES $R/rules.before6 && cmp -s $L $R/l.before6; check $? 0 "…and writes no cut rule and no status"
 [ "$(grep -c "\[hub-2\] @hub lessons need action .*L-006 (its whole line does not fit" "$(journal)")" = 1 ]; check $? 0 "…and journals one line to the hub naming it (the digest alone was ignored)"
-$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/pr6d.out 2>&1
-[ "$(grep -c "@hub lessons need action .*L-006" "$(journal)")" = 1 ]; check $? 0 "…a dry run journals nothing"
+cp "$(journal)" $R/journal.before6d
+$B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md --dry-run > $R/pr6d.out 2>&1; check $? 0 "…a dry run of it"
+cmp -s "$(journal)" $R/journal.before6d; check $? 0 "…a dry run journals nothing"
 # 13b. a lesson without rule text is never promoted (the audit: 8 of 22 promoted lines were a heading only): the
 # instruction is the `- lesson:` line or a `- rule:` / `Rule:` / `Правило:` one (phase-e, authz, test-speedup, merge-coord,
 # where it closes a prose paragraph and `Evidence:` ends it); a heading with prose and no rule line is refused by name
@@ -585,7 +606,7 @@ promoted_bytes(){ python3 -c 'import sys; t=open(sys.argv[1],encoding="utf-8").r
 python3 - $RULES <<'PY'
 import sys
 p = sys.argv[1]; t = open(p, encoding="utf-8").read(); i = 0
-while len(t[t.index("## Promoted lessons"):].encode()) < 2100:   # past the old 2 KiB cap before L-008/L-009/L-012 come
+while len(t[t.index("## Promoted lessons"):].encode()) < 3600:   # well past the old 2 KiB cap before L-008/L-009/L-012 come
     t += f"- hand padding {i:02d} (L-8{i:02d})\n"; i += 1
 open(p, "w", encoding="utf-8").write(t)
 PY
@@ -593,10 +614,10 @@ sed -i.bak '/^## L-006/,/^$/d' $L   # the long lesson is out of the way
 $B/hub takeover --stage stage-a --session $HUB2 --handoff $C/on3-done.md > $R/pr7.out 2>&1; check $? 0 "no rule text: takeover"
 grep -q "ATTENTION: lessons left promotable: L-007 (no rule text: add a \`- lesson:\` line" $R/pr7.out; check $? 0 "…L-007 (heading and prose only) is refused by name"
 grep -q "L-007" $RULES; check $? 1 "…and gets no line"
-grep "\[hub-2\] @hub lessons need action" "$(journal)" | tail -1 | grep -q "L-007 (no rule text.*L-010 (no rule text.*L-011 (no rule text"; check $? 0 "…the refusal is journaled to the hub, every one in the takeover's one line"
+[ "$(grep -c "\[hub-2\] @hub lessons need action .*L-007 (no rule text.*L-010 (no rule text.*L-011 (no rule text" "$(journal)")" = 1 ]; check $? 0 "…the refusal is journaled to the hub, every one in the takeover's one line"
 grep -qF -- "- when merging: Before merging, fill in Evidence: with the rollout link and wait for approval. (L-012, lessons.md, auto)" $RULES; check $? 0 "…an Evidence: inside the instruction does not cut it"
 grep -q "L-010\|L-011" $RULES; check $? 1 "…an evidence line is never the rule (an empty - lesson:, a Rule: inside an Evidence: line)"
-[ "$(promoted_bytes)" -gt 2048 ]; check $? 0 "…the section grew past the old 2 KiB cap: the cap is 4 KiB"
+[ "$(promoted_bytes)" -gt 3700 ]; check $? 0 "…the section grew close to 4 KiB: the cap is 4 KiB, not 2"
 python3 - $L <<'PY'   # the refused entries are out of the way of the checks below
 import re, sys
 t = open(sys.argv[1], encoding="utf-8").read()
