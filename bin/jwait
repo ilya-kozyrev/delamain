@@ -44,7 +44,7 @@ sleeps longer pays for re-writing its whole context at every wake, and Claude Co
 ~54 minutes; wait again after the alarm). On the
 deadline prints "ALARM <note>" and exits 3.
 With --journal it marks itself in <root>/.jwait-state/<stage>/<caller>.armed.json while it waits (the watchdog reads it: a hub with a live
-waiter is not woken).
+waiter is not woken); without it (an alarm, a --file wait) in <caller>.alarm.json, which only the stall rule reads.
 With --journal it also looks, every 10 s, for a headless agent of the stage whose process is gone without a result
 (killed, not stopped by `agent stop`) and journals `EXIT <role>: killed (no result)` once, so the line wakes you.
 --stream: after each batch, print it and keep waiting until the deadline (default --for 29m: a Monitor lives at most

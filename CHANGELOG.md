@@ -15,6 +15,14 @@
   from a failure or plan the resume. The exit line is now `EXIT <role>: LIMIT, resets 6:20pm (Europe/Moscow); code 1, …`
   (`LIMIT, reset unknown` without a time) for Claude's limit result and Codex's "usage limit" failed turn; `EXIT` stays
   the first word, so wake patterns are unchanged.
+- **The watchdog wakes a stalled hub once.** A hub that finished a step and launched nothing was woken by nobody: 18
+  stalls of 1.5 h or more in the week to 21.11 (321 h), 10 of them pushed by the owner by hand. Now, by day (outside
+  `AGENT_HUB_NIGHT`), a Claude hub silent over 2 h while nothing of its stage runs (no agent, `await`, waiter, alarm,
+  blocking owner question or `watchdog quiet`; a dead turn is not a stall) is woken once per stall episode with
+  `nothing runs in <stage>: continue the plan, or watchdog quiet --reason …, or roles retire hub`; a Desktop hub gets one
+  `nothing runs` notification instead. A pure `jwait --until/--for` alarm now marks itself (`<caller>.alarm.json`) so
+  the stall rule sees it; R3 ignores that file. A dormant `claude --bg` hub is nudged once before the dormant stop.
+
 - **The watchdog stops waking a hub into a wall and stops repeating itself to the owner's phone.** 08–21.11: ~190
   wakes into dead turns and ~170 `wake failed` notifications (core-d hub-35: 14 wakes and 14 notifications on one line
   during an account verification block). Now a hub whose last turn hit the usage limit is not woken, nor the owner

@@ -15,7 +15,9 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R2  an open question past its due time that has a default → one `[watchdog] @hub OVERDUE Q-…` line
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it; a prompt line (a status word, an await verdict, the
-      owner) wakes an idle hub at the next tick; a line wakes the hub once (delivered when the hub acts after the wake)
+      owner) wakes an idle hub at the next tick; a line wakes the hub once (delivered when the hub acts after the wake).
+      Stall: nothing waits, nothing of the stage runs (no agent, await, waiter, alarm, blocking question), the Claude hub
+      silent > 2 h, outside AGENT_HUB_NIGHT → woken once per stall episode (a Desktop hub: one notification)
   R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it; a usage limit not
       before the reset its error names + 5 min, an account error never (the owner is notified once per episode)
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
@@ -1169,6 +1171,8 @@ def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict) -> bool:
     sid = rec.get("cli_session_id") or rec.get("session") or ""
     meta = hc.detached(stage, rec)
     path = session_effort.find_transcript((meta or {}).get("session_id") or sid)
+    if path is None and not meta:
+        return False  # no transcript and no run log: the hub's silence cannot be told, so it is not called a stall
     seen = newest(mtime_of(path) if path else None, mtime_of(Path(meta["dir"]) / "log.jsonl") if meta else None,
                   parse_ts(rec.get("set_at")))
     if seen is None or tick.now - seen < STALL_AFTER:
