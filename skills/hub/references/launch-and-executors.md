@@ -240,7 +240,8 @@ Added with the CI-wait tool; the core `SKILL.md` carries the short form.
    `jwait --until`'s, a past clock time is tomorrow, a past ISO date is refused). The supervisor sleeps to the time and
    journals `@hub ALARM <label>` signed `<tag>-await`, which the watchdog treats as a prompt line: a dead hub is woken
    at the next tick. `jwait --until` is a process of the hub session and dies with it, so use it only while the hub
-   is alive anyway; `kill <pid>` of an `--at` supervisor journals CANCELLED and wakes nobody.
+   is alive anyway; `kill <pid>` of an `--at` supervisor journals CANCELLED and wakes nobody. It does not survive a reboot
+   (set it again) and does not fire while the machine sleeps: after waking, the live sleeper fires it late.
 
 ## Optional modules
 

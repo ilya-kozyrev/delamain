@@ -39,7 +39,9 @@ syntax: HH:MM or HH:MM:SS, a time already past today means tomorrow, or an ISO d
 and journals `@hub ALARM L (exit 0, …)`, signed `<tag>-await` like every await line, so the watchdog treats it as a
 prompt line and wakes a hub that died meanwhile at its next tick. Use `jwait --until` when the hub is alive anyway (a
 process of the hub session, it dies with it); use `await --at` when the alarm must fire even if the hub dies. Killing
-the supervisor journals CANCELLED and wakes nobody. --at with a COMMAND, --ok, --on, --link or --timeout is refused.
+the supervisor journals CANCELLED and wakes nobody. Limits: the alarm does not survive a reboot (the supervisor is a plain
+process: set it again, nothing restores it) and does not fire while the machine sleeps; the live sleeper re-checks the
+absolute time on waking, so it fires then, late by the sleep. --at with a COMMAND, --ok, --on, --link or --timeout is refused.
 Tag: --tag, else the caller's signing tag + "-await"; a --tag that is your own tag gets "-await" too (your own jwait
 drops your own tag, the line would wake nobody). Stage: --stage, else $HUB_STAGE. Log: --log, else
 <stage>/coordinator/work/await/<time>-<label>.log.
@@ -258,10 +260,14 @@ def alarm_command(args, cmd: list) -> list:
             raise hc.UsageError(f"--at with {opt}: an alarm has no command whose result {opt} could describe")
     start = hc.now()
     due = hc.parse_deadline(args.at, start)
-    if due <= start:
+    # timestamps, not `due - start` / `due <= start`: two aware datetimes of one zone subtract as wall clocks, which is
+    # wrong across a DST change (a 03:30 alarm set at 01:30 the night the clocks go back is 3 h away, not 2) and in the
+    # repeated hour (02:15+01:00 is 30 min after 02:45+02:00, though its wall time is earlier)
+    wait_s = due.timestamp() - start.timestamp()
+    if wait_s <= 0:
         raise hc.UsageError(f"--at {args.at}: {due:%Y-%m-%d %H:%M:%S} is in the past")
     args.ok = "ALARM"
-    args.timeout = f"{int((due - start).total_seconds()) + ALARM_SLACK_S}s"  # the sleeper ends at `due`, never by this
+    args.timeout = f"{int(wait_s) + ALARM_SLACK_S}s"  # the sleeper ends at `due`, never by this
     return [sys.executable, "-c", SLEEP_UNTIL, str(due.timestamp())]
 
 

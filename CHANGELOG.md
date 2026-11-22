@@ -58,8 +58,10 @@
   script whose line the watchdog did not treat as a prompt. Now the existing `await` supervisor, started without a
   COMMAND, sleeps to the time (jwait's own deadline parser) and journals `@hub ALARM L`, signed `<tag>-await` like every
   await line: the watchdog wakes a dead hub at its next tick. A killed alarm journals CANCELLED and wakes nobody; `--at`
-  with a COMMAND, `--ok/--on/--link/--timeout`, no `--label`, or a past ISO time is refused. `jwait --until` stays for a
-  hub that is alive anyway.
+  with a COMMAND, `--ok/--on/--link/--timeout`, no `--label`, or a past ISO time is refused. The time left is measured
+  by timestamps, so a DST change or the repeated hour neither refuses a future alarm nor cuts its supervisor's limit
+  short. An alarm does not survive a reboot and does not fire while the machine sleeps (after waking it fires late).
+  `jwait --until` stays for a hub that is alive anyway.
 
 ## 1.0.27 — 2026-11-08
 

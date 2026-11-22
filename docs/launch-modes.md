@@ -199,7 +199,9 @@ checks N --watch` reported 0 and printed nothing on red checks (26.10, PR #138 a
 `--timeout` and a COMMAND are refused) and journals `@hub ALARM L (exit 0, …)`, signed `<tag>-await` like every await
 line, so the watchdog counts it as a prompt line and wakes a dead hub at its next tick. `jwait --until` is a process
 of the hub session and dies with it: use it when the hub is alive anyway, `await --at` when the alarm must fire even
-if the hub dies (merge windows, nightly checks). Killing the supervisor journals `CANCELLED` without `@hub`.
+if the hub dies (merge windows, nightly checks). Killing the supervisor journals `CANCELLED` without `@hub`. Limits: the
+alarm does not survive a reboot (the supervisor is a plain process; nothing restores it, so set it again) and does not
+fire while the machine sleeps; the live sleeper re-checks the absolute time on waking, so it fires then, late by the sleep.
 
 On GitHub the wait command is `gh-ci-wait N` (`bin/`; `--repo OWNER/REPO`, `--timeout 45m`, `--grace 3m`). It reads the
 PR's checks as JSON and decides by every check's bucket: exit 0 only when all passed; 1 when one failed or was
