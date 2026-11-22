@@ -57,6 +57,7 @@ Load only the branch reference needed for the next action:
 | Record or check what the owner allowed without asking each time | [Standing permissions](../reference.md#standing-permissions) |
 | Configure a setting, migrate home, inspect lifecycle or limits | [Reference](../reference.md) (matching heading); CLI `--help` for exact syntax |
 | Inspect progress or diagnose a missing pane | [Monitoring](../monitoring.md); [Codex monitor](../codex.md#terminal-monitor-and-older-installations) |
+| Audit a period of hub work, delivery efficiency, cost or lessons | [Retro skill](../../skills/retro/SKILL.md); [command semantics](../reference.md#retro-period-audit) |
 | End a shift | [Handoff skill](../../skills/handoff/SKILL.md) |
 | Report a stage's progress to the owner or the team as an infographic page | [Progress report skill](../../skills/progress-report/SKILL.md) |
 | Change delegation level | [Delegation skill](../../skills/delegation/SKILL.md) |

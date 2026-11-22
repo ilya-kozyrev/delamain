@@ -81,6 +81,7 @@ flowchart LR
 | `agy-review` | The bundled Argon reviewer: `run --cwd <checkout> --brief <file>` starts a read-only review by Gemini 4 Argon through Antigravity CLI (`agy`), detached, in a run directory under `<hub home>/agy-runs/` that ends with an `rc` file (`0` = `final.md` is the review); `limits` reads agy's quota from its `/usage` panel; `check` is the availability test of a reviewer entry (agy installed, Argon's weekly quota not known to be below 20 %). The skill is `delamain:agy-review`. macOS only so far. [docs/reviewers.md](reviewers.md#the-bundled-argon-reviewer-agy-review). |
 | `nightq` | Optional: a night queue with a permission matrix, for work that may continue while the owner sleeps; the watchdog wakes a silent hub for it. |
 | `watchdog` | A job every 5 minutes (launchd or cron) that writes `EXIT` for dead agents and wakes a hub that sleeps while lines addressed to it wait. [Watchdog](#watchdog), [docs/monitoring.md](monitoring.md#watchdog-a-hub-that-sleeps-is-woken). |
+| `retro` | Plan a retrospective's window and reader briefs, then measure local evidence with previous-run comparisons. [Period audit](#retro-period-audit). |
 | `agent-top` | Live console of all agents (curses), `--once` text, `--json`. Without a terminal (a Bash tool, a pipe), `--agent`, `--feed` or `--lines` act as `--once`; a bare `agent-top` exits 2. It shows the stages of every known hub home, not only the resolved one ([the registry of homes](#where-the-hubs-files-live)). Summary lists the stages: an open one with no live agent and no activity for `AGENT_TOP_IDLE_S` (48 h) is marked idle, closed ones are hidden (`--all` shows them); `c` in the console and the `close` button in the pane (two presses) run `hub close`. |
 
 More diagrams and the file formats: [docs/architecture.md](architecture.md).
@@ -312,6 +313,102 @@ procedure is in `skills/hub/references/stage-lifecycle.md` (*Idle Desktop sessio
 agent-top the summary has a block with the same split and `desktop_idle` is in `--json`; the answer is cached for 5 minutes
 because it runs git and `gh`/`glab` (`agent desktop-idle` always checks afresh). `hub close` names the stage's own idle
 Desktop sessions (its roles and the hubs it retired). Exit 0 whenever the command ran, 2 for a usage error.
+
+## Retro: period audit
+
+Load [the retro skill](../skills/retro/SKILL.md) for a period audit of hub work: rule compliance, repeated mistakes,
+lessons, token cost and delivery efficiency. It owns the model workflow, evidence contract, report and next
+`CHECK-NEXT.md`; the CLI performs deterministic discovery and measurement. Run the installed plugin's
+`bin/retro` when PATH is missing or shadowed. Inspect `retro --help` and subcommand help for available options.
+
+```bash
+retro plan --since '2026-11-08T16:00:00+03:00' --until '2026-11-21T00:00:00+03:00' --readers 4 --out <audit-out>
+retro measure --out <audit-out>
+retro measure --out <audit-out> --baseline <previous-out> --classifications <audit-out>/classifications --forge <local-export-dir>
+```
+
+`plan [--since T] [--until T] [--readers N] [--exclude-stage S] --out DIR` resolves the hub home with the shared `hubcore`
+resolver ([home precedence](#where-the-hubs-files-live)). All paths are derived from that home and the chosen
+output directory; no personal stage or repository name is required. The time window is half-open `[since, until)`:
+events at `since` count; events at `until` do not. Explicit offsets are honored; unzoned input uses
+`AGENT_HUB_TZ`. The saved `window.json` records the resolved window and assignments so workers share one scope.
+Baseline discovery selects the newest schema-version-1 `<home>/*/coordinator/work/retro-*/metrics.json` by its
+window's `until`, constrained to `until` ≤ the requested end and excluding the current output directory.
+An explicit `--baseline DIR` on measurement overrides the saved/discovered baseline. Without `--until`, planning
+uses now; measurement reuses saved `until` or now. Without `--since`, use saved window (measurement), otherwise
+the discovered prior end, otherwise seven days before `until`. `since` must be earlier than `until`.
+`HUB_STAGE` is excluded by default on a fresh plan; repeatable `--exclude-stage S` replaces that default list.
+Measurement preserves saved exclusions unless explicitly overridden. Check the chosen baseline and exclusions
+before comparing periods. Reader count defaults to `ceil(journal bytes / 400000)` (at least one); stages stay
+whole and reader count is capped by available active stages (one empty reader when no stages are active).
+ISO timestamp microseconds survive planning and repeated measurement. Registrations ending exactly at
+`since` and events exactly at `until` are excluded from the half-open window.
+
+Planning writes `window.json`, filled `brief-common.md`, partitioned `reader-01.md` (and subsequent readers),
+`brief-lessons.md`, `brief-classify.md`, `brief-verify.md`, `report.md` and `check-next.md`. Reader briefs receive
+only their assigned stages; the other briefs receive the full stage list. The plugin's authoritative templates
+live under `skills/retro/resources/`. The skill instructs the hub to fill `report.md` and publish the completed
+follow-up checklist as `CHECK-NEXT.md`; creating a plan does not launch models or schedule later work.
+
+`measure --out DIR [--baseline DIR] [--since T] [--until T] [--classifications DIR] [--forge DIR] [--exclude-stage S]` reads the
+saved window unless timestamp overrides are supplied. It writes `metrics.json` (`schema_version`, `window`, a flat
+`metrics` dictionary, fitted prices and coverage warnings; metric entries contain `value`, `per_day` and `source`),
+`measure.md`, and CSV tables: `agents`, `hubs`, `wakes`,
+`latency`, `friction`, `flow`, `stages`, `touches`, `tells`, `gaps`, `lessons`, `questions`, `ready` and `await`.
+The Markdown covers quantitative cost/turn/context/wake/friction/latency evidence plus A feature flow,
+B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,
+source coverage and unknown fields beside each conclusion.
+
+Registered hub session IDs own their dollars once across current and retired registrations. When a headless
+cohort log reports that SID's cumulative cost, `hubs.csv` uses the larger of that result and the window-fitted
+transcript estimate, so a stale result cannot hide resumed activity. Either available source remains a lower
+bound when the other is missing. Agent rows preserve
+`reported_cost_usd`, while `cost_usd` excludes dollars assigned to registered hubs. `cost_source` names the
+hub's source. Totals, hub share and cost/merge use these disjoint amounts.
+
+Executor intervals bind journal tags through `meta.tag`. A matching terminal proves the interval's end;
+12/3-hour caps and last-line estimates remain `run_needs_review`, not confirmed legitimate waits. Touches
+are combined only for a unique identical-content copy across source kinds in the same stage; nearby messages
+with different content and independent register answers remain separate, with possible duplicate IDs for review.
+
+Classification is a separate evidence review. `--classifications DIR` reads reviewed `touches.csv`, `gaps.csv`,
+`flow.csv`, `stages.csv`, `tells.csv`, `ready.csv` and `questions.csv`, keyed by the original `id`.
+An explicit or saved classification path must be an existing directory; an invalid path fails before result
+files are written. A partial set of CSVs is supported; explicitly choosing an empty directory resets review.
+Accepted reviewed rows contain `id,class,evidence,needs_review=false` (`0` also means false); rows still marked
+for review are skipped. Reviewed rows require a known id, supported class and nonempty evidence:
+
+| CSV | Accepted `class` values |
+|---|---|
+| touches | decision, unblock, correction, nudge, repeat, new task |
+| gaps | legit wait, missed wake, brake, permission brake |
+| flow | verified, duplicate, unattributed |
+| stages | hanging, complete, dropped, carried over |
+| tells | autonomous, escalated, notice, unanswered |
+| ready | open plan, complete |
+| questions | process, owner |
+
+Put brake ending details (owner-ended/self-ended/hanging) in evidence, rather than inventing subclasses.
+Ambiguous rows retain `needs_review` until source evidence supports their class. Keep raw measurement CSVs intact and rerun measurement with the classification directory.
+Metrics requiring semantic judgement remain null until supported; a script's silence does not establish autonomy,
+a brake or a completed plan. The [classification brief](../skills/retro/resources/brief-classify.md) defines
+what evidence to inspect for the A–D method.
+
+Verified flow rows may correct `stage`, `exec_role`, `spawn`, `done`, `review_end`, `queue_start`, `review_rounds`,
+`red_cycles` and `ci_min`; timestamps must precede the merge and numeric counts must be finite and nonnegative.
+The tool recomputes segments and first-time-right from these evidenced fields. Stage rows may supply
+`plan_done`, `plan_dropped`, `plan_carried`, `plan_total` (parts must sum to total); tell rows may supply `reply_at`
+inside the remaining window. Accepted input paths are retained in `window.json` for the next measurement.
+Flow baselines with forge coverage are compared only with forge-covered runs, rather than journal candidates.
+
+`--forge DIR` reads existing local `forge-cache-mrs.json` and `forge-cache-pipelines.json` exports through the
+forge export adapter; it never contacts the forge. Missing fields remain null. Without complete exports,
+journal MERGED candidates are an observed lower bound, and first-time-right stays null: missing red CI or
+review lines cannot establish zero failures or one review round. Source gaps also constrain costs, owner-touch
+coverage, item joins and historical lesson attribution. The audit reads source homes/transcripts/repositories
+and writes its chosen output directory; it adds no hooks, configuration, forge commands or automatic fixes.
+Journal item joins use numeric IDs separately from qualified repository URLs. Bare `PR #7`/`MR !7` joins
+require an unambiguous namespace; equal numbers in different repositories remain separate candidates.
 
 ## Cost and turn limits
 
