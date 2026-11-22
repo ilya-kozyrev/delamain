@@ -164,6 +164,9 @@ case "$out" in *"ONE Bash run_in_background"*"watchdog quiet --stage sd"*) r=0 ;
 # ================================================================== 4. a dormant claude --bg hub is stopped after 2 h, resumed on a line
 NOW=$(python3 -c 'import datetime as d; print((d.datetime.now(d.timezone.utc) + d.timedelta(minutes=150)).strftime("%Y-%m-%dT%H:%M:%S"))')
 export FX_NOW=$NOW AGENT_HUB_WATCHDOG_NOW=$NOW   # the process of the rows started 150 min before the tick's clock
+# the stall rule (one wake of a hub silent 2 h with nothing running, by day; t_watchdog_stall.sh) acts before the dormant stop:
+# a night that covers the whole day keeps it off here, whatever the time the suite runs at
+export AGENT_HUB_NIGHT=00:00-23:59
 D=$(sid d0000010); bghub dm "$D" 130
 : > "$R/claude.log"; WD run --dry-run --stage dm > "$R/tick.out" 2>&1
 grep -q "would stop the dormant hub-4 (d0000010), idle 2 h 10 min" "$R/tick.out"; check $? 0 "dry run: plans the stop of a dormant hub idle 2 h 10 min"
