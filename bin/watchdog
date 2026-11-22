@@ -16,8 +16,9 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it; a prompt line (a status word, an await verdict, the
       owner) wakes an idle hub at the next tick; a line wakes the hub once (delivered when the hub acts after the wake).
-      Stall: nothing waits, nothing of the stage runs (no agent, await, waiter, alarm, blocking question), the Claude hub
-      silent > 2 h, outside AGENT_HUB_NIGHT → woken once per stall episode (a Desktop hub: one notification)
+      Stall: nothing waits, nothing of the stage runs (no agent, await, waiter or alarm of the hub's session, grilling,
+      blocking question), the hub silent > 2 h, outside AGENT_HUB_NIGHT → woken once until work runs again (a Desktop or
+      Codex hub: one notification)
   R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it; a usage limit not
       before the reset its error names + 5 min, an account error never (the owner is notified once per episode)
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
@@ -1058,6 +1059,8 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     if not (silent and not armed and (dead or lines or night)):  # a live own jwait is woken by its own match: a stop would kill it
         if ep and not (lines or night or raw_dead):
             hs["episode"] = None
+        if codex and not (lines or night or raw_dead):
+            rule_stall(tick, stage, hs, rec, o)  # a Codex hub never takes the "nothing waits" path above
         return
     if hold and (hold[0] == "account" or now < hold[1]):
         # a wake cannot cure it: no wake, no "wake failed"; an account block is told to the owner once. A usage limit
@@ -1151,11 +1154,14 @@ def stall_blocker(tick: Tick, stage: str, rec: dict):
     `await` of the stage, an open owner question that blocks something."""
     jw = tool("jwait")
     if live_waiter(tick, stage, rec) or any(jw.armed_live(c, stage, at=tick.now, reap=not tick.dry, kind="alarm")
-                                            for c in callers_of(rec)):
+                                            for c in callers_of(rec)) or session_waiter(tick, rec):
         return "a waiter or an alarm of the hub"
     busy = jw.stage_busy(stage)
     if busy:
         return busy[0]
+    import grilling
+    if grilling.active_stage(stage):
+        return "a grilling with the owner"
     ask = tool("ask")
     if any(e.kind_letter == "Q" and e.state == "open" and (e.fields.get("blocks") or "").strip().lower() not in ask.NO_VALUE
            for e in ask.load(stage)[1]):
@@ -1163,18 +1169,49 @@ def stall_blocker(tick: Tick, stage: str, rec: dict):
     return None
 
 
-def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict) -> bool:
+def session_waiter(tick: Tick, rec: dict) -> bool:
+    """Whether a live waiter or alarm of the hub's own session waits on any stage (its armed or alarm file names the
+    session as `host_session`): a hub of stage A may wait on stage B's journal."""
+    ids = [x for x in (rec.get("session"), rec.get("cli_session_id")) if x]
+    jw = tool("jwait")
+    for path in glob.glob(str(hc.root() / ".jwait-state" / "*" / "*.json")):
+        if not path.endswith((".armed.json", ".alarm.json")):
+            continue
+        try:
+            w = json.loads(Path(path).read_text(encoding="utf-8"))
+            late = tick.now - dt.datetime.fromisoformat(w["deadline"]) > dt.timedelta(seconds=jw.ARMED_GRACE_S)
+            if not late and any(same_session(str(w.get("host_session") or ""), x) for x in ids) \
+                    and jw.pid_runs_jwait(int(w["pid"])) is not False:
+                return True
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return False
+
+
+def ran_since(stage: str, t) -> bool:
+    """Whether work of the stage started or ended after `t`: an agent's meta.json or an `await` log written since."""
+    if t is None:
+        return False
+    paths = glob.glob(str(hc.root() / stage / "agents" / "*" / "meta.json")) + glob.glob(str(hc.work_dir(stage) / "await" / "*.log"))
+    return any((mtime_of(p) or t) > t for p in paths)
+
+
+def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict, o=None) -> bool:
     """A hub that finished a step and launched nothing: nothing waits for it (rule_hub), it is no dead turn, nothing of
     the stage runs (stall_blocker), it has been silent STALL_AFTER and it is day (outside AGENT_HUB_NIGHT). It is woken
     once per stall episode; a hub that cannot be woken gets one notification instead (at most every NOTIFY_AGAIN). The
-    episode ends when something runs again or the stage is made quiet. True when it acted."""
+    episode ends when work of the stage ran after the wake (an answer of the hub alone does not end it) or the stage is
+    made quiet. A Codex hub (`o`, rule_hub's observation) is only notified. True when it acted."""
+    stall = hs.get("stall") if isinstance(hs.get("stall"), dict) else None
+    if stall and ran_since(stage, parse_ts(stall.get("done"))):
+        hs.pop("stall", None)  # checked before the silence: a short run between two long silences ends the episode
     sid = rec.get("cli_session_id") or rec.get("session") or ""
     meta = hc.detached(stage, rec)
-    path = session_effort.find_transcript((meta or {}).get("session_id") or sid)
-    if path is None and not meta:
+    path = session_effort.find_transcript((meta or {}).get("session_id") or sid) if o is None else None
+    if path is None and not meta and not (o and o["last"]):
         return False  # no transcript and no run log: the hub's silence cannot be told, so it is not called a stall
     seen = newest(mtime_of(path) if path else None, mtime_of(Path(meta["dir"]) / "log.jsonl") if meta else None,
-                  parse_ts(rec.get("set_at")))
+                  o and o["last"], parse_ts(rec.get("set_at")))
     if seen is None or tick.now - seen < STALL_AFTER:
         return False  # the cheap question first: a hub that wrote within the window is not asked anything dearer
     if stall_blocker(tick, stage, rec):
@@ -1182,14 +1219,18 @@ def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict) -> bool:
         return False
     if (hs.get("stall") or {}).get("done") or tool("nightq").in_night(tick.now.replace(tzinfo=None)):
         return False
-    o = observe(tick, stage, rec)
+    codex, o = o is not None, o or observe(tick, stage, rec)
     last = newest(o["last"], parse_ts(rec.get("set_at")))
     if o["busy"] is True or o["dead"] or last is None or tick.now - last < STALL_AFTER:
         return False
+    pid = (o["row"] or {}).get("pid")
+    procs = read_procs() if pid else None
+    if procs and own_waiters(pid, procs, kinds=("armed", "alarm")):
+        return False  # a waiter of any stage below the hub's own process: a stop and resume would end it
     tag, silent = rec.get("tag") or "hub", minutes(tick.now - last)
     if not tick.dry:
         hs["stall"] = {"since": iso(last), "done": iso(tick.now)}
-    if o["transport"] == "notify" or o["busy"] is not False:
+    if codex or o["transport"] == "notify" or o["busy"] is not False:
         why = o["why"] or ("busy state unknown" if o["busy"] is None else f"{o['host']} host")
         tick.say(stage, "R3", f"nothing runs and {tag} ({o['host']}) has been silent {silent} min; not woken: {why}")
         told = parse_ts(hs.get("stall_told"))
@@ -1771,13 +1812,13 @@ LSP_RE = re.compile(r"language-server|(?<![a-z])(?:lsp|pyright|pylsp|gopls|rust-
 MCP_RE = re.compile(r"(?<![a-z])mcp(?![a-z])", re.I)
 
 
-def own_waiters(pid, procs: dict) -> set:
+def own_waiters(pid, procs: dict, kinds=("armed",)) -> set:
     """Pids of the journal waiters (`jwait --journal`, its armed files <root>/.jwait-state/<stage>/<caller>.armed.json of
     any stage) that run below the session `pid` and still run a jwait: the session's own waiter. A file that cannot be
     read names nobody."""
     below = {p for p, _ in descendants(pid, procs)}
     out = set()
-    for path in glob.glob(str(hc.root() / ".jwait-state" / "*" / "*.armed.json")):
+    for path in [p for k in kinds for p in glob.glob(str(hc.root() / ".jwait-state" / "*" / f"*.{k}.json"))]:
         try:
             p = int(json.loads(Path(path).read_text(encoding="utf-8"))["pid"])
         except (OSError, ValueError, KeyError, TypeError):

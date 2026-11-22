@@ -89,6 +89,49 @@ nowake squiet "watchdog quiet"
 bhub sdead $(U 11); FX transcript $(U 11) 150 error verification_required "API Error: Your account can't receive replies"
 tick sdead 0; check "$(stall_text | grep -c 'nothing runs')" 0 "stall negative: a dead turn is not a stall (no stall wake)"
 
+# ---------------------------------------------------------------- review #190 round 1
+# (1) the episode: an answer of the hub alone does not end it; a short run between two silences does
+SR=$(U 30); bhub sre $SR
+tick sre 0; check "$(resumed)" 1 "stall episode: the first wake"
+FX_NOW=$(at 30) FX transcript $SR 0 ok; tick sre 200
+check "$(resumed)" 1 "stall episode: the hub answered and went silent again (no work ran): no second wake"
+FX_NOW=$(at 210) FX transcript $SR 0 ok; spawn sre; "$B/agent" stop --stage sre w1 > /dev/null 2>&1
+FX_NOW=$(at 215) FX age "$R/sre/agents/w1/meta.json" 0                     # the short run ended at +215 (the tick's clock)
+tick sre 400; check "$(resumed)" 2 "stall episode: a short agent run after the wake, then silence over 2 h → a new episode, woken"
+# (2) a waiter of the hub's own session on another stage's journal keeps it from a stall wake
+bhub sxw $(U 31); mkdir -p "$R/sxo/coordinator/work"
+CLAUDE_CODE_SESSION_ID=$(U 31) "$B/jwait" --journal --stage sxo --caller hub-4 --settle 1 --for 24h > "$R/w3.out" 2>&1 & PIDS="$PIDS $!"
+armed "$R/w3.out"; nowake sxw "the hub's own jwait waits on another stage's journal"
+# (3) a grilling with the owner in progress is a legitimate wait
+bhub sgr $(U 32)
+CLAUDE_CODE_SESSION_ID=$(U 32) "$B/hub" grilling start --stage sgr --topic "prices" > "$R/g.out" 2>&1; check $? 0 "grilling: started"
+nowake sgr "a grilling with the owner is in progress"
+# (4) a Codex hub (its own branch of rule_hub): the bounded notification, never a wake
+mkdir -p "$R/scx/coordinator/work"; "$B/roles" set --stage scx hub "$(U 33)" --kind cli --tag hub-6 > /dev/null; FX backdate scx 1000
+: > "$R/notify.log"
+python3 - "$B" "$T0" <<'PYX'
+import datetime as dt, importlib.machinery, importlib.util, os, sys
+b, t0 = sys.argv[1], dt.datetime.fromisoformat(sys.argv[2]).replace(tzinfo=dt.timezone.utc)
+loader = importlib.machinery.SourceFileLoader("wd", f"{b}/watchdog")
+wd = importlib.util.module_from_spec(importlib.util.spec_from_loader("wd", loader)); loader.exec_module(wd)
+woke = []
+wd.wake_hub = lambda *a, **k: woke.append(a) or {"ok": True, "how": "codex queue", "detail": ""}
+def observe(tick, stage, rec):
+    return {"host": "codex-thread", "busy": False, "last": t0 - dt.timedelta(minutes=150), "dead": None,
+            "transport": "codex-queue", "why": "", "meta": None, "row": None, "sid": rec["session"], "cwd": None,
+            "transcript": None, "pend": None}
+wd.observe = observe
+for m in (0, 60, 300):
+    os.environ["AGENT_HUB_WATCHDOG_NOW"] = (t0 + dt.timedelta(minutes=m)).isoformat()
+    tick = wd.Tick(False, True)
+    rec = dict(wd.hc.roles_load("scx")["roles"]["hub"], engine="codex")
+    wd.rule_hub(tick, "scx", tick.state["stages"].setdefault("scx", {}), rec)
+    wd.save_state(tick.state)
+assert not woke, woke
+PYX
+check $? 0 "codex: never woken by the stall rule"
+check "$(count 'scx — nothing runs' < "$R/notify.log")" 1 "codex: one bounded notification across three daytime ticks"
+
 # ---------------------------------------------------------------- a Desktop hub: one notification instead
 D1=$(U 20); D1CLI=$(U 21); mkdir -p "$CLAUDE_SESSIONS_DIR/a/b"
 printf '{"sessionId":"local_%s","cliSessionId":"%s","title":"Hub desk","isArchived":false}' "$D1" "$D1CLI" > "$CLAUDE_SESSIONS_DIR/a/b/local_$D1.json"

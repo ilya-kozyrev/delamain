@@ -158,8 +158,8 @@ the digest `jwait` with `--since HH:MM`, handle what it and the wake show, keep 
 woken by `claude stop` and a resume of the same session, so background commands of its last turn are gone: re-arm what
 you need. When you go quiet on purpose (a long wait for the owner, a pause), say so: `watchdog quiet --stage <S> --reason
 "…" [--for 8h]`, and `watchdog quiet --stage <S> --clear` when you are back. A wake `nothing runs in <stage>: …` means
-the stage stalled: by day, silent 2 h, no agent, `await`, waiter, alarm or blocking question; it comes once until
-something runs again: launch the next step, or `watchdog quiet`, or `roles retire hub` when the stage is done.
+the stage stalled: by day, silent 2 h, no agent, `await`, waiter, alarm, grilling or blocking question; it comes once
+until work runs again: launch the next step, or `watchdog quiet`, or `roles retire hub` when the stage is done.
 
 ## Idle Desktop sessions
 
