@@ -78,13 +78,13 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
   wakes on another hub's signature; a reply that cannot wait goes `tell --urgent`. With `--caller <session id>` instead of the hub's tag, add `--exclude-tag hub-<N>`.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
   delivered too.
-- `jwait --until 20:23 --note "check the nightly import"` — an alarm; exit 3 and a line `ALARM …`.
+- `jwait --until 20:23 --note "…"` — an alarm (exit 3, `ALARM …`) that dies with the hub; to wake a dead hub:
+  `await --at 20:23 --label L` (`references/launch-and-executors.md`).
 - Sources and filters combine in one command.
 
 A CI, merge or lock wait is never a background Bash of the hub itself: run `await --ok PASSED --label "MR !N" --on
-2=TIMEOUT -- <the repo's wait command>` (santinel: `python -m scripts.ci_wait --mr N`; `bin/await`, a foreground call
-that returns at once; if `command -v await` finds nothing, an executor does the wait). Silent while it runs,
-it journals one line `@hub PASSED|DONE|FAILED|TIMEOUT|<--on word> … <link>` when it ends: that is the wake, and
+2=TIMEOUT -- <the repo's wait command>` (`bin/await`, a foreground call that returns at once; no `await` on PATH: an executor waits). Silent while it runs, it
+journals one line `@hub PASSED|DONE|FAILED|TIMEOUT|<--on word> … <link>` when it ends: that is the wake, and
 FAILED/TIMEOUT/CONFLICT are decisions, not retries; a superseded wait you `kill` journals CANCELLED, no wake. An
 executor that waits on CI uses the same `await`.
 

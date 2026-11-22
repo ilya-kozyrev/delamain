@@ -53,6 +53,15 @@
   A headless successor starts only with `--headless` or as the Codex engine's detached successor. The reason is the
   CLI's own message, and a refused folder is the one the CLI names: the 21.11 refusal was «Added folder not trusted:
   <hub home>» (the `--add-dir` folder), reported then as the project repository being untrusted.
+- **`await --at HH:MM|ISO --label L`: an alarm that outlives the hub.** `jwait --until` is a process of the hub session
+  and dies with it, so a merge window (05:00) was missed twice by a dead hub and a stage built its own detached alarm
+  script whose line the watchdog did not treat as a prompt. Now the existing `await` supervisor, started without a
+  COMMAND, sleeps to the time (jwait's own deadline parser) and journals `@hub ALARM L`, signed `<tag>-await` like every
+  await line: the watchdog wakes a dead hub at its next tick. A killed alarm journals CANCELLED and wakes nobody; `--at`
+  with a COMMAND, `--ok/--on/--link/--timeout`, no `--label`, or a past ISO time is refused. The time left is measured
+  by timestamps, so a DST change or the repeated hour neither refuses a future alarm nor cuts its supervisor's limit
+  short. An alarm does not survive a reboot and does not fire while the machine sleeps (after waking it fires late).
+  `jwait --until` stays for a hub that is alive anyway.
 
 ## 1.0.27 — 2026-11-08
 
