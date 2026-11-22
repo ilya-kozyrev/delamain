@@ -10,6 +10,11 @@
   single dollar source, retaining a larger transcript estimate after a resume. Forge joins compare complete
   project paths, and explicit review references take precedence over numeric reviewer tags. Inferred executor
   endings and ambiguous owner-message copies remain reviewable.
+- **A run the usage limit stopped says LIMIT and when it resets.** In one 5-hour-limit window 24 agents ended as
+  `EXIT <role>: success, error …` with "hit your limit" only inside the quoted text, so the hub could not tell a limit
+  from a failure or plan the resume. The exit line is now `EXIT <role>: LIMIT, resets 6:20pm (Europe/Moscow); code 1, …`
+  (`LIMIT, reset unknown` without a time) for Claude's limit result and Codex's "usage limit" failed turn; `EXIT` stays
+  the first word, so wake patterns are unchanged.
 
 ## 1.0.27 — 2026-11-08
 
