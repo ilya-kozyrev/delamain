@@ -3,7 +3,9 @@
 
   await [--stage S] [--tag T] [--to hub] [--label TEXT] [--link URL] [--ok WORD] [--on RC=WORD ...]
         [--timeout 2h] [--log PATH] [--wait] -- COMMAND [ARGS ...]
+  await --at HH:MM[:SS]|ISO --label TEXT [--stage S] [--tag T] [--to hub] [--log PATH] [--wait]
   await --ok PASSED --label "MR !12" --on 2=TIMEOUT -- python -m scripts.ci_wait --mr 12
+  await --at 05:00 --label "merge window"      # an alarm, no COMMAND: journals `@hub ALARM merge window` at 05:00
 
 The hub keeps its single `jwait`; this replaces a background Bash that re-reads the hub's whole context on every exit
 of the wait. By default `await` starts a supervisor in its own session, prints its pid and log path and returns at
@@ -32,6 +34,12 @@ line, never "the command ended": `await --wait --ok PASSED -- gh pr checks N --w
 because 0 meant "the line is written", and the verdict was only in the journal.
 --timeout is the supervisor's own limit on COMMAND (default 2h; the process group gets SIGTERM, and after a grace of
 5 s SIGKILL, also when only the leader obeyed SIGTERM).
+--at TIME --label L (no COMMAND) is an alarm that outlives its caller: the supervisor sleeps to TIME (jwait's --until
+syntax: HH:MM or HH:MM:SS, a time already past today means tomorrow, or an ISO date; an ISO time in the past is refused)
+and journals `@hub ALARM L (exit 0, …)`, signed `<tag>-await` like every await line, so the watchdog treats it as a
+prompt line and wakes a hub that died meanwhile at its next tick. Use `jwait --until` when the hub is alive anyway (a
+process of the hub session, it dies with it); use `await --at` when the alarm must fire even if the hub dies. Killing
+the supervisor journals CANCELLED and wakes nobody. --at with a COMMAND, --ok, --on, --link or --timeout is refused.
 Tag: --tag, else the caller's signing tag + "-await"; a --tag that is your own tag gets "-await" too (your own jwait
 drops your own tag, the line would wake nobody). Stage: --stage, else $HUB_STAGE. Log: --log, else
 <stage>/coordinator/work/await/<time>-<label>.log.
@@ -70,6 +78,7 @@ import hubcore as hc  # noqa: E402
 DEFAULT_TIMEOUT = "2h"
 KILL_GRACE_S = 5.0
 READY_WAIT_S = 10.0
+ALARM_SLACK_S = 300  # the supervisor's own limit on an alarm's sleeper: its deadline plus this
 LOG_SCAN_BYTES = 65536
 URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 CI_URL_RE = re.compile(r"/-/(?:pipelines|jobs)/\d|/merge_requests/\d|/actions/runs/\d|/pull/\d|://[^/]+/[^/]+/[^/]+/runs/\d")
@@ -229,6 +238,33 @@ def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int
     return 0
 
 
+SLEEP_UNTIL = ("import sys, time\n"
+               "t = float(sys.argv[1])\n"
+               "while time.time() < t:  # re-checked: a sleep that spans a suspended machine must not end early\n"
+               "    time.sleep(min(30.0, max(0.05, t - time.time())))\n")
+
+
+def alarm_command(args, cmd: list) -> list:
+    """`await --at TIME --label L`: the command for the supervisor is a sleeper that ends at TIME, so the one journal
+    line, the signals, the log and the detaching are those of every other wait; the word is ALARM. Refuses what
+    cannot mean an alarm."""
+    if cmd:
+        raise hc.UsageError("--at is an alarm without a COMMAND: use either --at TIME --label L, or -- COMMAND")
+    if not args.label:
+        raise hc.UsageError("--at needs --label: the alarm line says what it is for")
+    for opt, val, default in (("--ok", args.ok, "DONE"), ("--on", args.on, []), ("--link", args.link, None),
+                              ("--timeout", args.timeout, DEFAULT_TIMEOUT)):
+        if val != default:
+            raise hc.UsageError(f"--at with {opt}: an alarm has no command whose result {opt} could describe")
+    start = hc.now()
+    due = hc.parse_deadline(args.at, start)
+    if due <= start:
+        raise hc.UsageError(f"--at {args.at}: {due:%Y-%m-%d %H:%M:%S} is in the past")
+    args.ok = "ALARM"
+    args.timeout = f"{int((due - start).total_seconds()) + ALARM_SLACK_S}s"  # the sleeper ends at `due`, never by this
+    return [sys.executable, "-c", SLEEP_UNTIL, str(due.timestamp())]
+
+
 def default_label(cmd: list) -> str:
     label = " ".join([os.path.basename(cmd[0])] + cmd[1:])
     return label if len(label) <= 80 else label[:77] + "…"
@@ -252,10 +288,14 @@ def main(argv: list) -> int:
     p.add_argument("--timeout", default=DEFAULT_TIMEOUT, help="limit for the command: 30m, 2h (default 2h)")
     p.add_argument("--log", default=None, help="file for the command's output")
     p.add_argument("--wait", action="store_true", help="stay attached instead of detaching a supervisor")
+    p.add_argument("--at", default=None, metavar="TIME", help="an alarm instead of a COMMAND: journal ALARM LABEL at "
+                   "HH:MM[:SS] or an ISO date (needs --label; outlives the hub, unlike jwait --until)")
     args = p.parse_args(argv)
 
-    if not cmd:
-        raise hc.UsageError("no command: await [options] -- COMMAND [ARGS ...]")
+    if args.at is not None:
+        cmd = alarm_command(args, cmd)
+    elif not cmd:
+        raise hc.UsageError("no command: await [options] -- COMMAND [ARGS ...] (or an alarm: await --at HH:MM --label L)")
     if not WORD_RE.fullmatch(args.ok):
         raise hc.UsageError(f"--ok {args.ok!r}: an upper-case word, e.g. MERGED")
     if not re.fullmatch(r"[\w.-]+", args.to):

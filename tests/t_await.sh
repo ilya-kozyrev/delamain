@@ -403,4 +403,43 @@ $B/await --help | grep -q -- 'ci_wait --mr 12 --on'; check $? 1 "negative: the h
 $B/await --help | grep -q -- '--on 2=TIMEOUT -- python -m scripts.ci_wait'; check $? 0 "…positive control: the right example is there"
 $B/await true > $O/u5.out 2>&1; check $? 2 "no -- command"
 ( unset HUB_TAG; $B/await --wait -- true > $O/u6.out 2>&1 ); check $? 2 "no tag"
+# 8. `await --at`: an alarm that outlives its caller (a hub that dies must still be woken at the time: jwait --until is a
+# process of the hub session)
+in_s(){ python3 -c "import datetime as d,sys;print((d.datetime.now(d.timezone.utc)+d.timedelta(seconds=$1)).strftime('%H:%M:%S'))"; }
+: > $J
+( bash -c "$B/await --at $(in_s 3) --label 'merge window' > $O/at1.out 2>&1" )   # the calling shell has exited
+grep -q '^await: started supervisor pid [0-9]* for "merge window"; log ' $O/at1.out; check $? 0 "--at starts a detached supervisor and returns"
+check "$(lines ALARM)" 0 "negative: nothing is journaled before the time"
+waitline 'ALARM merge window'; check $? 0 "the alarm is journaled after the calling shell has exited"
+sleep 1
+check "$(grep -c '' $J)" 1 "exactly one line"
+grep -q '^- [0-9:]* \[hub-1-await\] @hub ALARM merge window (exit 0, ' $J; check $? 0 "line: signed <tag>-await, @hub, the word ALARM, the label"
+# the hub's own digest jwait delivers it (the line is `<tag>-await`, not its sub-tag)
+$B/jwait --journal --tag hub-1 --tag hub --hub-events --settle 1 --for 5s --since 00:00 > $O/at2.out 2>&1
+check "$(grep -c '@hub ALARM merge window' $O/at2.out)" 1 "the hub's jwait delivers the ALARM line"
+# a time in the past today is tomorrow (jwait's parser): the alarm is armed, not refused; kill it -> CANCELLED, no wake
+: > $J
+out=$($B/await --at 00:00:01 --label "tomorrow" 2>&1); check $? 0 "--at HH:MM:SS already past today means tomorrow, as in jwait --until"
+pid=$(echo "$out" | sed -n 's/^await: started supervisor pid \([0-9]*\).*/\1/p')
+sleep 1; check "$(grep -c '' $J)" 0 "negative: an armed alarm writes nothing"
+kill "$pid"; waitline 'CANCELLED tomorrow'; check $? 0 "a killed alarm journals CANCELLED"
+grep -q 'CANCELLED tomorrow (await interrupted by signal 15, ' $J; check $? 0 "…as any superseded wait"
+grep -q '@hub' $J; check $? 1 "…without @hub: it wakes nobody"
+check "$(grep -c ALARM $J)" 0 "…and no ALARM line"
+# --at with --wait: attached, prints the line, exit 0
+: > $J; $B/await --wait --at $(in_s 2) --label attached > $O/at3.out 2>&1; check $? 0 "--at --wait exits 0 when the alarm fired"
+grep -q '^@hub ALARM attached (exit 0, ' $O/at3.out; check $? 0 "…and prints the ALARM line"
+# refusals
+n0=$(grep -c '' $J)
+$B/await --at 23:59 --label x -- true > $O/at4.out 2>&1; check $? 2 "--at with a COMMAND is refused"
+grep -q 'alarm without a COMMAND' $O/at4.out; check $? 0 "…with a clear message"
+$B/await --at 2020-01-01T10:00:00 --label old > $O/at5.out 2>&1; check $? 2 "--at an ISO time in the past is refused"
+grep -q 'is in the past' $O/at5.out; check $? 0 "…with a clear message"
+$B/await --at 23:59 > $O/at6.out 2>&1; check $? 2 "--at without --label is refused"
+$B/await --at 23:59 --label x --ok PASSED > $O/at7.out 2>&1; check $? 2 "--at with --ok is refused (the word is ALARM)"
+$B/await --at soon --label x > $O/at8.out 2>&1; check $? 2 "--at with an unparsable time is refused"
+check "$(grep -c '' $J)" "$n0" "refusals journal nothing"
+$B/await --help | grep -q -- '--at HH:MM'; check $? 0 "--help describes --at"
+$B/await --help | grep -q -- 'jwait --until'; check $? 0 "…and when to use jwait --until instead"
+
 exit $fail
