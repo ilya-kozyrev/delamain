@@ -374,6 +374,7 @@ def observe_model(model):
                        json.dumps({'type':'turn_context','payload':{'model':model,'effort':'high',
                            'approval_policy':'never','sandbox_policy':{'type':'read-only'}}})+'\n')
 
+rollout.unlink()
 assert ap.codex_context()['requested_model'] == 'sol', 'the matching launch request survives before a usable rollout'
 observe_model('gpt-6.1-sol')
 rc,preview=succeed(handoff,cwd,dry_run=True)
