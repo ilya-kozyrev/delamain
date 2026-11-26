@@ -314,7 +314,8 @@ def validate_findings(data):
 def review(meta, run_id, final, report):
     data = dict(reviewer_task_id=meta["task_id"], reviewer_run_id=run_id,
                 target_task_id=meta.get("review_target_task_id"), head=None, round=None, verdict=None,
-                findings=None, finding_ids=None, diagnostics=[], adjudication=None, provenance="reported_not_adjudicated")
+                findings=None, finding_ids=None, diagnostics=[], adjudication=None, provenance="reported_not_adjudicated",
+                primary=meta.get("review_primary", True), artifact_id=meta.get("review_artifact"))
     copies = []
     try:
         for text in (final, report):

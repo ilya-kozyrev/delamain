@@ -66,12 +66,12 @@ def launch(stage, tid, model, day, tag="1", engine="claude", effort="high", end=
                         cost_usd=cost if engine == "claude" else None, cost_basis=cost_basis)), day + .25, rid)
     return rid
 
-def review(stage, tid, day=1, high=0, round_=1, count=1, adjudication=None):
+def review(stage, tid, day=1, high=0, round_=1, count=1, adjudication=None, primary=True):
     findings = dict(high=high, medium=count-high, low=0)
     ids = [dict(id=f"R{i}", severity="high" if i<high else "medium") for i in range(count)]
-    return emit(stage, tid, "review_observed", dict(reviewer_task_id=id_for("reviewer"), reviewer_run_id=f"round-{round_}",
+    return emit(stage, tid, "review_observed", dict(reviewer_task_id=id_for("reviewer" if primary else "second-reviewer"), reviewer_run_id=f"round-{round_}",
         target_task_id=tid, head="old-head" if round_ == 1 else "new-head", round=round_,
-        verdict="fixes", findings=findings, finding_ids=ids, diagnostics=[], adjudication=adjudication),
+        verdict="fixes", findings=findings, finding_ids=ids, diagnostics=[], adjudication=adjudication, primary=primary),
         day, run=None)
 
 def ci(stage, tid, value=True, day=1, attempt="a", created=.5, artifact=None):
@@ -117,6 +117,8 @@ def cohort(label, new_n=5, missing=False, mixed=False, pending=False, uninitiali
             rid = launch(stage, tid, model, .1, tokens=100 if model=="old" or equal_tokens else 75,
                          cost=1 if model=="old" else 1.5)
             ids[(model, i)] = (tid, rid)
+            if model == "new":
+                review(stage, tid, day=.8, high=2, count=2, primary=False)
             review(stage, tid, high=int(high and model == "new" and i == 0))
             # First-primary counts are stable across rechecks, even if the recheck has new IDs.
             review(stage, tid, day=2, round_=2, count=3 if model == "new" else 5)

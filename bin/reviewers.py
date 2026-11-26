@@ -484,7 +484,7 @@ def walk_second(loaded: Loaded, change_class: Optional[str], every: bool = False
 # ---------------------------------------------------------------- how to start it
 
 def start_line(entry: Entry, stage: str | None = None, author_engine: str | None = None,
-               change_class: str | None = None, target_task_id: str | None = None) -> str:
+               change_class: str | None = None, target_task_id: str | None = None, secondary: bool = False) -> str:
     """What the hub does to start this reviewer. An `agent` reviewer only reads: no --worktree. With a stage the
     `agent spawn` line names it, so the reviewer joins that stage whatever the shell's HUB_STAGE is. A printed --engine
     is the reviewer policy's choice, not a deviation: the line carries --reason, so `agent spawn` does not warn."""
@@ -514,6 +514,8 @@ def start_line(entry: Entry, stage: str | None = None, author_engine: str | None
     taxonomy = " --task-kind review --task-class judgement --change-class " + shlex.quote(recorded_class)
     if target_task_id:
         taxonomy += " --review-target-task-id " + shlex.quote(target_task_id)
+    if secondary:
+        taxonomy += " --secondary-review"
     return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd {cwd}{target_repo}{engine}{sandbox}{model}"
             f"{effort}{in_stage}{reason}{taxonomy} --brief <BRIEF>")
 
