@@ -1170,9 +1170,20 @@ def pace_digest(stage: str) -> str:
         return f"Limit pace: unavailable ({type(e).__name__})"
 
 
-def model_warnings(stage: str, cwd=None):
+def model_warnings(stage: str, cwd=None, session=None):
     catalog = model_catalog.Catalog()
-    models = [hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd), hc.setting("AGENT_HUB_SUCCESSOR_MODEL", cwd=cwd)]
+    models = []
+    if session and engines.codex_desktop() and session == hc.session_id():
+        models.append(autopilot.codex_context(session).get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL"))
+    models.extend(hc.setting(key, cwd=cwd) for key in ("AGENT_HUB_CODEX_DEFAULT_MODEL", "AGENT_HUB_SUCCESSOR_MODEL"))
+    reason_models = hc.setting_json("AGENT_HUB_REASON_MODELS", [], cwd=cwd)
+    if isinstance(reason_models, str):
+        reason_models = [reason_models]
+    if isinstance(reason_models, list):
+        models.extend(model for model in reason_models if isinstance(model, str))
+    effort_defaults = hc.setting_json("AGENT_HUB_EFFORT_DEFAULTS", {}, cwd=cwd)
+    if isinstance(effort_defaults, dict):
+        models.extend(effort_defaults)
     try:
         models.extend(engines.model_map(cwd).values())
         # Inspect configured entries without running quota or availability checks.
@@ -1190,7 +1201,7 @@ def model_warnings(stage: str, cwd=None):
 
 
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
-           goal: str = "", cwd=None) -> str:
+           goal: str = "", cwd=None, session=None) -> str:
     tag = f"hub-{n}"
     # the first jwait replays everything since the predecessor wrote the handoff
     since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
@@ -1202,7 +1213,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         (f"Goal of stage {stage}: {goal}" if goal else "", 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
-        ("\n".join(model_warnings(stage, cwd)), 900, ""),
+        ("\n".join(model_warnings(stage, cwd, session)), 900, ""),
         (hub_notes_line(stage), 300, ""),
         (lessons_digest_line(stage), 560 + len(str(lessons_path(stage)).encode("utf-8")), ""),  # 560 bytes of text, then the path
         (watchdog_digest(stage), 400, "watchdog status"),
@@ -1890,7 +1901,7 @@ def _cmd_takeover(a) -> int:
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
-    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal, getattr(a, "project", None)))
+    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal, getattr(a, "project", None), cli))
     return 0
 
 

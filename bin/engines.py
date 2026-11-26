@@ -55,6 +55,9 @@ def codex_bin(cwd=None):
     return found
 
 
+_MODEL_MAP_WARNED = set()
+
+
 def model_map(cwd=None):
     raw = hc.setting("AGENT_HUB_CODEX_MODEL_MAP", cwd=cwd)
     if not raw:
@@ -67,13 +70,25 @@ def model_map(cwd=None):
             raise ValueError
     except (ValueError, TypeError):
         raise hc.UsageError("AGENT_HUB_CODEX_MODEL_MAP must map safe aliases to model IDs or families") from None
+    for key in list(data):
+        if model_catalog.codex_family(key):
+            if key not in _MODEL_MAP_WARNED:
+                hc.warn(f"AGENT_HUB_CODEX_MODEL_MAP: {key!r} is reserved; ignoring its mapping")
+                _MODEL_MAP_WARNED.add(key)
+            del data[key]
     return data
 
 
-def model_problem(model, cwd=None):
+def model_syntax_problem(model):
     if not isinstance(model, str) or not hc.MODEL_VALUE_RE.fullmatch(model):
         return "a model ID or configured alias (letters, digits and . _ : @ [ ] / - only)"
-    if model in hc.MODEL_ALIASES and model not in model_map(cwd):
+    return None
+
+
+def model_problem(model, cwd=None, aliases=None):
+    if problem := model_syntax_problem(model):
+        return problem
+    if model in hc.MODEL_ALIASES and model not in (model_map(cwd) if aliases is None else aliases):
         return f"{model!r} is a Claude alias; configure AGENT_HUB_CODEX_MODEL_MAP or pass a Codex model ID"
     return None
 

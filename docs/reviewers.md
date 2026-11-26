@@ -133,8 +133,9 @@ entry in or out by the author's engine — "a Claude reviewer only for a Codex a
 guessing the host. The variables are also the place for the rule above ("a different model from the author").
 
 **The built-in default** (no valid list) follows the author as well: for a Codex author it is a Claude reviewer
-(`opus`), for a Claude author a Codex reviewer (`astra`, read-only) when the `codex` CLI is installed (`CODEX_BIN`),
-otherwise Claude as before. Without `--author` it stays the host engine's.
+(`opus`), for a Claude author a Codex reviewer (`astra`, read-only) when the `codex` CLI is installed (`CODEX_BIN`)
+and its catalog lists Astra. Otherwise it uses Claude and prints the reason. Without `--author` the host engine
+supplies the initial choice, with the same availability checks for Codex.
 
 **A check should be forgiving about missing limit data.** Limits choose the engine for a launch; they rule an engine out
 only when it is practically exhausted. A check that sees no observation, or one too old to trust, should report the

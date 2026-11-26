@@ -1,6 +1,7 @@
 #!/bin/bash
 . "$(dirname "$0")/lib.sh"
 new_home
+export CODEX_BIN="$T/fake_codex.py"
 cp "$T/fixtures/codex-model-catalog.json" "$CODEX_HOME/models_cache.json"
 AGENT_HUB_ENGINE=codex "$B/hub" reviewer --json > "$AGENT_HUB_HOME/default.json"; check $? 0 'Codex default reviewer resolves'
 python3 - "$AGENT_HUB_HOME/default.json" <<'PY'
@@ -31,6 +32,29 @@ import json,sys
 r=json.load(open(sys.argv[1]));assert '--engine claude' in r['start'];assert '--sandbox' not in r['start']
 PY
 check $? 0 'explicit Claude engine preserved'
+mixed='[{"name":"codex","kind":"agent","engine":"codex","model":"opus"},{"name":"claude","kind":"agent","engine":"claude","model":"opus"}]'
+for map_case in invalid valid; do
+    mapping='{"opus":"astra"}'
+    [ "$map_case" = valid ] || mapping='{broken'
+    AGENT_HUB_REVIEWERS="$mixed" AGENT_HUB_CODEX_MODEL_MAP="$mapping" AGENT_HUB_REVIEW_MODEL=opus \
+        "$B/hub" reviewer --author claude/opus --all --json > "$AGENT_HUB_HOME/$map_case.json" 2>"$AGENT_HUB_HOME/$map_case.err"
+    check $? 0 "reviewer walk completes with $map_case map"
+done
+python3 - "$AGENT_HUB_HOME" <<'PY_MAP'
+import json
+from pathlib import Path
+import sys
+
+home = Path(sys.argv[1])
+invalid, valid = (json.loads((home / f'{case}.json').read_text()) for case in ('invalid', 'valid'))
+assert invalid['chosen'] == 'claude', invalid
+assert [e['available'] for e in invalid['entries']] == [False, True], invalid
+assert 'AGENT_HUB_CODEX_MODEL_MAP' in invalid['entries'][0]['why'], invalid
+assert any('AGENT_HUB_CODEX_MODEL_MAP' in problem for problem in invalid['invalid']), invalid
+assert valid['chosen'] == 'codex' and valid['entries'][0]['resolved_model'] == 'gpt-6.2-astra', valid
+assert valid['invalid'] == [], valid
+PY_MAP
+check $? 0 'a malformed map disables only Codex entries; a valid map resolves the alias'
 AGENT_HUB_ENGINE=codex "$B/hub" reviewer --stage stage-a --json > "$AGENT_HUB_HOME/stage.json"
 python3 - "$AGENT_HUB_HOME/stage.json" "$AGENT_HUB_HOME" <<'PY_STAGE'
 import json,shlex,sys

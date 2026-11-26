@@ -352,12 +352,7 @@ def hub_effort(data: dict) -> Optional[str]:
         return None
 
 
-def codex_context(session_id=None, transcript=None) -> dict:
-    """Persisted settings of the exact caller; hook payload identity need not be in its process env."""
-    current = hc.session_id()
-    sid = session_id if session_id is not None else current
-    if not sid or (current and current != sid):
-        return {}
+def _codex_rollout_context(sid, transcript=None):
     if transcript is not None:
         head = codex_rollouts.Index()._head(Path(transcript))
         if not head or head[0] != sid:
@@ -375,22 +370,41 @@ def codex_context(session_id=None, transcript=None) -> dict:
                 return dict(context, _rollout_found=True)
         except OSError:
             pass
+    return {}
+
+
+def codex_context(session_id=None, transcript=None) -> dict:
+    """Persisted settings of the exact caller, plus its matching detached launch request."""
+    current = hc.session_id()
+    sid = session_id if session_id is not None else current
+    if not sid or (current and current != sid):
+        return {}
+    observed = _codex_rollout_context(sid, transcript)
+    if transcript is not None and not observed:
+        return {}
     # A detached coordinator knows its launch policy even before a rollout is discoverable.
     role = os.environ.get("AGENT_ROLE")
     stage = os.environ.get("HUB_STAGE")
     if role and stage and hc.STAGE_RE.fullmatch(role):
         try:
             meta = json.loads((hc.root() / hc.check_stage(stage) / "agents" / role / "meta.json").read_text())
-            if meta.get("engine") == "codex" and meta.get("session_id") == sid:
-                return {"model": meta.get("model"), "effort": meta.get("effort"), "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
-                        "approval_policy": meta.get("approval_policy")}
+            if isinstance(meta, dict) and meta.get("engine") == "codex" and meta.get("session_id") == sid:
+                context = observed or {"model": meta.get("model"), "effort": meta.get("effort"),
+                                       "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
+                                       "approval_policy": meta.get("approval_policy")}
+                request = meta.get("requested_model")
+                if request and (not observed.get("model") or
+                                observed["model"] in (meta.get("model"), meta.get("resolved_model"))):
+                    context["requested_model"] = request
+                return context
         except (OSError, ValueError, hc.Failure):
             pass
-    return {}
+    return observed
 
 
 def codex_model(given: Optional[str], context: dict, cwd: Path) -> Optional[str]:
-    return (given or configured_model() or context.get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL")
+    return (given or configured_model() or context.get("requested_model") or context.get("model")
+            or os.environ.get("AGENT_HUB_CODEX_MODEL")
             or None)
 
 
@@ -1310,7 +1324,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if engine == "codex":
         context = codex_context()
         if retry.get("engine") == "codex":
-            context = dict(context, model=retry.get("model"), effort=retry.get("effort"),
+            context = dict(context, model=retry.get("model"), requested_model=None, effort=retry.get("effort"),
                            sandbox_policy=retry.get("sandbox_policy") or {"type": retry.get("mode")},
                            approval_policy=retry.get("approval_policy", "never"))
         try:

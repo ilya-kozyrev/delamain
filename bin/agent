@@ -1366,6 +1366,10 @@ def _send_locked(stage: str, a, msg: str) -> int:
         data = hc.roles_load(stage)
         data["roles"][a.role]["pid"] = pid
         hc.roles_save(stage, data)
+    if meta.get("engine") == "codex" and meta.get("model"):
+        for warning in model_catalog.Catalog().pin_warnings([meta["model"]], meta["cwd"]):
+            print(warning, file=sys.stderr)
+            journal(stage, "cli", warning)
     line = journal(stage, "cli", f"@{meta['tag']} (session resumed, pid {pid}"
                                  + (f", unread replayed: {len(unread)}" if unread else "") + f") {msg}".rstrip())
     print(f"no process was running — session {meta['session_id']} resumed: pid {pid}\n{line}")

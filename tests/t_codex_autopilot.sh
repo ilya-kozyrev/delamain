@@ -353,4 +353,40 @@ except hc.Failure as e: assert 'no Codex process started' in str(e)
 else: raise AssertionError('stale hub started a successor')
 assert len(calls())==before and state(home)['chain']==0
 print('PASS completed takeover prevents extra successor and releases reservation')
+ap.CodexSuccessor=real
+
+home,handoff,cwd=setup('family-successor')
+sid=os.environ['CODEX_THREAD_ID']
+meta_path=home/'stage-a/agents/hub-1/meta.json'
+meta_path.parent.mkdir(parents=True)
+os.environ.update(AGENT_ROLE='hub-1', HUB_STAGE='stage-a')
+meta={
+    'session_id': sid, 'engine': 'codex', 'model': 'gpt-6.1-sol', 'resolved_model': 'gpt-6.1-sol',
+    'requested_model': 'sol', 'effort': 'high', 'sandbox': 'read-only', 'approval_policy': 'never',
+}
+meta_path.write_text(json.dumps(meta))
+(tmp/'codex-home/models_cache.json').write_text(json.dumps({'models': [
+    {'slug': 'gpt-6.1-sol', 'visibility': 'list'},
+    {'slug': 'gpt-6.2-sol', 'visibility': 'list'},
+]}))
+def observe_model(model):
+    rollout.write_text(json.dumps({'type':'session_meta','payload':{'id':sid}})+'\n'+
+                       json.dumps({'type':'turn_context','payload':{'model':model,'effort':'high',
+                           'approval_policy':'never','sandbox_policy':{'type':'read-only'}}})+'\n')
+
+assert ap.codex_context()['requested_model'] == 'sol', 'the matching launch request survives before a usable rollout'
+observe_model('gpt-6.1-sol')
+rc,preview=succeed(handoff,cwd,dry_run=True)
+assert rc == 0 and '--model sol' in preview and '-m gpt-6.2-sol' in preview, preview
+assert ap.codex_context()['model'] == 'gpt-6.1-sol', 'observed model remains available to runtime readers'
+for request in ('gpt-6.1-sol', None):
+    meta['requested_model']=request
+    meta_path.write_text(json.dumps(meta))
+    rc,preview=succeed(handoff,cwd,dry_run=True)
+    assert rc == 0 and '--model gpt-6.1-sol' in preview and '-m gpt-6.1-sol' in preview, preview
+meta['requested_model']='sol'
+meta_path.write_text(json.dumps(meta))
+observe_model('gpt-6.2-sol')
+assert ap.codex_model(None,ap.codex_context(),cwd) == 'gpt-6.2-sol', 'a different observed model supersedes the old request'
+print('PASS a matching detached family follows catalog updates; explicit and legacy pins stay fixed')
 PY

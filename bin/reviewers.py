@@ -37,7 +37,6 @@ import os
 import math
 import re
 import shlex
-import shutil
 import signal
 import subprocess
 import tempfile
@@ -58,6 +57,7 @@ SKILL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}(?::[A-Za-z0-9][A-Za-z0-9
 SHOWN = 30  # characters of a rejected key or value that are echoed back: enough to find it, too few to carry text
 DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 DEFAULT_MODEL, DEFAULT_EFFORT = "opus", "high"
+DEFAULT_CODEX_MODEL = "astra"
 CHECK_TIMEOUT_S = 10.0  # $AGENT_HUB_REVIEW_CHECK_TIMEOUT (seconds) overrides it; the tests use that
 OUTPUT_CHARS = 300
 
@@ -115,7 +115,17 @@ class Loaded:
         self.entries, self.problems, self.origin = entries, problems, origin
         self.cwd = cwd
         self.catalog = None
-        self.aliases = engines.model_map(cwd) if self.codex_entries() else {}
+        self.aliases, self.map_problem = {}, None
+        if self.codex_entries():
+            try:
+                self.aliases = engines.model_map(cwd)
+            except hc.UsageError as e:
+                self.map_problem = str(e)
+                self.problems.append(self.map_problem)
+        for entry in self.entries:
+            if entry.kind == "agent":
+                model, effort = _review_defaults(cwd, entry.engine, self.aliases)
+                entry.model, entry.effort = entry.model or model, entry.effort or effort
 
     def codex_entries(self):
         return [entry for entry in self.entries if entry.kind == "agent" and entry.engine == "codex"]
@@ -131,6 +141,8 @@ class Loaded:
 
     def resolve_model(self, entry):
         if entry.kind == "agent" and entry.engine == "codex":
+            if problem := engines.model_problem(entry.model, self.cwd, self.aliases):
+                raise hc.UsageError(f"model {show(entry.model)}: {problem}")
             if self.catalog is None:
                 self.catalog = model_catalog.Catalog()
             entry.launch_model = model_catalog.map_model(entry.model, self.aliases)
@@ -190,14 +202,14 @@ def parse_author(spec: str, stage: Optional[str] = None) -> Author:
 
 # ---------------------------------------------------------------- reading the list
 
-def _review_defaults(cwd=None, engine="claude") -> tuple:
+def _review_defaults(cwd=None, engine="claude", aliases=None) -> tuple:
     """(model, effort) of an `agent` reviewer that names none: AGENT_HUB_REVIEW_MODEL / _EFFORT, else opus / high."""
     # Review is judgement work. Do not inherit a Sol implementation default or
     # the standalone CLI's ordinary-work model for a Codex reviewer.
-    default_model = DEFAULT_MODEL if engine == "claude" else "astra"
+    default_model = DEFAULT_MODEL if engine == "claude" else DEFAULT_CODEX_MODEL
     model = (hc.setting("AGENT_HUB_REVIEW_MODEL", cwd=cwd) or default_model or "").strip() or None
     effort = (hc.setting("AGENT_HUB_REVIEW_EFFORT", cwd=cwd) or DEFAULT_EFFORT).strip()
-    problem = (hc.model_problem(model, cwd) if engine == "claude" else engines.model_problem(model, cwd)) if model else None
+    problem = hc.model_problem(model, cwd) if engine == "claude" else engines.model_problem(model, cwd, aliases)
     if problem:
         hc.warn(f"AGENT_HUB_REVIEW_MODEL={show(model)}: {problem}; using {default_model}")
         model = default_model
@@ -239,7 +251,12 @@ def _validate(item, seen: set, cwd=None) -> dict:
         if "skill" in item:
             raise ValueError("`skill` is for kind skill")
         if "model" in item:
-            problem = hc.model_problem(item["model"], cwd) if engine == "claude" else engines.model_problem(item["model"], cwd)
+            if engine == "claude":
+                problem = hc.model_problem(item["model"], cwd)
+            else:
+                # Alias availability belongs to the walk, where a broken map
+                # disables only entries that would launch Codex.
+                problem = engines.model_syntax_problem(item["model"])
             if problem:
                 raise ValueError(f"`model` must be {problem}")
         if "effort" in item and item["effort"] not in (hc.EFFORTS if engine == "claude" else engines.CODEX_EFFORTS):
@@ -266,9 +283,7 @@ def _validate(item, seen: set, cwd=None) -> dict:
 
 
 def load(cwd=None, author: Optional[Author] = None) -> Loaded:
-    """Parse AGENT_HUB_REVIEWERS. Problems are collected (and reported by the caller), never raised. With a known
-    author the built-in default entry (no valid list) is the other engine's reviewer — a Codex change gets Claude,
-    a Claude change gets Codex when the codex CLI is installed — so the default is never the author's own engine."""
+    """Parse configured reviewers or choose the built-in reviewer for the author or host."""
     raw, origin = hc.setting_origin(SETTING, cwd=cwd)
     problems: list = []
     data = None
@@ -298,15 +313,19 @@ def load(cwd=None, author: Optional[Author] = None) -> Loaded:
             problems.append(f"{SETTING}: no valid entry; using the built-in default (one `agent` reviewer)")
     if not entries:
         raw_default = {"name": "agent", "kind": "agent"}
-        if author and author.engine == "codex":
+        prefer_codex = author.engine == "claude" if author else engines.selected(cwd=cwd) == "codex"
+        if prefer_codex:
+            try:
+                engines.codex_bin(cwd)
+                model_catalog.Catalog().resolve(DEFAULT_CODEX_MODEL)
+            except (hc.Failure, hc.UsageError) as e:
+                problems.append(f"built-in Codex reviewer unavailable: {e}; using Claude")
+                raw_default["engine"] = "claude"
+            else:
+                raw_default["engine"] = "codex"
+        elif author:
             raw_default["engine"] = "claude"
-        elif author and author.engine == "claude":  # Codex when its CLI is there, else Claude — named, never the host's
-            raw_default["engine"] = "codex" if shutil.which(hc.setting("CODEX_BIN", cwd=cwd) or "codex") else "claude"
         entries, origin = [Entry(1, raw_default, cwd)], "default"
-    for e in entries:
-        if e.kind == "agent":
-            model, effort = _review_defaults(cwd, e.engine)
-            e.model, e.effort = e.model or model, e.effort or effort
     return Loaded(entries, problems, origin, cwd)
 
 
@@ -387,6 +406,8 @@ def judge(entry: Entry, change_class: Optional[str], loaded: Loaded, author: Opt
         return Verdict(entry, False, f"until {entry.until} has passed")
     if change_class and entry.classes and change_class.strip().lower() not in {c.strip().lower() for c in entry.classes}:
         return Verdict(entry, False, f"not for class {show(change_class)} (it serves {', '.join(entry.classes)})")
+    if entry.kind == "agent" and entry.engine == "codex" and loaded.map_problem:
+        return Verdict(entry, False, loaded.map_problem)
     try:
         loaded.resolve_model(entry)
     except hc.UsageError as e:

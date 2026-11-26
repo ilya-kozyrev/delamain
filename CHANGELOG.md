@@ -6,6 +6,8 @@
   defaults, aliases and reviewers to pick the newest listed version of that family. Spawn records the requested
   alias and resolved ID. Full IDs stay pinned and warn when a newer version is listed, unless acknowledged in
   `AGENT_HUB_MODEL_PINS`. Start and takeover digests also warn about stale pins and catalogs older than seven days.
+  Detached successors inherit the requested family, and thread resumes warn when their recorded model is stale.
+  The built-in reviewer falls back to Claude with a reason when Codex or a listed Astra is unavailable.
 
 ## 1.0.28 — 2026-11-22
 
