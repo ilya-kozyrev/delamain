@@ -123,6 +123,9 @@ class Outcomes(unittest.TestCase):
             u = out.usage(file, run_offset, "codex", "sid")
             self.assertFalse(u["complete"])
             self.assertIsNone(u["tokens_total"])
+        file = self.write_log(first + [turn, dict(type="turn.failed", error=dict(message="network error"))])
+        self.assertFalse(out.usage(file, 0, "codex", "sid")["complete"])
+        self.assertIsNone(out.usage(file, 0, "codex", "sid")["tokens_total"])
         file = self.write_log(first)
         with file.open("a") as f:
             f.write('{"partial":')
@@ -141,7 +144,7 @@ class Outcomes(unittest.TestCase):
         self.assertIsNone(data["adjudication"])
         zero = obj | dict(findings=dict(high=0, medium=0, low=0), finding_ids=[])
         self.assertEqual(out.review(meta, "run", text(zero), text(zero))["findings"]["high"], 0)
-        bad = ["", "REVIEW_OUTCOME: {broken}\nVERDICT: merge", good + good,
+        bad = ["", "REVIEW_OUTCOME: {broken}\nVERDICT: merge", "REVIEW_OUTCOME: []\nVERDICT: merge", good + good,
                text(obj | dict(target_task_id=str(uuid.uuid4()))), text(obj | dict(head="wrong")),
                text(obj | dict(finding_ids=obj["finding_ids"] * 2)),
                text(obj | dict(findings=dict(high=0, medium=True, low=0))),
@@ -292,6 +295,11 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(rows[-1]["type"], "task_closed")
         self.assertEqual(rows[-1]["data"]["outcome"], "failure")
         self.assertEqual([e for e in rows if e["type"] == "run_ended"][0]["data"]["termination_reason"], "init_failure")
+        started = time.monotonic()
+        self.command("send", "kill", "resume that fails before init", env=dict(FAKE_CLAUDE="die", AGENT_INIT_TIMEOUT="8"), ok=False)
+        self.assertLess(time.monotonic() - started, 7)  # child exit evidence avoids the lock/init-wait deadlock
+        rows = self.rows("kill")
+        self.assertEqual([e for e in rows if e["type"] == "run_ended"][-1]["data"]["termination_reason"], "init_failure")
 
     def test_e_reviewer_link_and_legacy(self):
         self.spawn("author", "--task-class", "bounded", env=dict(FAKE_FINAL="DONE author"))

@@ -666,7 +666,7 @@ def telemetry(fn, *args, **kwargs):
     """Evidence failures cannot suppress process control or journal delivery."""
     try:
         return fn(*args, **kwargs)
-    except (OSError, ValueError, TypeError, KeyError) as exc:
+    except Exception as exc:  # telemetry is a failure-isolated boundary, including unknown provider shapes
         hc.warn(f"task outcomes: {exc}")
         return None
 
@@ -1519,7 +1519,8 @@ def cmd_stop(a) -> int:
             m.pop("stopping", None)
             save_meta(stage, a.role, m)
         raise
-    telemetry(capture_end, meta, observed=True)
+    with AgentLock(stage, a.role):
+        telemetry(capture_end, load_meta(stage, a.role), observed=True)
     if a.role in hc.roles_load(stage)["roles"]:
         roles_cli.retire_role(stage, a.role, "agent-stop")
     print(f"{a.role}: stopped ({how}), role retired")

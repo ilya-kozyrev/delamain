@@ -91,7 +91,7 @@ def validate(ev):
     json.dumps(ev, allow_nan=False)
 
 
-def read(file):
+def read(file, strict=False):
     """Only a partial final line may be ignored; complete corrupt lines fail loudly."""
     if not Path(file).exists():
         return [], False
@@ -101,6 +101,10 @@ def read(file):
     events = []
     for line in lines[:-1] if torn else lines:
         ev = json.loads(line)
+        if isinstance(ev, dict) and ev.get("schema_version") != 1 and not strict:
+            import warnings
+            warnings.warn(f"unsupported outcome version in {file}; event skipped (coverage incomplete)")
+            continue
         validate(ev)
         events.append(ev)
     return events, torn
@@ -112,7 +116,7 @@ def append(stage_dir, ev):
     file.parent.mkdir(parents=True, exist_ok=True)
     with file.with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        events, torn = read(file)
+        events, torn = read(file, strict=True)
         for old in events:
             if old["event_id"] == ev["event_id"]:
                 # A retry's observation timestamps may differ; evidence must not.
@@ -230,7 +234,8 @@ def usage(file, offset, engine, session_id=None):
         if offset and previous_sid == current_sid and not previous:
             baseline = None
         snapshots = ([baseline] if baseline is not None else []) + [e.get("usage") for e in results]
-        monotonic = baseline is not None
+        latest_result = max((i for i, e in enumerate(events) if e.get("type") == "turn.completed"), default=-1)
+        monotonic = baseline is not None and not any(e.get("type") in ("turn.started", "turn.failed", "error") for e in events[latest_result + 1:])
         for a, b in zip(snapshots, snapshots[1:]):
             for key in ("input_tokens", "output_tokens", "cached_input_tokens", "reasoning_output_tokens"):
                 av, bv = count((a or {}).get(key, 0)) if a == {} else count((a or {}).get(key)), count((b or {}).get(key))
@@ -275,6 +280,8 @@ def review(meta, run_id, final, report):
             if len(lines) != 1:
                 raise ValueError("missing or multiple REVIEW_OUTCOME lines")
             obj = json.loads(lines[0])
+            if not isinstance(obj, dict):
+                raise ValueError("REVIEW_OUTCOME must be an object")
             if obj.get("schema_version") != 1 or obj.get("target_task_id") != data["target_task_id"]:
                 raise ValueError("review schema/target mismatch")
             if obj["target_task_id"] is not None:

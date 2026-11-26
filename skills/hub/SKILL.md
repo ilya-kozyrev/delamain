@@ -5,8 +5,7 @@ description: Tools and recommended rules for a stage hub — the one interactive
 
 # Stage hub: tools and recommended rules
 
-The core: what a hub needs from its first minute. Situational procedures sit in `references/` beside this file, moved
-whole; read one when its situation comes up. **A Codex hub reads `codex-hub.md` and `autopilot.md` at start.**
+Read situational procedures in `references/` when their trigger applies. **A Codex hub reads `codex-hub.md` and `autopilot.md` at start.**
 
 - `references/stage-lifecycle.md` — *Starting a stage*, *Taking over a shift*, leaving, *Closing a stage*, the shared-file table, the watchdog.
 - `references/autopilot.md` — *Autopilot* (`AGENT_HUB_AUTO_HANDOFF=on`, automatic successors, Codex Desktop native launch).
@@ -175,18 +174,18 @@ More: `references/launch-and-executors.md`.
   status word `ENDED <role>: …` (`REVIEWED …` for a review role).
 - `agent status [R]`; `agent send R "…"` — into its inbox, or resumes the session if the process is gone; `agent stop R`.
   An agent's question arrives as `@hub QUESTION …`; answer with `agent send`.
-- Pass `--task-class mechanical|bounded|judgement` on every spawn from the brief; taxonomy and auto outcomes: [task outcomes](../../docs/reference.md#task-outcomes).
+- Every spawn passes `--task-class` from the brief: [taxonomy and auto outcomes](../../docs/reference.md#task-outcomes).
 - Executors may use sub-agents too: digests, bounded worktree changes.
 - Why is code here: `hub why <sha|file:line>` — its agent run, brief, report, journal.
-- Every agent that writes code gets `--worktree [BRANCH]` (two agents in one checkout overwrite each other's files);
+- Code writers get `--worktree [BRANCH]` (a shared checkout risks overwrites);
   at handoff `agent worktrees --prune --dry-run`, then `--prune` (finished only); stop background processes the project started.
 - Model and effort per agent: Claude aliases `opus|sonnet|haiku|fable`, `--effort` on every alias; for a Codex model
   check the selected CLI first (`references/codex-hub.md`). `AGENT_HUB_PERMISSION_MODE=bypassPermissions` is the
   headless default.
 - A Claude executor starts with no MCP servers; launch with `--mcp inherit` or `--mcp FILE` only when its task needs
   one (`references/launch-and-executors.md`).
-- A brief follows `<plugin-root>/templates/brief-executor-template.md`; the hub fills "Owner decisions — do not
-  reopen" from `ask search <topic words>`, and checks that section when an executor's result disagrees with a record.
+- Use `<plugin-root>/templates/brief-executor-template.md`; fill "Owner decisions — do not reopen" from `ask search`,
+  and check it when a result disagrees with a record.
 
 Reviews, locks, project configuration (`<repo>/.agent-hub/`), the night queue, `agent-top`, base branches and model
 maps: `references/launch-and-executors.md`.
