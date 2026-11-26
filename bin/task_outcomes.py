@@ -101,8 +101,12 @@ def validate(ev):
     if ev["type"] in ("review_observed", "ci_observed", "artifact_observed"):
         if data["target_task_id"] is not None:
             task_uuid(data["target_task_id"])
+        elif ev["type"] != "review_observed":
+            raise ValueError("artifact/CI evidence requires a target task UUID")
         if ev["type"] == "review_observed" and data["findings"] is not None:
             validate_findings(data)
+            if not isinstance(data["head"], str) or not data["head"] or type(data["round"]) is not int or data["round"] < 1 or data["verdict"] not in ("approve", "fixes", "reject"):
+                raise ValueError("reported findings require verified head, round and verdict")
     if "supersedes" in ev and (not isinstance(ev["supersedes"], str) or not ev.get("reason")):
         raise ValueError("a correction requires supersedes and reason")
     json.dumps(ev, allow_nan=False)
@@ -336,7 +340,8 @@ def project_closure(events):
     """
     start = next((e for e in reversed(events) if e["type"] == "run_started"), None)
     if start is None:
-        return None
+        manual = next((e for e in reversed(events) if e["type"] == "task_closed" and e["source"] == "hub" and e["run_id"] is None), None)
+        return manual["data"] | dict(source="hub", run_id=None, evidence_event_id=manual["event_id"]) if manual else None
     run_id = start["run_id"]
     manual = next((e for e in reversed(events) if e["type"] == "task_closed" and e["source"] == "hub" and e["run_id"] == run_id), None)
     if manual:
