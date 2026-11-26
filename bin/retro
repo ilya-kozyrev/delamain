@@ -24,6 +24,7 @@ import hubcore as hc
 import session_effort
 import autopilot
 import codex_rollouts
+import retro_outcomes
 
 RESOURCES = hc.BIN.parent / "skills/retro/resources"
 HUB = re.compile(r"^(hub|хаб)(-\d+)?$")
@@ -1168,7 +1169,7 @@ def table(headers, rows):
                      ["| " + " | ".join(fmt(c) for c in r) + " |" for r in rows])
 
 
-def output(audit, out):
+def output(audit, out, incumbents=None):
     base_path = Path(audit.win["baseline"]) if audit.win["baseline"] else None
     base = read(base_path / "metrics.json", {}) if base_path else {}
     if base_path and (not base or base.get("schema_version") != 1):
@@ -1181,7 +1182,9 @@ def output(audit, out):
             record["baseline_per_day"] = prev.get("per_day")
             record["baseline_source"] = str(base_path / "metrics.json") + ":" + name
     write_json(out / "window.json", audit.win)
+    model_outcomes, outcome_sections = retro_outcomes.measure(audit, out, base, read, write_json, csv_write, table, incumbents)
     write_json(out / "metrics.json", dict(schema_version=1, window=audit.win, metrics=audit.metrics,
+        outcome_schema_version=retro_outcomes.SCHEMA, model_outcomes=model_outcomes,
         price_fit=dict(unit="USD per million tokens; input/output/cache-read/cache-create", rates=audit.rates,
                        points={k: len(v) for k, v in audit.price_points.items()}), warnings=dict(WARNINGS)))
     for family in ("agents", "hubs", "wakes", "latency", "friction", "flow", "stages", "touches", "tells", "gaps", "lessons", "questions", "await", "ready"):
@@ -1227,6 +1230,7 @@ def output(audit, out):
         "Minute journal stamps bound latency resolution; replies after until remain unanswered. Untimestamped agent events belong to their started-in-window cohort "
         "and can include later resumes: this limitation is explicit rather than an invented timestamp.",
         "JSONL warnings: " + (json.dumps(dict(WARNINGS), ensure_ascii=False) if WARNINGS else "none")]
+    sections.extend(outcome_sections)
     (out / "measure.md").write_text("\n\n".join(sections) + "\n", encoding="utf-8")
 
 
@@ -1243,6 +1247,7 @@ def main():
             p.add_argument("--readers", type=int, help="whole-stage bins; default ceil(journal bytes / 400000)")
         else:
             p.add_argument("--baseline", type=Path, help="previous retro output directory")
+            p.add_argument("--incumbents", type=Path, help="CSV of current model assignments for owner trial proposals")
             p.add_argument("--forge", type=Path, help="local forge-cache-mrs.json and forge-cache-pipelines.json directory; no network")
             p.add_argument("--classifications", type=Path, help="CSV directory: id,class,evidence,needs_review=false. touches: decision/unblock/correction/nudge/repeat/new task; gaps: legit wait/missed wake/brake/permission brake; flow: verified/duplicate/unattributed; stages: hanging/complete/dropped/carried over; tells: autonomous/escalated/notice/unanswered; ready: open plan/complete; questions: process/owner")
     args = parser.parse_args()
@@ -1272,7 +1277,7 @@ def main():
             audit.efficiency(args.forge)
             audit.classify(args.classifications)
             audit.scorecard()
-            output(audit, out)
+            output(audit, out, args.incumbents.expanduser().resolve() if args.incumbents else None)
         for p in sorted(out.iterdir()):
             if p.is_file():
                 print(p)

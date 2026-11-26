@@ -1,6 +1,6 @@
 # Per-task model outcomes
 
-Status: capture implementation in PR 1; CI history and retro are deferred to PR 2. No automatic routing or policy changes.
+Status: capture shipped in Delamain 1.0.29. CI history and retro are the second implementation PR.
 Business result: every delegated task has independently assigned difficulty, execution identity and observed outcomes;
 retro compares these records and offers evidence to the owner, who alone decides model changes.
 Source references below use repository revision `072559c15279842afce4a3eb222fd8cca2e90ff1`.
@@ -224,7 +224,7 @@ Both engines use the same schema with explicit counter bases. Core is macOS/Linu
 not a new native writer (`docs/agents/README.md:27-30`; `docs/windows-workflow.md:3-15,116-122`). Use Python pathlib,
 UTF-8, existing POSIX locking conventions inside WSL; do not introduce platform-specific path parsing.
 
-Two implementation PRs (this PR implements §1; CI history and retro remain §2):
+Two implementation PRs:
 1. **Capture and lifecycle:** `bin/task_outcomes.py`, `bin/agent`, `bin/reviewers.py`, `bin/limit_pace.py` help separation;
    `templates/brief-executor-template.md`, `templates/brief-review.md`, hub launch/completion references,
    `docs/reference.md`, `docs/reviewers.md`, CHANGELOG. Add `tests/t_task_outcomes.sh` and agent/reviewer regressions.

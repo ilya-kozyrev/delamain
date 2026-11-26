@@ -108,6 +108,18 @@ def validate(ev):
             validate_findings(data)
             if not isinstance(data["head"], str) or not data["head"] or type(data["round"]) is not int or data["round"] < 1 or data["verdict"] not in ("approve", "fixes", "reject"):
                 raise ValueError("reported findings require verified head, round and verdict")
+    if ev["type"] == "ci_observed":
+        if data["target_task_id"] != ev["task_id"]:
+            raise ValueError("CI evidence target must match its task")
+        value = data.get("first_run_green")
+        if value is not None:
+            if (type(value) is not bool or data["history_coverage"] != "complete"
+                    or not data.get("required_checks") or not data.get("history")
+                    or not all(isinstance(data.get(k), str) and data[k]
+                               for k in ("attempt_id", "attempt_created_at", "first_head"))):
+                raise ValueError("first CI result requires complete identified attempt evidence")
+            if dt.datetime.fromisoformat(data["attempt_created_at"].replace("Z", "+00:00")).utcoffset() is None:
+                raise ValueError("CI attempt timestamp must have a UTC offset")
     if "supersedes" in ev and (not isinstance(ev["supersedes"], str) or not ev.get("reason")):
         raise ValueError("a correction requires supersedes and reason")
     json.dumps(ev, allow_nan=False)
@@ -143,6 +155,8 @@ def append(stage_dir, ev):
             if old["event_id"] == ev["event_id"]:
                 # A retry's observation timestamps may differ; evidence must not.
                 ignored = {"occurred_at", "recorded_at"}
+                if ev["type"] == "ci_observed":
+                    ignored.add("writer")
                 if {k: v for k, v in old.items() if k not in ignored} != {k: v for k, v in ev.items() if k not in ignored}:
                     raise ValueError(f"conflicting event id {ev['event_id']}")
                 return False
@@ -211,8 +225,8 @@ def count(value):
     return value if type(value) is int and value >= 0 else None
 
 
-def usage(file, offset, engine, session_id=None):
-    events, intact = log_events(file, offset)
+def usage(file, offset, engine, session_id=None, end=None):
+    events, intact = log_events(file, offset, end=end)
     before, prior_intact = log_events(file, end=offset)
     result = dict(usage_basis="claude_result_per_invocation" if engine == "claude" else "codex_session_cumulative_delta",
                   usage_scope="run", complete=False, raw=[], input_tokens=None, output_tokens=None,

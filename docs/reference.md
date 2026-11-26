@@ -367,8 +367,18 @@ including cache plus output; reasoning tokens are an output subset. Missing base
 or partial logs leave totals incomplete/null. Claude result turns and Codex turn starts are different units.
 Review counts come from identical `REVIEW_OUTCOME:` lines in the full report and final answer; absent or invalid
 lines give null diagnostics. Adjudication is optional: counts without it are reported, not adjudicated.
-CI first-attempt capture and the retro class × model report are deferred to PR 2 of the
-[design](proposals/model-outcomes.md); this capture does not switch models.
+Bind an existing task UUID in the current stage to an item when waiting for CI:
+
+```bash
+await --ok PASSED --outcome-task "$TASK_ID" --ci-item https://github.com/owner/repo/pull/42 -- gh-ci-wait 42
+```
+
+Both binding flags are required together. GitHub uses the first required-check attempts on the earliest eligible PR
+head; GitLab uses the earliest attached push/MR pipeline and blocking jobs, including retried jobs. The binding
+uses authenticated `gh` for github.com and `glab` for GitLab merge request URLs. Evidence records the required
+set visible to those credentials and distinguishes pending attempts, failures and gaps. API permissions, incomplete
+or ambiguous histories, and unsupported check sources can leave the result unknown. The wait command, journal
+verdict and exit retain their existing meanings. See the [task outcome design](proposals/model-outcomes.md).
 
 ## Retro: period audit
 
@@ -411,6 +421,21 @@ saved window unless timestamp overrides are supplied. It writes `metrics.json` (
 `metrics` dictionary, fitted prices and coverage warnings; metric entries contain `value`, `per_day` and `source`),
 `measure.md`, and CSV tables: `agents`, `hubs`, `wakes`,
 `latency`, `friction`, `flow`, `stages`, `touches`, `tells`, `gaps`, `lessons`, `questions`, `ready` and `await`.
+Task outcome measurement also writes `task-outcomes.csv`, `model-outcomes.csv`, `model-assignments.csv`,
+`outcome-inputs.json` and `outcome-incumbents.json`. The inputs preserve the evidence visible at the cutoff,
+source line references and hashes, including on repeated measurement. Use a new output directory for a different
+window. `metrics.json` adds `outcome_schema_version` and `model_outcomes`; compatible completion baselines use
+unique root task IDs at a common cutoff. Historical task class, closure and quality can be unknown.
+Reported Claude dollars and native turn units stay separate from Codex cost and turns.
+
+For owner trial suggestions, pass `--incumbents FILE` on first measurement with one current assignment per
+stratum. The CSV headers are `repository_key,task_class,change_class,engine,model,effort`. Use execution model IDs
+and a repository key from `task-outcomes.csv`. Each comparison follows original assignments for seven days,
+counts pending tasks and handoffs, and needs at least five completed direct contracts per cell, sufficient quality
+coverage and a reduction of at least 20% in median tokens or comparable reported cost. Review counts use the first
+primary report per artifact. First-run CI is per artifact, while first-time-right also includes review rounds.
+The review skill presents eligible trials to the owner.
+
 The Markdown covers quantitative cost/turn/context/wake/friction/latency evidence plus A feature flow,
 B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,
 source coverage and unknown fields beside each conclusion.

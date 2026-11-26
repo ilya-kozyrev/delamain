@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Bind an `await` to a task and a pull or merge request to record first-attempt CI evidence from GitHub
+  or GitLab. A retry cannot erase a known first failure. Provider gaps remain unknown and leave the wait verdict intact.
+- `retro measure` freezes task evidence and reports outcomes by difficulty, kind, change class, engine, model and
+  effort. It can propose a bounded owner-approved trial from comparable original assignments with enough evidence.
+
 ## 1.0.29 — 2026-11-26
 
 - **Codex model families follow the CLI catalog.** Use `luna`, `terra`, `sol` or `astra` in spawns,

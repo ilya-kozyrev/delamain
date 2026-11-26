@@ -37,7 +37,10 @@ rule-text cost, trial verdict and candidate plugin fixes. Mark snapshot-only his
 ## 5. Money and limits
 Agents by engine/model/effort; ten most expensive agents and brief purpose; hub shifts, turns, input including
 cache, max context, compactions and no-tool wakes; agent+hub cost/day by stage, hub/review cost shares.
-Source gaps stay unknown. Runtime observations are not savings estimates. Name applicable policy conflicts.
+Show task outcomes by difficulty and model from `model-outcomes.csv`, with native turn units, reported Claude
+USD, first-primary reported findings, optional accepted findings and first-run CI coverage. Give the denominator
+and missing count for each measure. Summarize comparable original assignments and handoffs from
+`model-assignments.csv`. Mark legacy rows and closure snapshots. Source gaps stay unknown.
 
 ## 6. Rule compliance
 Applicable rule | cases | stage | evidence | recurrence/consequence | plugin defect or stage choice | confidence.
@@ -48,7 +51,9 @@ status→reaction median/p90/worst ten, with detector controls. Separate detecti
 ## 7. Proposed changes, ranked by effect
 Change | source/code verification | expected measurable effect | implementation/rule-text cost | uncertainty.
 Separate plugin changes from project-hub changes. Every owner decision has A/B, recommendation, default and
-`ask add` id. A proposed change is distinct from authorization to implement/release it.
+`ask add` id. For an eligible model trial, carry over the incumbent and candidate rows, sample IDs, both
+resource deltas, quality coverage, observation window and success bounds. Give trial scope, review capacity and
+the continuation option. Mark strata without comparable evidence as insufficient evidence.
 
 ## 8. Data limits
 Coverage by source/engine/window, unresolved needs_review ids, missing fields and historical attribution;

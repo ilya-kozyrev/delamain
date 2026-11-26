@@ -231,6 +231,18 @@ def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int
     except OSError as e:
         print(f"await: could not write the journal: {e}", file=sys.stderr)
         return 1
+    if args.outcome_task and word != "CANCELLED":
+        try:
+            import ci_outcomes
+            data = ci_outcomes.observe(hc.root() / stage, args.outcome_task, args.ci_item)
+            with log.open("a", encoding="utf-8") as fh:
+                print(f"CI evidence: {data['status']} ({data['coverage_reason'] or data['attempt_id']})", file=fh)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            try:
+                with log.open("a", encoding="utf-8") as fh:
+                    print(f"CI evidence could not be recorded: {exc}", file=fh)
+            except OSError:
+                pass
     if not DETACHED:  # the caller waited for the verdict: it gets the line and an exit code that says which verdict
         try:
             print(text, flush=True)
@@ -296,7 +308,17 @@ def main(argv: list) -> int:
     p.add_argument("--wait", action="store_true", help="stay attached instead of detaching a supervisor")
     p.add_argument("--at", default=None, metavar="TIME", help="an alarm instead of a COMMAND: journal ALARM LABEL at "
                    "HH:MM[:SS] or an ISO date (needs --label; outlives the hub, unlike jwait --until)")
+    p.add_argument("--outcome-task", metavar="UUID", help="record first-attempt CI evidence for this task")
+    p.add_argument("--ci-item", metavar="URL", help="pull or merge request URL for --outcome-task")
     args = p.parse_args(argv)
+    if bool(args.outcome_task) != bool(args.ci_item) or (args.outcome_task and args.at):
+        raise hc.UsageError("--outcome-task and --ci-item must be used together with a wait command")
+    if args.outcome_task:
+        from task_outcomes import task_uuid
+        try:
+            task_uuid(args.outcome_task)
+        except ValueError:
+            raise hc.UsageError("--outcome-task needs a canonical UUID") from None
 
     if args.at is not None:
         cmd = alarm_command(args, cmd)
@@ -339,6 +361,8 @@ def main(argv: list) -> int:
         return supervise(args, cmd, log, stage, tag, on)
     child = [sys.executable, os.path.realpath(__file__), "--stage", stage, "--tag", tag, "--to", args.to,
              "--label", args.label, "--ok", args.ok, "--timeout", args.timeout, "--log", str(log), "--wait"]
+    if args.outcome_task:
+        child += ["--outcome-task", args.outcome_task, "--ci-item", args.ci_item]
     if args.link:
         child += ["--link", args.link]
     for item in args.on:

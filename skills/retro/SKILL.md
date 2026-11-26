@@ -19,7 +19,16 @@ its workers write only the chosen output directory. Installed resources live bes
 3. **Measure before judgement.** Run `retro measure --out <out>` (through an executor under the hub rules).
    Supply `--baseline <previous-out>` to override discovery; `--forge <local-export-dir>` adds existing forge
    snapshots without network access. Read `measure.md`, `metrics.json` and coverage limits before spawning
-   interpretation. Done when files exist, source gaps are named and null values stay unknown.
+   interpretation. Read `model-outcomes.csv` with `task-outcomes.csv` and the frozen evidence manifest.
+   Completion cohorts are snapshots. Compare unique root IDs at a common cutoff, keep native turn units and
+   reported Claude USD, and separate missing quality from explicitly N/A. First CI measures the first eligible
+   attempt per artifact. First-time-right also includes review rounds. Done when files exist, source gaps are
+   named and null values stay unknown.
+
+   If the owner-approved incumbent assignments are available, pass `--incumbents FILE` on the first measurement.
+   Use the CSV headers and resolved identities documented in the command reference. Read the original-assignment
+   follow-up, handoffs, pending counts, coverage and sensitivity in `model-assignments.csv`. The proposal gate
+   uses first primary reported findings, with optional accepted findings displayed separately.
 4. **Read and interpret in parallel.** Launch each generated `reader-NN.md` on Haiku high for mechanical
    evidence extraction; launch `brief-lessons.md` and `brief-classify.md` on Sonnet high or Opus medium for
    judgement. Use `agent spawn` under the hub launch protocol, not native forks in a registered hub. Check the
@@ -43,7 +52,9 @@ its workers write only the chosen output directory. Installed resources live bes
    implementation cost and uncertainty, and the scorecard covers A–D plus quantitative sections.
 8. **Close the loop.** Fill generated `check-next.md` with baseline, detector and pass criterion for each
    proposed fix; publish it as `CHECK-NEXT.md` beside the report. Present owner decisions via `ask add`, each
-   with A/B options, a recommendation and a default under the existing question protocol. Implementation,
+   with A/B options, a recommendation and a default under the existing question protocol. Forward each eligible
+   model trial with its sourced row and sample IDs, both resource deltas, coverage and uncertainty. Offer a bounded
+   trial or continuation of the incumbent. Keep insufficient-evidence cells descriptive. Implementation,
    merging and release follow their own authorization. Done when the report, checklist and question ids are
    linked in the final audit status; do not implement proposed fixes as part of the audit.
 
