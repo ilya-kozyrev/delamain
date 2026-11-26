@@ -707,6 +707,12 @@ def capture_end(meta, code=None, observed=False, reason=None):
     stage_dir = outcome_stage(meta)
     records, _ = outcomes.read(outcomes.path(stage_dir, meta["task_id"]))
     existing = next((e for e in records if e["run_id"] == run["id"] and e["type"] in ("run_ended", "run_observed_dead")), None)
+    if existing:
+        needs_close = existing["data"].get("reported_status") in ("DONE", "REVIEWED", "MERGED", "EXIT", "STOP")
+        has_close = any(e["run_id"] == run["id"] and e["type"] == "task_closed" for e in records)
+        has_review = any(e["run_id"] == run["id"] and e["type"] == "review_observed" for e in records)
+        if (not needs_close or has_close) and (meta.get("task_kind") != "review" or has_review):
+            return  # status checks need not reparse transcripts of already captured runs
     file = Path(meta["dir"]) / "log.jsonl"
     raw, intact = outcomes.log_events(file, run.get("log_offset", 0))
     normalized = [ev for obj in raw for ev in engines.normalize_event(obj)]
