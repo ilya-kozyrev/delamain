@@ -763,7 +763,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
         argv = claude_argv(meta, resume)
     log = d / "log.jsonl"
     offset = log.stat().st_size if log.exists() else 0
-    note = 'marker=$1; python=$2; shift 2; "$@"; c=$?; printf "%s\n" "$c" > "$AGENT_EXIT_CODE_FILE"; "$python" "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
+    note = 'marker=$1; python=$2; shift 2; "$@"; c=$?; printf "%s\n" "$c" > "$AGENT_EXIT_CODE_FILE.tmp"; mv "$AGENT_EXIT_CODE_FILE.tmp" "$AGENT_EXIT_CODE_FILE"; "$python" "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
     token = meta.get("process_token") or meta["session_id"]
     argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve()), token, sys.executable] + argv
     env = child_env(meta["stage"], meta["tag"])
@@ -1073,7 +1073,9 @@ def cmd_spawn(a) -> int:
                    "if you start servers, so agents in other worktrees of this repository do not collide with you.\n")
     save_meta(stage, a.role, meta)
     try:
-        pid = launch(meta, prompt, resume=False)
+        with AgentLock(stage, a.role):
+            pid = launch(meta, prompt, resume=False)
+            save_meta(stage, a.role, meta)
     except hc.Failure as e:
         set_aside(d, "failed-")
         # a spawn run in the background is heard of only here: the hub's jwait wakes on EXIT

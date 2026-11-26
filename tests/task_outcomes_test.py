@@ -485,6 +485,31 @@ class Lifecycle(unittest.TestCase):
                 self.fail("queued fixture did not resume and finish")
             self.assertEqual(starts[-1]["data"]["resume_reason"], None if mixed else "ci_fix")
 
+    def test_spawn_exit_cannot_beat_metadata_registration(self):
+        # Delay the real post-Popen metadata write, letting the actual wrapper try to finish first.
+        script = """
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader('delayed_spawn', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+agent = importlib.util.module_from_spec(spec)
+loader.exec_module(agent)
+original = agent.save_meta
+def delayed(stage, role, meta):
+    if meta.get('runs'):
+        time.sleep(0.5)
+    return original(stage, role, meta)
+agent.save_meta = delayed
+sys.exit(agent.main(sys.argv[2:]))
+"""
+        self.roles.add("registration-race")
+        result = subprocess.run([sys.executable, "-c", script, str(BIN / "agent"), "spawn", "--role", "registration-race",
+                                 "--cwd", str(self.work), "--brief", str(self.work / "brief.md"), "--model", "haiku",
+                                 "--task-class", "bounded"], env=os.environ | dict(FAKE_FINAL="DONE fast fixture"), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        rows = self.wait("registration-race")
+        self.assertFalse(any(e["type"] == "run_observed_dead" for e in rows))
+        self.assertEqual(out.project_closure(rows)["outcome"], "success")
+
     def test_fixture_export(self):
         extra = dict(usage=dict(input_tokens=62, output_tokens=15783, cache_creation_input_tokens=135901,
                                cache_read_input_tokens=2982021), num_turns=30, total_cost_usd=1.9995202)
