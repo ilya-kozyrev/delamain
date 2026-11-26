@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.29 — 2026-11-26
+
 - **Codex model families follow the CLI catalog.** Use `luna`, `terra`, `sol` or `astra` in spawns,
   defaults, aliases and reviewers to pick the newest listed version of that family. Spawn records the requested
   alias and resolved ID. Full IDs stay pinned and warn when a newer version is listed, unless acknowledged in
