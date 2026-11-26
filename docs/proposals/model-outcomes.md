@@ -188,7 +188,9 @@ A candidate is a **suggested owner-approved trial**, not a causal claim or a con
    cohort with equal follow-up time alongside completed samples, including BLOCKED/QUESTION/open outcomes. Compare
    completion share and demonstrate that unknown/open outcomes cannot reverse the apparent advantage. Report handoff
    share by original assignment; mixed continuation chains remain one contract with full spend and final outcome in
-   the original-assignment row. Excluding mixed tasks from direct model efficiency cells cannot hide initial failures.
+   the original-assignment row. A higher handoff share cannot pass the comparability gate by discarding transferred
+   contracts: show the advantage on the full original-assignment cohort including mixed spend/outcomes, or report
+   insufficient comparable evidence. Excluding mixed tasks from direct cells cannot hide initial failures.
 2. Each comparison needs known closure and complete tokens for every task, at least 80% known applicable review/CI
    outcomes, and at least five observed values per applicable quality metric in each cell. Report excluded counts.
 3. Candidate success share and first-run CI share must not be lower; reported high-severity findings must not rise;
