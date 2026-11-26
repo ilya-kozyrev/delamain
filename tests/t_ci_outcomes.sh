@@ -198,9 +198,12 @@ assert len(events) == 2 and events[-1]["data"]["first_run_green"] is False
 bad = subprocess.run(args[:-3] + ["--", "true"], capture_output=True, text=True)
 assert bad.returncode == 2, bad
 unsupported = new_task()
-unknown_args = [str(b / "await"), "--wait", "--outcome-task", unsupported, "--ci-item", "https://other.example/x", "--", "true"]
+unknown_args = [str(b / "await"), "--wait", "--outcome-task", unsupported, "--ci-item",
+                "https://other.example/x?token=fixture-value", "--", "true"]
 assert subprocess.run(unknown_args, capture_output=True).returncode == 0
 events, _ = task.read(task.path(stage, unsupported))
 assert events[-1]["data"]["first_run_green"] is None and events[-1]["data"]["coverage_reason"]
-print("await binding writes typed CI independently of the child exit and reports unsupported providers as unknown")
+assert events[-1]["data"]["item"].startswith("unverified:")
+assert "fixture-value" not in task.path(stage, unsupported).read_text()
+print("await records unknown evidence for invalid bindings without storing URL credentials or changing the wait exit")
 PY

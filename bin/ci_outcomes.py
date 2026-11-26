@@ -262,7 +262,9 @@ def observe(stage, task_id, url):
     events, _ = outcomes.read(outcomes.path(stage, task_id))
     if not any(e["type"] == "task_started" for e in events):
         raise ValueError("CI binding refers to an unknown task")
-    data = dict(target_task_id=task_id, provider=None, repository=None, item=url, head=None, status="unknown",
+    # An invalid binding can contain URL credentials or query tokens. Keep its identity without storing the input.
+    unverified_item = "unverified:" + hashlib.sha256(url.encode()).hexdigest()
+    data = dict(target_task_id=task_id, provider=None, repository=None, item=unverified_item, head=None, status="unknown",
                 first_run_green=None, history_coverage="incomplete", coverage_reason=None, attempt_id=None,
                 attempt_created_at=None, first_head=None, item_created_at=None, history=[], required_checks=[], jobs=[])
     try:
