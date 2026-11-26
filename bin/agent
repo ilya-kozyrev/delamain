@@ -1472,7 +1472,8 @@ def _send_locked(stage: str, a, msg: str) -> int:
             raise hc.UsageError("the agent is alive — a message text is required")
         log = Path(meta["dir"]) / "log.jsonl"
         meta.setdefault("inbox_unread", []).append({"at": t.isoformat(timespec="seconds"), "msg": msg,
-                                                    "log_offset": log.stat().st_size if log.exists() else 0})
+                                                    "log_offset": log.stat().st_size if log.exists() else 0,
+                                                    "resume_reason": getattr(a, "resume_reason", None)})
         save_meta(stage, a.role, meta)
         line = journal(stage, "cli", f"@{meta['tag']} {msg}")
         print(f"agent alive (pid {meta['pid']}): queued in its inbox, read after its current step; if its run ends "
@@ -1480,6 +1481,9 @@ def _send_locked(stage: str, a, msg: str) -> int:
         return 0
     queued = list(meta.get("inbox_unread") or [])
     unread = pending_unread(meta)
+    if meta.get("next_resume_reason") is None and unread:
+        reasons = {u.get("resume_reason") for u in unread}
+        meta["next_resume_reason"] = next(iter(reasons)) if len(reasons) == 1 else None
     if not msg and not unread:
         raise hc.UsageError("empty message and no unread inbox messages")
     parts = []

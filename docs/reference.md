@@ -322,7 +322,8 @@ Omitted difficulty is unknown with a warning; omitted kind uses the legacy revie
 Resumes preserve task identity; new spawns, including reused roles, get new UUIDs. Reassignment/repair agents use
 `--continuation-of UUID`; reviewers use `--review-target-task-id UUID` and optionally `--review-head SHA` to validate
 the expected artifact. `agent send --resume-reason review_fix|ci_fix|reply|rebase|recovery|other R "…"` labels a resume;
-an unlabeled resume has unknown fix reason. A queued message is not itself a new run.
+an unlabeled resume has unknown fix reason. A queued message is not itself a new run. Its reason is retained for an automatic unread-inbox resume;
+conflicting or partly unlabelled reasons remain unknown unless the hub explicitly labels that resume.
 
 Canonical append-only evidence lives at `<stage>/task-outcomes/<task_id>.jsonl`, independent of archived role dirs.
 `task_started`, per-invocation `run_started`, init `run_identity`, and `run_ended` capture requested/resolved identity,

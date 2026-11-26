@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -457,6 +458,27 @@ class Lifecycle(unittest.TestCase):
         bad = out.review(dict(task_id=self.meta("unlinked")["task_id"], review_head="different"), "run", final, final)
         self.assertIsNone(bad["findings"])
         self.assertTrue(bad["diagnostics"])
+
+    def test_queued_resume_reason_is_preserved_without_guessing(self):
+        for mixed in (False, True):
+            role = "queued-mixed" if mixed else "queued-labelled"
+            release = self.work / (role + ".release")
+            gate = 'i=0; while [ ! -e ' + shlex.quote(str(release)) + ' ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i+1)); done'
+            self.spawn(role, "--task-class", "bounded", env=dict(FAKE_SHELL=gate, FAKE_FINAL="DONE queued fixture"))
+            self.assertIn("agent alive", self.command("send", role, "repair", "--resume-reason", "ci_fix").stdout)
+            if mixed:
+                self.command("send", role, "unlabelled reply")
+            release.touch()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                rows = self.rows(role)
+                starts = [e for e in rows if e["type"] == "run_started"]
+                if len(starts) == 2 and any(e["type"] == "run_ended" and e["run_id"] == starts[-1]["run_id"] for e in rows):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("queued fixture did not resume and finish")
+            self.assertEqual(starts[-1]["data"]["resume_reason"], None if mixed else "ci_fix")
 
     def test_fixture_export(self):
         extra = dict(usage=dict(input_tokens=62, output_tokens=15783, cache_creation_input_tokens=135901,
