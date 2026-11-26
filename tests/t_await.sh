@@ -407,7 +407,7 @@ $B/await true > $O/u5.out 2>&1; check $? 2 "no -- command"
 # process of the hub session)
 in_s(){ python3 -c "import datetime as d,sys;print((d.datetime.now(d.timezone.utc)+d.timedelta(seconds=$1)).strftime('%H:%M:%S'))"; }
 : > $J
-( bash -c "$B/await --at $(in_s 3) --label 'merge window' > $O/at1.out 2>&1" )   # the calling shell has exited
+( bash -c "$B/await --at $(utc_iso_s 5) --label 'merge window' > $O/at1.out 2>&1" )   # the calling shell has exited
 grep -q '^await: started supervisor pid [0-9]* for "merge window"; log ' $O/at1.out; check $? 0 "--at starts a detached supervisor and returns"
 check "$(lines ALARM)" 0 "negative: nothing is journaled before the time"
 waitline 'ALARM merge window'; check $? 0 "the alarm is journaled after the calling shell has exited"
@@ -427,7 +427,8 @@ grep -q 'CANCELLED tomorrow (await interrupted by signal 15, ' $J; check $? 0 "�
 grep -q '@hub' $J; check $? 1 "…without @hub: it wakes nobody"
 check "$(grep -c ALARM $J)" 0 "…and no ALARM line"
 # --at with --wait: attached, prints the line, exit 0
-: > $J; $B/await --wait --at $(in_s 2) --label attached > $O/at3.out 2>&1; check $? 0 "--at --wait exits 0 when the alarm fired"
+# Absolute time avoids tomorrow rollover when a loaded host starts the CLI after the target second.
+: > $J; bounded 20 $B/await --wait --at "$(utc_iso_s 5)" --label attached > $O/at3.out 2>&1; check $? 0 "--at --wait exits 0 when the alarm fired"
 grep -q '^@hub ALARM attached (exit 0, ' $O/at3.out; check $? 0 "…and prints the ALARM line"
 # refusals
 n0=$(grep -c '' $J)
