@@ -181,7 +181,7 @@ grep -q 'is not executable (chmod +x): not run' $P/n1.err && [ ! -e $NR/.worktre
 AR=$P/plainrepo; mkrepo $AR
 spawn pl $AR > $P/p1.out 2> $P/p1.err; check $? 0 "a repository without .agents/ files"
 wait_dead pl
-! grep -qv 'owner-approved plan\|has no origin' $P/p1.err && ! grep -q 'prepared\|linked' $P/p1.out; check $? 0 "…nothing is printed about them"
+! grep -qv 'owner-approved plan\|has no origin\|--task-class omitted: recording unknown' $P/p1.err && ! grep -q 'prepared\|linked' $P/p1.out; check $? 0 "…nothing is printed about them"
 [ ! -e $R/stage-a/agents/pl/prepare.log ]; check $? 0 "…and no prepare.log exists"
 
 # ---- 11. flags
