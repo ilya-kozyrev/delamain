@@ -141,8 +141,6 @@ class Loaded:
 
     def resolve_model(self, entry):
         if entry.kind == "agent" and entry.engine == "codex":
-            if problem := engines.model_problem(entry.model, self.cwd, self.aliases):
-                raise hc.UsageError(f"model {show(entry.model)}: {problem}")
             if self.catalog is None:
                 self.catalog = model_catalog.Catalog()
             entry.launch_model = model_catalog.map_model(entry.model, self.aliases)
@@ -254,9 +252,12 @@ def _validate(item, seen: set, cwd=None) -> dict:
             if engine == "claude":
                 problem = hc.model_problem(item["model"], cwd)
             else:
-                # Alias availability belongs to the walk, where a broken map
-                # disables only entries that would launch Codex.
-                problem = engines.model_syntax_problem(item["model"])
+                try:
+                    problem = engines.model_problem(item["model"], cwd)
+                except hc.UsageError:
+                    # A malformed map is reported by Loaded and disables
+                    # Codex entries during the walk.
+                    problem = None
             if problem:
                 raise ValueError(f"`model` must be {problem}")
         if "effort" in item and item["effort"] not in (hc.EFFORTS if engine == "claude" else engines.CODEX_EFFORTS):

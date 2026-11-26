@@ -79,15 +79,9 @@ def model_map(cwd=None):
     return data
 
 
-def model_syntax_problem(model):
+def model_problem(model, cwd=None, aliases=None):
     if not isinstance(model, str) or not hc.MODEL_VALUE_RE.fullmatch(model):
         return "a model ID or configured alias (letters, digits and . _ : @ [ ] / - only)"
-    return None
-
-
-def model_problem(model, cwd=None, aliases=None):
-    if problem := model_syntax_problem(model):
-        return problem
     if model in hc.MODEL_ALIASES and model not in (model_map(cwd) if aliases is None else aliases):
         return f"{model!r} is a Claude alias; configure AGENT_HUB_CODEX_MODEL_MAP or pass a Codex model ID"
     return None
