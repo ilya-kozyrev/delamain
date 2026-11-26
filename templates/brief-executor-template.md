@@ -15,6 +15,13 @@ brief-executor-advanced.md. -->
 <Agreed user/business result or its source in the plan/register; inherit it without reopening.
 See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints and detailed specs.>
 
+## Task identity
+- Launch with `--task-class <mechanical|bounded|judgement> --task-kind executor --change-class <docs|code|risky|custom>`.
+  State expected review/CI applicability (`required|not_required|unknown`) and pass their launch flags. For separately
+  measured helpers name `--parent-task-id` and whether usage is included in parent counters; declare `--usage-boundary`.
+  Classify the brief before choosing a model; one spawn is one task contract, resumes preserve its UUID and class.
+  For reassignment use `--continuation-of <original task UUID>`; for a new independent task use a fresh spawn.
+
 ## Steps
 1. <Step> — done when <a check: a command, a number, a test>.
 2. <…>

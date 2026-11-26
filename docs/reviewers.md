@@ -73,16 +73,17 @@ start: load skill `my-review-skill`; give it the brief file, the repository, the
 
 $ hub reviewer --for docs        # the skill serves code and risky only
 reviewer: agent (agent opus/high)
-start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>
+start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --task-kind review --task-class judgement --change-class docs --brief <BRIEF>
 
 $ AGENT_HUB_ENGINE=codex hub reviewer --for code --stage web
 reviewer: agent (agent <latest-listed-astra-id>/high)
-start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --engine codex --sandbox workspace-write --model astra --effort high --stage web --reason 'reviewer policy: codex author -> codex reviewer' --brief <BRIEF>
+start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --target-repo <REPO> --engine codex --sandbox workspace-write --model astra --effort high --stage web --reason 'reviewer policy: codex author -> codex reviewer' --task-kind review --task-class judgement --change-class code --brief <BRIEF>
 ```
 
 For a Claude `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief
 file). For a Codex `agent` reviewer it prints `--sandbox workspace-write` and `--cwd` pointing to the stage's
-`coordinator/work` under the hub home. Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
+`coordinator/work` under the hub home. Fill `--target-repo <REPO>` with the checkout holding the head commit.
+Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
 Create that directory before spawning, and put the absolute repository path, base and head in the brief for reading.
 The reviewer receives only its cwd as a writable root; wider explicit roots are refused, and temporary-directory
 writes are excluded. Home configuration and other agents' inboxes stay read-only. Keep the repository outside the
@@ -315,3 +316,22 @@ most twice (a real review needed one or two resumes).
 
 **Cost.** One review of a real change took 6–12 minutes and 6–13 % of a Pro week's Argon quota, so roughly eight to fifteen
 reviews a week: a second opinion for changes where a miss is expensive, not a review of every change.
+
+## Structured outcome evidence
+
+Reviewer start lines pass `--task-kind review --task-class judgement` and record a valid `--for` identifier as
+`--change-class`. Omission records `unknown`. An invalid identifier also records `unknown` and emits a warning.
+A role-based `--author` links its `task_id` via `--review-target-task-id`. An engine-only author stays
+unlinked. Fill the reviewed head and target in [the brief](../templates/brief-review.md); optionally pass
+`--review-head SHA` for an expected-head check. Immediately before VERDICT in both full report and final answer:
+
+```text
+REVIEW_OUTCOME: {"schema_version":1,"target_task_id":"<UUID>","head":"<SHA>","round":1,"findings":{"high":0,"medium":1,"low":0},"finding_ids":[{"id":"F1","severity":"medium"}]}
+VERDICT: merge after fixes
+```
+
+Use null for an unlinked target. IDs must be distinct; severity counts must match their entries, and the copies must
+agree. Rechecks retain IDs; new defects get new IDs. Missing/malformed evidence stays null with diagnostics.
+V1 records reviewer-reported findings; per-finding hub adjudication is optional. Retro PR 2 labels absent adjudication
+"reported, not adjudicated". A rejecting verdict does not mean the reviewer failed its task. Full schema and hub
+imports: [task outcomes](reference.md#task-outcomes).

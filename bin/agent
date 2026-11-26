@@ -149,6 +149,7 @@ import worktrees  # noqa: E402
 import desktop_idle  # noqa: E402
 import worktree_prep  # noqa: E402
 import provenance  # noqa: E402
+import task_outcomes as outcomes  # noqa: E402
 
 import importlib.machinery  # noqa: E402
 import importlib.util  # noqa: E402
@@ -623,33 +624,44 @@ def prepare_timeout(cwd=None) -> int:
     return int(raw)
 
 
+def read_init(log: Path, offset: int, session_id: str) -> dict | None:
+    try:
+        with log.open("rb") as fh:
+            fh.seek(offset)
+            for raw in fh:
+                try:
+                    ev = json.loads(raw)
+                except ValueError:
+                    continue
+                for event in engines.normalize_event(ev):
+                    if event.get("type") == "system" and event.get("subtype") == "init":
+                        sid = event.get("session_id")
+                        if (sid == session_id if session_id else isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid)):
+                            return event
+    except FileNotFoundError:
+        pass
+    return None
+
+
 def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120,
-                  engine: str = "claude") -> dict:
+                  engine: str = "claude", exit_file: Path | None = None) -> dict:
     """Block until the run writes its init event for this session and return it; kill the run and fail otherwise."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        try:
-            with open(log, "rb") as fh:
-                fh.seek(offset)
-                for raw in fh:
-                    try:
-                        ev = json.loads(raw)
-                    except ValueError:
-                        continue
-                    if not isinstance(ev, dict):
-                        continue
-                    for event in engines.normalize_event(ev):
-                        if event.get("type") == "system" and event.get("subtype") == "init":
-                            sid = event.get("session_id")
-                            if (sid == session_id if session_id else isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid)):
-                                return event
-        except FileNotFoundError:
-            pass
-        if proc.poll() is not None:
+        init = read_init(log, offset, session_id)
+        if init:
+            return init
+        if proc.poll() is not None or (exit_file and exit_file.exists()):
             break
         time.sleep(0.3)
+    # The CLI can write init after the last read and exit before the liveness check.
+    init = read_init(log, offset, session_id)
+    if init:
+        return init
     code = proc.poll()
-    if code is None:
+    if code is None and exit_file and exit_file.exists():
+        code = int(exit_file.read_text().strip())
+    if proc.poll() is None:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -657,6 +669,115 @@ def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, t
     tail = stderr.read_text(encoding="utf-8", errors="replace")[-600:].strip() if stderr.exists() else ""
     why = f"exited with code {code}" if code is not None else f"sent no init event in {timeout_s} s, killed"
     raise hc.Failure(f"{engine} {why}; stderr: {tail or '—'}")
+
+
+def telemetry(fn, *args, **kwargs):
+    """Evidence failures cannot suppress process control or journal delivery."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:  # telemetry is a failure-isolated boundary, including unknown provider shapes
+        hc.warn(f"task outcomes: {exc}")
+        return None
+
+
+def outcome_stage(meta):
+    return hc.root() / meta["stage"]
+
+
+def reported_status(stage, meta, run, final):
+    word = quote_line(final)
+    match = re.match(r"^[\s*_`#-]*(DONE|REVIEWED|MERGED|EXIT|STOP|BLOCKED|QUESTION)\b", word)
+    status = match.group(1) if match else None
+    since = hc.dt.datetime.fromisoformat(run["at"])
+    day = since.date()
+    while day <= hc.now().date():
+        file = hc.journal_path(stage, day)
+        if file.exists():
+            raw = file.read_bytes()
+            if run.get("journal_day") == day.isoformat():
+                raw = raw[run.get("journal_offset", 0):]
+            for line in raw.decode("utf-8", errors="replace").splitlines():
+                m = hc.JOURNAL_LINE_RE.match(line)
+                if not m or m.group(2) != meta["tag"] or hc.sub_agent_line(m.group(2), m.group(3)):
+                    continue
+                hh, mm = map(int, m.group(1).split(":"))
+                stamp = hc.dt.datetime.combine(day, hc.dt.time(hh, mm), tzinfo=hc.TZ)
+                hit = re.match(r"(?:@hub\s+)?(DONE|REVIEWED|MERGED|EXIT|STOP|BLOCKED|QUESTION)\b", m.group(3))
+                if hit and stamp >= since.replace(second=0, microsecond=0):
+                    status = hit.group(1)
+        day += hc.dt.timedelta(days=1)
+    return status
+
+
+def capture_end(meta, code=None, observed=False, reason=None):
+    if not meta.get("task_id") or not meta.get("runs"):
+        return
+    run = meta["runs"][-1]
+    stage_dir = outcome_stage(meta)
+    records, _ = outcomes.read(outcomes.path(stage_dir, meta["task_id"]))
+    existing = any(e["run_id"] == run["id"] and e["type"] in outcomes.TERMINAL_TYPES for e in records)
+    needs_review = meta.get("task_kind") == "review" and not any(
+        e["run_id"] == run["id"] and e["type"] == "review_observed" for e in records)
+    if existing and not needs_review:
+        return  # status checks need not reparse transcripts of already captured runs
+    file = Path(meta["dir"]) / "log.jsonl"
+    raw, intact = outcomes.log_events(file, run.get("log_offset", 0))
+    normalized = [ev for obj in raw for ev in engines.normalize_event(obj)]
+    boundary = max((i for i, ev in enumerate(normalized)
+                    if ev.get("type") == "system" and ev.get("subtype") in ("init", "turn_start")), default=-1)
+    current = normalized[boundary + 1:]
+    result = next((ev for ev in reversed(current) if ev.get("type") == "result"), {})
+    texts = [block.get("text", "") for ev in current if ev.get("type") == "assistant"
+             for block in (ev.get("message") or {}).get("content", []) if isinstance(block, dict) and block.get("type") == "text"]
+    final = result.get("result") or (texts[-1] if texts else "")
+    if not existing:
+        if not any(ev.get("type") == "system" and ev.get("subtype") == "init" for ev in normalized):
+            reason = reason or "init_failure"
+        status = reported_status(meta["stage"], meta, run, final)
+        limit = limit_stop(result) is not None
+        clean = (observed or code == 0) and result.get("subtype") == "success" and not result.get("is_error")
+        if limit:
+            status = None
+        elif meta.get("stopping"):
+            status = "STOP"
+        elif not clean:
+            if status not in ("BLOCKED", "QUESTION", "STOP"):
+                status = "EXIT"
+        elif status is None and is_review_role(meta):
+            status = "REVIEWED"
+        usage = outcomes.usage(file, run.get("log_offset", 0), run.get("engine", meta.get("engine", "claude")), meta.get("session_id"))
+        if observed:
+            usage["complete"] = False
+            data = dict(observed_at=evidence_time(run, file), ended_at=None, exit_code=None,
+                        evidence="process gone; exit wrapper outcome missing", usage=usage, complete=False, reported_status=status,
+                        termination_reason=("limit" if limit else "stopped" if meta.get("stopping") else
+                                            "wrapper_lost" if clean else "abnormal_exit"))
+            kind = "run_observed_dead"
+        else:
+            marker = file.with_name(f"exit-{run['id']}.code")
+            data = dict(ended_at=evidence_time(run, marker, file), exit_code=code, cli_result=result.get("subtype"),
+                        termination_reason=reason or ("limit" if limit else "completed" if clean else "abnormal_exit"),
+                        reported_status=status, usage=usage, complete=intact and bool(result))
+            kind = "run_ended"
+        outcomes.emit(stage_dir, meta, run["id"], kind, data)
+    if needs_review:
+        report = Path(meta["report"])
+        text = report.read_text(encoding="utf-8") if report.exists() else ""
+        outcomes.emit(stage_dir, meta, run["id"], "review_observed", outcomes.review(meta, run["id"], final, text))
+
+
+def evidence_time(run, *files):
+    """Use the same artifact timestamp on each capture of a terminal event."""
+    for file in files:
+        try:
+            return hc.dt.datetime.fromtimestamp(file.stat().st_mtime, hc.dt.timezone.utc).isoformat()
+        except FileNotFoundError:
+            continue
+    return run["at"]
+
+
+class ReportedResumeFailure(hc.Failure):
+    """The launcher already journaled the resume failure while holding the agent lock."""
 
 
 def launch(meta: dict, prompt: str, resume: bool) -> int:
@@ -668,7 +789,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
         argv = claude_argv(meta, resume)
     log = d / "log.jsonl"
     offset = log.stat().st_size if log.exists() else 0
-    note = 'marker=$1; python=$2; shift 2; "$@"; c=$?; "$python" "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
+    note = 'marker=$1; python=$2; shift 2; "$@"; c=$?; printf "%s\n" "$c" > "$AGENT_EXIT_CODE_FILE.tmp"; mv "$AGENT_EXIT_CODE_FILE.tmp" "$AGENT_EXIT_CODE_FILE"; "$python" "$0" exit-note "$AGENT_ROLE" --stage "$HUB_STAGE" --code "$c" >&2; exit $c'
     token = meta.get("process_token") or meta["session_id"]
     argv = ["/bin/sh", "-c", note, str(Path(__file__).resolve()), token, sys.executable] + argv
     env = child_env(meta["stage"], meta["tag"])
@@ -679,6 +800,8 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     if engine == "codex" and meta.get("sandbox") == "workspace-write" and not is_review_role(meta):
         engines.prepare_worktree_sandbox(meta, env)
     run_id = uuid.uuid4().hex[:12]
+    exit_file = d / f"exit-{run_id}.code"
+    env.update(AGENT_RUN_ID=run_id, AGENT_TASK_ID=meta.get("task_id", ""), AGENT_EXIT_CODE_FILE=str(exit_file))
     # The run's commits carry Delamain-Stage/-Role/-Run trailers: git hooks shim of bin/provenance.py.
     env.update(provenance.agent_env(meta["cwd"], run_id, env))
     if engine == "claude":
@@ -696,21 +819,50 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     fd = os.open(stdin_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(prompt)
-    with open(log, "ab") as out, open(d / "stderr.log", "ab") as err, open(stdin_file, "rb") as inp:
-        proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=inp, stdout=out, stderr=err,
-                                env=env, start_new_session=True, close_fds=True)
+    journal_file = hc.journal_path(meta["stage"], hc.now().date())
+    run = {"journal_day": hc.now().date().isoformat(),
+           "journal_offset": journal_file.stat().st_size if journal_file.exists() else 0, "id": run_id, "at": hc.now().isoformat(timespec="seconds"),
+           "kind": "resume" if resume else "spawn", "prompt": stdin_file.name,
+           "engine": engine, "requested_model": meta.get("requested_model", meta.get("model")), "effort": meta.get("effort"),
+           "log_offset": offset, "resume_reason": meta.pop("next_resume_reason", None)}
+    telemetry(outcomes.emit, outcome_stage(meta), meta, run_id, "run_started",
+              {k: run[k] for k in ("kind", "engine", "requested_model", "effort", "log_offset", "resume_reason", "journal_day", "journal_offset")} |
+              {"session_id": meta.get("session_id")})
+    try:
+        with open(log, "ab") as out, open(d / "stderr.log", "ab") as err, open(stdin_file, "rb") as inp:
+            proc = subprocess.Popen(argv, cwd=meta["cwd"], stdin=inp, stdout=out, stderr=err,
+                                    env=env, start_new_session=True, close_fds=True)
+    except OSError as exc:
+        failed = dict(meta, runs=list(meta.get("runs") or []) + [run])
+        telemetry(capture_end, failed, reason="launch_failure")
+        raise hc.Failure(f"could not launch {engine}: {exc}") from None
     # The run is on record from the moment it exists: an observer that finds the pid gone then sees this run's pid, not
     # the previous run's (a resumed agent would otherwise look dead until the init event).
     before = (meta.get("pid"), list(meta.get("runs") or []))
     meta["pid"] = proc.pid
-    meta.setdefault("runs", []).append({"id": run_id, "pid": proc.pid, "at": hc.now().isoformat(timespec="seconds"),
-                                        "kind": "resume" if resume else "spawn", "prompt": stdin_file.name})
+    meta.setdefault("runs", []).append(run | {"pid": proc.pid})
     save_meta(meta["stage"], meta["role"], meta)
     try:
-        init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine)
-    except hc.Failure:
-        meta["pid"], meta["runs"] = before[0], before[1]
-        save_meta(meta["stage"], meta["role"], meta)
+        init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine, exit_file)
+    except hc.Failure as exc:
+        code = int(exit_file.read_text().strip()) if exit_file.exists() else proc.poll()
+        telemetry(capture_end, meta, code, reason="init_failure")
+        try:
+            if resume:
+                stage, role = meta["stage"], meta["role"]
+                try:
+                    claimed = claim_exit(stage, meta)
+                except OSError:
+                    claimed = True  # the agent lock still shields the journal write and metadata rollback
+                if claimed:
+                    why = ("its unread message could not be replayed and stays queued"
+                           if os.environ.get(REPLAY_ENV) == "1" else "could not resume")
+                    hc.journal_append(stage, meta["tag"], f"EXIT {role}: {why} — {str(exc)[:200]} — agent status {role}")
+        finally:
+            meta["pid"], meta["runs"] = before
+            save_meta(meta["stage"], meta["role"], meta)
+        if resume:
+            raise ReportedResumeFailure(str(exc)) from None
         raise
     meta["session_id"] = init["session_id"]
     # Codex currently reports only the thread ID at init. Carry the model
@@ -720,6 +872,8 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     model = init.get("model")
     if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
         meta["resolved_model"] = model
+    telemetry(outcomes.emit, outcome_stage(meta), meta, run_id, "run_identity",
+              {"session_id": meta["session_id"], "resolved_model": init.get("model")})
     return proc.pid
 
 
@@ -825,7 +979,7 @@ def cmd_spawn(a) -> int:
         # `codex exec -c` cannot switch off the servers of Codex plugins; AGENT_HUB_SPAWN_MCP is for Claude agents
         raise hc.UsageError("--mcp is only supported by the Claude engine")
     mcp = mcp_choice(a.mcp, cwd) if engine == "claude" else None  # before pace_advice, which may journal
-    pace_note = pace_advice(stage, engine, model_names, effort, a.task_class, reason, a.dry_run, cwd)
+    pace_note = pace_advice(stage, engine, model_names, effort, None if a.task_class == "unknown" else a.task_class, reason, a.dry_run, cwd)
     pmode = a.permission_mode or hc.setting("AGENT_HUB_PERMISSION_MODE", cwd=cwd) or DEFAULT_PERMISSION_MODE
     sandbox = None
     policy = None
@@ -839,8 +993,8 @@ def cmd_spawn(a) -> int:
                 raise hc.UsageError("--permission-mode and --sandbox-policy type disagree")
         else:
             sandbox = engines.permission_policy(a.permission_mode, a.sandbox, cwd)
-        if sandbox == "workspace-write" and engines.is_review_role({"role": a.role, "tag": a.tag}):
-            engines.workspace_write_roots({"role": a.role, "tag": a.tag, "cwd": str(cwd),
+        if sandbox == "workspace-write" and engines.is_review_role({"role": a.role, "tag": a.tag, "task_kind": a.task_kind}):
+            engines.workspace_write_roots({"role": a.role, "tag": a.tag, "task_kind": a.task_kind, "cwd": str(cwd),
                                            "sandbox_policy": policy})
         engines.hook_args(cwd)
     elif a.sandbox or a.sandbox_policy:
@@ -899,6 +1053,7 @@ def cmd_spawn(a) -> int:
             for ln in worktree_prep.link_shared(path, worktree_prep.main_checkout(wt_common)):
                 print(ln, file=sys.stderr if ln.startswith("note:") else sys.stdout)
     if (d / "meta.json").exists():
+        telemetry(capture_end, load_meta(stage, a.role), observed=True)
         # a finished agent of the same name: keep its files, start a clean directory
         set_aside(d, "")
     d.mkdir(parents=True)
@@ -912,7 +1067,21 @@ def cmd_spawn(a) -> int:
             "title": a.title or spawn_policy.brief_title(a.role, stage, brief.read_text(encoding="utf-8")),
             "report": str(report),
             "started_at": hc.now().isoformat(timespec="seconds"), "runs": []}
+    if a.task_class is None:
+        hc.warn("--task-class omitted: recording unknown; the hub should classify the brief before launch")
+    meta["requested_model"] = given
+    meta.update(outcome_schema=1, task_id=str(uuid.uuid4()), task_class=a.task_class or "unknown",
+                task_kind=a.task_kind or ("review" if is_review_role(meta) else "executor"),
+                change_class=a.change_class, continuation_of=a.continuation_of,
+                review_target_task_id=a.review_target_task_id, review_head=a.review_head,
+                repository_key=outcomes.repository_key(Path(a.target_repo).expanduser().resolve() if a.target_repo else cwd),
+                review_applicability=a.review_applicability, ci_applicability=a.ci_applicability,
+                parent_task_id=a.parent_task_id, usage_in_parent=a.usage_in_parent, usage_boundary=a.usage_boundary,
+                assignment_source={"task_class": "explicit" if a.task_class else "missing",
+                                   "task_kind": "explicit" if a.task_kind else "legacy_inference",
+                                   "change_class": "explicit" if a.change_class != "unknown" else "missing"})
     meta["engine"] = engine
+    telemetry(outcomes.start_task, hc.root() / stage, meta)
     if mcp:
         meta["mcp"] = mcp
     if reason:
@@ -944,7 +1113,9 @@ def cmd_spawn(a) -> int:
                    "if you start servers, so agents in other worktrees of this repository do not collide with you.\n")
     save_meta(stage, a.role, meta)
     try:
-        pid = launch(meta, prompt, resume=False)
+        with AgentLock(stage, a.role):
+            pid = launch(meta, prompt, resume=False)
+            save_meta(stage, a.role, meta)
     except hc.Failure as e:
         set_aside(d, "failed-")
         # a spawn run in the background is heard of only here: the hub's jwait wakes on EXIT
@@ -1142,6 +1313,7 @@ def observe_death(stage: str, meta: dict, mtime) -> "str | object | None":
                 return None
             if not process_gone(fresh):
                 return None
+            telemetry(capture_end, fresh, observed=True)
             info = read_log(Path(fresh["dir"]) / "log.jsonl")
             if info["result"] and not info["running_after_result"]:
                 return None
@@ -1288,7 +1460,7 @@ def cmd_send(a) -> int:
         try:
             return _send_locked(stage, a, msg)
         except hc.Failure as e:
-            if os.environ.get(REPLAY_ENV) == "1":  # nobody reads this process's output: the hub hears it here
+            if os.environ.get(REPLAY_ENV) == "1" and not isinstance(e, ReportedResumeFailure):
                 hc.journal_append(stage, load_meta(stage, a.role)["tag"],
                                   f"EXIT {a.role}: its unread message could not be replayed and stays queued — "
                                   f"{str(e)[:200]} — agent status {a.role}")
@@ -1322,6 +1494,8 @@ def _send_locked(stage: str, a, msg: str) -> int:
         raise hc.Failure(f"agent {a.role} was stopped (role retired); start a new one with agent spawn")
     live = alive(meta)  # one reading: the checks and the branch below must agree on it
     if not live:
+        telemetry(capture_end, meta, observed=True)
+        meta["next_resume_reason"] = getattr(a, "resume_reason", None)
         if meta.get("engine", "claude") == "claude":
             bg_wait_ceiling(meta["cwd"])  # the resume would refuse a bad setting: refuse before the message is queued
             legacy_effort(meta)  # likewise a rule that refuses the effort it would get
@@ -1340,7 +1514,8 @@ def _send_locked(stage: str, a, msg: str) -> int:
             raise hc.UsageError("the agent is alive — a message text is required")
         log = Path(meta["dir"]) / "log.jsonl"
         meta.setdefault("inbox_unread", []).append({"at": t.isoformat(timespec="seconds"), "msg": msg,
-                                                    "log_offset": log.stat().st_size if log.exists() else 0})
+                                                    "log_offset": log.stat().st_size if log.exists() else 0,
+                                                    "resume_reason": getattr(a, "resume_reason", None)})
         save_meta(stage, a.role, meta)
         line = journal(stage, "cli", f"@{meta['tag']} {msg}")
         print(f"agent alive (pid {meta['pid']}): queued in its inbox, read after its current step; if its run ends "
@@ -1348,6 +1523,9 @@ def _send_locked(stage: str, a, msg: str) -> int:
         return 0
     queued = list(meta.get("inbox_unread") or [])
     unread = pending_unread(meta)
+    if meta.get("next_resume_reason") is None and unread:
+        reasons = {u.get("resume_reason") for u in unread}
+        meta["next_resume_reason"] = next(iter(reasons)) if len(reasons) == 1 else None
     if not msg and not unread:
         raise hc.UsageError("empty message and no unread inbox messages")
     parts = []
@@ -1393,6 +1571,8 @@ def cmd_stop(a) -> int:
             m.pop("stopping", None)
             save_meta(stage, a.role, m)
         raise
+    with AgentLock(stage, a.role):
+        telemetry(capture_end, load_meta(stage, a.role), observed=True)
     if a.role in hc.roles_load(stage)["roles"]:
         roles_cli.retire_role(stage, a.role, "agent-stop")
     print(f"{a.role}: stopped ({how}), role retired")
@@ -1457,7 +1637,7 @@ def status_seen(stage: str, tag: str, since: hc.dt.datetime) -> bool:
 def is_review_role(meta: dict) -> bool:
     """A review role by its name or tag: `review-pr34`, `desktop-review`, `reviewer2` (the plugin's own reviewers are
     `review-<name>`), not `preview` or `reviewfix`. Legacy read-only reviewers cannot journal their verdict."""
-    return engines.is_review_role(meta)
+    return meta["task_kind"] == "review" if meta.get("task_kind") else engines.is_review_role(meta)
 
 
 # a line that IS the outcome: it starts (after markdown marks) with `VERDICT:` or a status word
@@ -1488,10 +1668,18 @@ def quote_line(text: str) -> str:
 
 def cmd_exit_note(a) -> int:
     try:
-        return note_exit(a)
+        with AgentLock(hc.check_stage(a.stage or hc.default_stage()), a.role):
+            meta = load_meta(hc.check_stage(a.stage or hc.default_stage()), a.role)
+            if (os.environ.get("AGENT_RUN_ID") and (not meta.get("runs") or
+                    os.environ["AGENT_RUN_ID"] != meta["runs"][-1]["id"])) or (
+                    os.environ.get("AGENT_TASK_ID") and os.environ["AGENT_TASK_ID"] != meta.get("task_id")):
+                return 0  # a stale wrapper must not report, close or replay a newer task/run
+            return note_exit(a)
     finally:
         try:
-            hand_over_unread(hc.check_stage(a.stage or hc.default_stage()), a.role)
+            current = load_meta(hc.check_stage(a.stage or hc.default_stage()), a.role)
+            if not os.environ.get("AGENT_RUN_ID") or (current.get("runs") and os.environ["AGENT_RUN_ID"] == current["runs"][-1]["id"]):
+                hand_over_unread(hc.check_stage(a.stage or hc.default_stage()), a.role)
         except (OSError, hc.Failure, hc.UsageError):
             pass  # the message stays queued: agent status shows it, the next agent send replays it
 
@@ -1505,7 +1693,7 @@ def hand_over_unread(stage: str, role: str) -> None:
     meta = load_meta(stage, role)
     if role not in hc.roles_load(stage)["roles"] or not run_started(meta):
         return
-    env = {k: v for k, v in os.environ.items() if k not in ("AGENT_ROLE", "AGENT_SESSION_ID", "AGENT_LOG_OFFSET")}
+    env = {k: v for k, v in os.environ.items() if k not in ("AGENT_ROLE", "AGENT_SESSION_ID", "AGENT_LOG_OFFSET", "AGENT_RUN_ID", "AGENT_TASK_ID", "AGENT_EXIT_CODE_FILE")}
     env.update({"HUB_TAG": "inbox", REPLAY_ENV: "1"})  # the resume line is the plugin's, not the agent's own
     wait = 'i=0; while kill -0 "$1" 2>/dev/null && [ $i -lt 300 ]; do sleep 0.2; i=$((i+1)); done; shift; exec "$@"'
     with open(Path(meta["dir"]) / "stderr.log", "ab") as err:
@@ -1569,6 +1757,7 @@ def note_exit(a) -> int:
     runs = meta.get("runs") or []
     since = hc.dt.datetime.fromisoformat(runs[-1]["at"]) if runs else hc.now() - hc.dt.timedelta(days=1)
     clean = a.code == 0 and r and not r.get("is_error") and r.get("subtype") == "success"
+    telemetry(capture_end, meta, a.code)
     if clean and status_seen(stage, meta["tag"], since):
         return 0
     try:
@@ -1579,7 +1768,9 @@ def note_exit(a) -> int:
     last = quote_line(info.get("last_block") or info["last_text"])
     if clean:
         # the outcome (a VERDICT or a status word) may stand in the last answer while the journal has none of its own
-        word = "REVIEWED" if is_review_role(meta) else "ENDED"
+        current_run = runs[-1] if runs else None
+        explicit = reported_status(stage, meta, current_run, info.get("last_block") or info["last_text"]) if current_run else None
+        word = explicit if explicit in ("BLOCKED", "QUESTION") else "REVIEWED" if is_review_role(meta) else "ENDED"
         why = "finished, outcome in its last answer" if OUTCOME_RE.search(last) else "finished, no status word in the journal"
     else:
         reset = limit_stop(r)
@@ -1593,18 +1784,69 @@ def note_exit(a) -> int:
     return 0
 
 
+def cmd_outcome(a):
+    stage = hc.check_stage(a.stage or hc.default_stage())
+    if bool(a.role) == bool(a.task_id):
+        raise hc.UsageError("outcome requires exactly one role or --task-id")
+    task_id = a.task_id or load_meta(stage, a.role).get("task_id")
+    if not task_id:
+        raise hc.UsageError("historical agent has no task_id; no automatic backfill")
+    try:
+        records, _ = outcomes.read(outcomes.path(hc.root() / stage, task_id))
+        if not records:
+            raise ValueError("unknown task_id")
+        obj = json.loads(Path(a.file).read_text(encoding="utf-8"))
+        if not isinstance(obj, dict) or not isinstance(obj.get("data"), dict):
+            raise ValueError("outcome requires an event object with typed data")
+        if obj.get("task_id", task_id) != task_id:
+            raise ValueError("task_id mismatch")
+        if obj.get("type") not in ("review_observed", "ci_observed", "artifact_observed", "task_closed") and not (obj.get("supersedes") and obj.get("reason")):
+            raise ValueError("hub import accepts review, CI, closure or explicit correction evidence")
+        target = obj["data"].get("target_task_id")
+        start = next((e["data"] for e in records if e["type"] == "task_started"), {})
+        if obj["type"] == "review_observed" and start.get("task_kind") == "review":
+            if target != start.get("review_target_task_id"):
+                raise ValueError("target_task_id mismatch")
+        elif target is not None and target != task_id:
+            raise ValueError("target_task_id mismatch")
+        extra = {k: obj[k] for k in ("supersedes", "reason") if k in obj}
+        retry = next((e for e in records if e["event_id"] == obj.get("event_id")), None)
+        if retry:
+            extra = {k: retry[k] for k in ("supersedes", "reason") if k in retry}
+        if not retry and obj["type"] == "task_closed" and "supersedes" not in extra:
+            previous = next((e for e in reversed(records) if e["type"] == "task_closed"), None)
+            if previous:
+                extra = {"supersedes": previous["event_id"], "reason": obj.get("reason", "hub override")}
+        latest_run = next((e["run_id"] for e in reversed(records) if e["type"] == "run_started"), None)
+        run_id = obj.get("run_id") if obj.get("run_id") is not None else latest_run
+        if obj["type"] == "task_closed" and run_id is not None and not any(e["type"] == "run_started" and e["run_id"] == run_id for e in records):
+            raise ValueError("closure run_id does not belong to this task")
+        ev = outcomes.event(task_id, run_id, obj["type"], obj["data"], "hub",
+                            event_id=obj.get("event_id"), **extra)
+        outcomes.append(hc.root() / stage, ev)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        raise hc.UsageError(f"outcome: {exc}") from None
+    print(outcomes.path(hc.root() / stage, task_id))
+    return 0
+
+
 def parse_send(argv: list) -> argparse.Namespace:
     """`agent send [--stage S] [--resume-anyway] R text… [--resume-anyway]`: the options may stand anywhere before a `--`;
     the first other word is the role and everything after it is the message, a word that starts with `-` included
     (argparse would take it for an option, and older versions stop the text at an option), except `--file`/`--brief`,
     refused: a message read from a file is not a send option. After `--` every word is the role or the text."""
     stage, resume_anyway, words, rest = None, False, [], list(argv[1:])
+    resume_reason = None
     while rest:
         w = rest.pop(0)
         if w == "--":
             words += rest
             break
-        if w == "--resume-anyway":
+        if w == "--resume-reason" or w.startswith("--resume-reason="):
+            resume_reason = w.split("=", 1)[1] if "=" in w else (rest.pop(0) if rest else "")
+            if resume_reason not in ("review_fix", "ci_fix", "reply", "rebase", "recovery", "other"):
+                raise hc.UsageError("invalid --resume-reason")
+        elif w == "--resume-anyway":
             resume_anyway = True
         elif w == "--stage" or w.startswith("--stage="):
             if w == "--stage":
@@ -1623,7 +1865,7 @@ def parse_send(argv: list) -> argparse.Namespace:
             words.append(w)
     if not words:
         raise hc.UsageError("agent send: the role is required")
-    return argparse.Namespace(cmd="send", role=words[0], text=words[1:], stage=stage, resume_anyway=resume_anyway)
+    return argparse.Namespace(cmd="send", role=words[0], text=words[1:], stage=stage, resume_anyway=resume_anyway, resume_reason=resume_reason)
 
 
 def main(argv: list) -> int:
@@ -1665,10 +1907,18 @@ def main(argv: list) -> int:
     s.add_argument("--reason", help="why the work needs an effort, a model or an engine above the default "
                    "(AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_MODELS), or why it runs over the limit-pace stop; "
                    "journaled and kept in meta.json")
-    s.add_argument("--task-class", choices=limit_pace.CLASSES,
-                   help="what the work needs: mechanical | bounded (from a finished design) | judgement; default: by "
-                        "the model. The limit-pace advice uses it (effort above the class default, the equivalent "
-                        "class on the other engine)")
+    s.add_argument("--task-class", choices=outcomes.CLASSES, help="brief difficulty; omitted = unknown (warns)")
+    s.add_argument("--task-kind", choices=outcomes.KINDS, help="executor or review; omitted = legacy role inference")
+    s.add_argument("--change-class", type=outcomes.change_class, default="unknown", help="docs, code, risky or custom identifier")
+    s.add_argument("--continuation-of", type=outcomes.task_uuid, help="original task UUID for reassignment")
+    s.add_argument("--review-target-task-id", type=outcomes.task_uuid, help="reviewed author's task UUID")
+    s.add_argument("--review-head", help="expected artifact head for REVIEW_OUTCOME validation")
+    s.add_argument("--target-repo", help="target repository checkout when cwd is a hub/report directory")
+    s.add_argument("--review-applicability", choices=outcomes.APPLICABILITY, default="unknown")
+    s.add_argument("--ci-applicability", choices=outcomes.APPLICABILITY, default="unknown")
+    s.add_argument("--parent-task-id", type=outcomes.task_uuid, help="contract this separately measured helper contributes to")
+    s.add_argument("--usage-in-parent", choices=outcomes.USAGE_IN_PARENT, default="unknown", help="whether helper usage is included in parent counters")
+    s.add_argument("--usage-boundary", choices=outcomes.USAGE_BOUNDARIES, default="unknown", help="scope of provider counters relative to helpers")
     s.add_argument("--dry-run", action="store_true",
                    help="run every check and print the limit-pace advice, then stop: nothing is started or written")
     s.add_argument("--ignore-hold", action="store_true",
@@ -1684,6 +1934,12 @@ def main(argv: list) -> int:
     se.add_argument("--stage")
     se.add_argument("--resume-anyway", action="store_true",
                     help="resume a stopped agent although its context is above AGENT_HUB_RESUME_MAX_CTX")
+    se.add_argument("--resume-reason", choices=("review_fix", "ci_fix", "reply", "rebase", "recovery", "other"))
+    oc = sub.add_parser("outcome", help="import typed hub evidence for a role or archived task")
+    oc.add_argument("role", nargs="?")
+    oc.add_argument("--stage")
+    oc.add_argument("--task-id", type=outcomes.task_uuid)
+    oc.add_argument("--file", required=True)
     sp = sub.add_parser("stop", help="stop the agent and retire its role")
     sp.add_argument("role")
     sp.add_argument("--stage")
@@ -1713,7 +1969,7 @@ def main(argv: list) -> int:
     en.add_argument("--code", type=int, default=0)
     a = parse_send(argv) if argv[:1] == ["send"] and not {"-h", "--help"} & set(argv[:argv.index("--")] if "--" in argv else argv) \
         else p.parse_args(argv)
-    return {"spawn": cmd_spawn, "status": cmd_status, "send": cmd_send, "stop": cmd_stop,
+    return {"spawn": cmd_spawn, "status": cmd_status, "send": cmd_send, "outcome": cmd_outcome, "stop": cmd_stop,
             "worktrees": cmd_worktrees, "desktop-idle": cmd_desktop_idle, "exit-note": cmd_exit_note}[a.cmd](a)
 
 

@@ -1,0 +1,780 @@
+"""Regression controls for the append-only protocol and actual agent launch paths."""
+import concurrent.futures
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import shlex
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+import uuid
+
+BIN = Path(sys.argv.pop(1)).resolve()
+sys.path.insert(0, str(BIN))
+import task_outcomes as out
+import hubcore as hc
+import reviewers
+
+
+def load_agent():
+    loader = importlib.machinery.SourceFileLoader("outcome_agent_fixture", str(BIN / "agent"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    agent = importlib.util.module_from_spec(spec)
+    loader.exec_module(agent)
+    return agent
+
+
+class Outcomes(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.task = str(uuid.uuid4())
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def closure(self, event_id="closure"):
+        return out.event(self.task, "run", "task_closed", dict(outcome="success", closed_at=out.now(),
+                         evidence_path="fixture", artifact_ids=[], review_applicability="unknown", ci_applicability="unknown"),
+                         "hub", event_id)
+
+    def test_append_retry_conflict_and_corruption(self):
+        ev = self.closure()
+        self.assertTrue(out.append(self.root, ev))
+        self.assertFalse(out.append(self.root, ev))
+        ev["data"]["outcome"] = "failure"
+        with self.assertRaisesRegex(ValueError, "conflicting"):
+            out.append(self.root, ev)
+        file = out.path(self.root, self.task)
+        with file.open("ab") as f:
+            f.write(b'{"torn":')
+        self.assertTrue(out.read(file)[1])
+        out.append(self.root, self.closure("next"))
+        self.assertEqual(len(out.read(file)[0]), 2)
+        self.assertFalse(out.read(file)[1])
+        with file.open("ab") as f:
+            f.write(b'broken\n')
+        with self.assertRaises(ValueError):
+            out.append(self.root, self.closure("must fail"))
+
+    def append_concurrently(self, events):
+        # Independent Python processes, not threads sharing an advisory lock descriptor.
+        code = 'import json,sys;sys.path.insert(0,sys.argv[1]);import task_outcomes as o;o.append(sys.argv[2],json.loads(sys.stdin.read()))'
+        def write(ev):
+            return subprocess.run([sys.executable, "-c", code, str(BIN), str(self.root)], input=json.dumps(ev), text=True).returncode
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            self.assertEqual(list(pool.map(write, events)), [0] * len(events))
+
+    def test_concurrent_appends(self):
+        events = [self.closure(str(i)) for i in range(32)]
+        self.append_concurrently(events + events)
+        rows, torn = out.read(out.path(self.root, self.task))
+        self.assertEqual(len(rows), 32)
+        self.assertFalse(torn)
+
+    def test_competing_terminal_writers(self):
+        stamp = out.now()
+        ended = out.event(self.task, "run", "run_ended", dict(ended_at=stamp, exit_code=0, cli_result="success",
+                          termination_reason="completed", reported_status="DONE", usage={}, complete=True), "agent", "ended")
+        observed = out.event(self.task, "run", "run_observed_dead", dict(observed_at=stamp, ended_at=None, exit_code=None,
+                             evidence="fixture", usage={}, complete=False), "agent", "observed")
+        other = dict(observed, event_id="other", run_id="another-run")
+        self.append_concurrently([ended, observed, other] * 4)
+        rows, _ = out.read(out.path(self.root, self.task))
+        terminal, = [e for e in rows if e["run_id"] == "run"]
+        self.assertIn(terminal, (ended, observed))
+        self.assertIn(other, rows)
+        self.assertFalse(out.append(self.root, terminal))
+        with self.assertRaisesRegex(ValueError, "conflicting event id"):
+            out.append(self.root, dict(terminal, data=terminal["data"] | dict(complete=True, exit_code=1)))
+        correction = dict(terminal, event_id="correction", supersedes=terminal["event_id"], reason="fixture correction")
+        self.assertTrue(out.append(self.root, correction))
+
+    def test_init_written_at_exit_check(self):
+        agent = load_agent()
+        log = self.write_log([dict(type="system", subtype="init", session_id="previous")])
+        offset = log.stat().st_size
+        init = dict(type="system", subtype="init", session_id="current")
+        stderr = self.root / "stderr.log"
+        exit_file = self.root / "exit.code"
+
+        class ExitingProcess:
+            pid = 123
+
+            def poll(self):
+                return None
+
+        class ExitMarker:
+            def exists(self):
+                if not exit_file.exists():
+                    with log.open("a") as stream:
+                        stream.write(json.dumps(init) + "\n")
+                    exit_file.write_text("0\n")
+                return True
+
+            def read_text(self):
+                return exit_file.read_text()
+
+        with patch.object(agent.os, "killpg") as kill:
+            self.assertEqual(agent.wait_for_init(ExitingProcess(), log, offset, "current", stderr, 1, exit_file=ExitMarker()), init)
+            kill.assert_not_called()
+            with self.assertRaisesRegex(hc.Failure, "exited with code 0"):
+                agent.wait_for_init(ExitingProcess(), log, offset, "different", stderr, 1, exit_file=exit_file)
+            kill.assert_called_once_with(123, signal.SIGKILL)
+
+    def test_capture_terminal_timestamps_from_evidence(self):
+        agent = load_agent()
+        stamp = 1_700_000_000
+        evidence = "2023-11-14T22:13:20+00:00"
+        log = self.write_log([dict(type="system", subtype="init", session_id="sid"),
+                              dict(type="result", subtype="success", result="DONE fixture")])
+        os.utime(log, (stamp, stamp))
+        marker = self.root / "exit-run.code"
+        marker.write_text("0\n")
+        os.utime(marker, (stamp + 1, stamp + 1))
+        meta = dict(task_id=self.task, dir=str(self.root), stage="stage-a", tag="fixture", runs=[
+            dict(id="run", at=evidence)])
+        for observed, field, expected in ((True, "observed_at", evidence),
+                                          (False, "ended_at", "2023-11-14T22:13:21+00:00")):
+            with patch.object(agent, "reported_status", return_value="DONE"), patch.object(out, "append") as append:
+                agent.capture_end(meta, code=None if observed else 0, observed=observed)
+                agent.capture_end(meta, code=None if observed else 0, observed=observed)
+            first, second = [call.args[1] for call in append.call_args_list]
+            self.assertEqual(first["data"][field], expected)
+            # Model two callers that read before the first append acquires the lock.
+            target = self.root / field
+            self.assertTrue(out.append(target, first))
+            self.assertFalse(out.append(target, second))
+            second["data"][field] = out.now()
+            with self.assertRaisesRegex(ValueError, "conflicting event id"):
+                out.append(target, second)
+
+    def test_observed_completion_uses_latest_init_or_turn(self):
+        agent = load_agent()
+        stamp = hc.now().isoformat()
+        claude_init = dict(type="system", subtype="init", session_id="sid")
+        codex_init = dict(type="thread.started", thread_id="sid")
+        turn = dict(type="turn.started")
+        done = dict(type="result", subtype="success", result="MERGED fixture")
+        blocked = dict(type="result", subtype="success", result="BLOCKED fixture")
+        limited = dict(type="result", subtype="error", is_error=True, result="You've hit your usage limit")
+        codex_done = [codex_init, turn, dict(type="item.completed", item=dict(type="agent_message", text="REVIEWED fixture")),
+                      dict(type="turn.completed")]
+        for events, engine, status, reason in (
+            ([claude_init, done], "claude", "MERGED", "wrapper_lost"),
+            ([claude_init, done, claude_init], "claude", "EXIT", "abnormal_exit"),
+            ([claude_init, blocked], "claude", "BLOCKED", "wrapper_lost"),
+            ([claude_init, limited], "claude", None, "limit"),
+            (codex_done, "codex", "REVIEWED", "wrapper_lost"),
+            (codex_done + [turn], "codex", "EXIT", "abnormal_exit"),
+        ):
+            with self.subTest(engine=engine, status=status):
+                self.write_log(events)
+                meta = dict(task_id=str(uuid.uuid4()), dir=str(self.root), stage="stage-a", tag="fixture",
+                            engine=engine, runs=[dict(id="run", at=stamp)])
+                with patch.object(out, "append") as append:
+                    agent.capture_end(meta, observed=True)
+                data = append.call_args.args[1]["data"]
+                self.assertEqual((data["reported_status"], data["termination_reason"]), (status, reason))
+                self.assertIsNone(data["exit_code"])
+                self.assertIsNone(data["ended_at"])
+
+    def test_typed_envelope_and_corrections(self):
+        ev = self.closure()
+        out.append(self.root, ev)
+        correction = self.closure("correction") | {"supersedes": ev["event_id"], "reason": "owner accepted"}
+        out.append(self.root, correction)
+        for mutation in ({"schema_version": 2}, {"task_id": "../escape"}, {"occurred_at": "2026-01-01"},
+                         {"supersedes": "missing", "reason": "fix"}, {"data": {}}, {"type": "arbitrary"}):
+            with self.assertRaises((ValueError, KeyError)):
+                out.append(self.root, self.closure(str(uuid.uuid4())) | mutation)
+
+    def write_log(self, events):
+        file = self.root / "log.jsonl"
+        file.write_text("".join(json.dumps(e) + "\n" for e in events))
+        return file
+
+    def test_claude_usage_is_invocation_but_cost_session_delta(self):
+        init = dict(type="system", subtype="init", session_id="sid")
+        def result(n, cost):
+            return dict(type="result", session_id="sid", num_turns=n, total_cost_usd=cost,
+                        usage=dict(input_tokens=10, output_tokens=20, cache_read_input_tokens=30, cache_creation_input_tokens=40))
+        first = [init, result(3, 0.8)]
+        file = self.write_log(first)
+        offset = file.stat().st_size
+        file = self.write_log(first + [init, result(2, 1.0)])
+        a = out.usage(file, 0, "claude", "sid")
+        b = out.usage(file, offset, "claude", "sid")
+        self.assertEqual((a["tokens_total"], a["turns"], a["cost_usd"]), (200, 5, 1.0))
+        self.assertEqual((b["tokens_total"], b["turns"]), (100, 2))
+        self.assertAlmostEqual(b["cost_usd"], 0.2)
+        file = self.write_log(first + [init, result(2, 0.1)])
+        self.assertIsNone(out.usage(file, offset, "claude", "sid")["cost_usd"])
+        file = self.write_log([init, dict(type="result", session_id="sid")])
+        unknown = out.usage(file, 0, "claude", "sid")
+        self.assertIsNone(unknown["tokens_total"])
+        self.assertIsNone(unknown["turns"])
+        self.assertIsNone(unknown["cost_usd"])
+
+    def test_codex_cumulative_resume_and_regression(self):
+        init = dict(type="thread.started", thread_id="sid")
+        turn = dict(type="turn.started")
+        def result(n):
+            return dict(type="turn.completed", usage=dict(input_tokens=n, cached_input_tokens=n // 2,
+                        output_tokens=n // 10, reasoning_output_tokens=n // 20))
+        first = [init, turn, result(100)]
+        file = self.write_log(first)
+        offset = file.stat().st_size
+        file = self.write_log(first + [init, turn, result(150)])
+        u = out.usage(file, offset, "codex", "sid")
+        self.assertEqual((u["input_tokens"], u["tokens_total"], u["turns"]), (50, 55, 1))
+        self.assertIsNone(u["cost_usd"])
+        self.assertEqual(u["cost_basis"], "unavailable")
+        self.assertEqual(out.usage(file, 0, "codex", "sid")["tokens_total"], 165)
+        for events in (first + [init, turn, result(50)], [init, turn] + [init, turn, result(150)]):
+            file = self.write_log(events)
+            run_offset = len((json.dumps(events[0]) + '\n' + json.dumps(events[1]) + '\n').encode()) if len(events) == 5 else offset
+            u = out.usage(file, run_offset, "codex", "sid")
+            self.assertFalse(u["complete"])
+            self.assertIsNone(u["tokens_total"])
+        prefix = [turn, result(100)]  # intact JSONL with a lost session identity is not a zero baseline
+        file = self.write_log(prefix)
+        missing_identity_offset = file.stat().st_size
+        file = self.write_log(prefix + [init, turn, result(150)])
+        self.assertIsNone(out.usage(file, missing_identity_offset, "codex", "sid")["tokens_total"])
+        file = self.write_log([init, result(100)])
+        self.assertIsNone(out.usage(file, 0, "codex", "sid")["turns"])
+        self.assertIsNone(out.usage(file, 0, "codex", "sid")["tokens_total"])
+        file = self.write_log([turn, result(100)])
+        self.assertFalse(out.usage(file, 0, "codex", "sid")["complete"])
+        file = self.write_log(first + [turn, dict(type="turn.failed", error=dict(message="network error"))])
+        self.assertFalse(out.usage(file, 0, "codex", "sid")["complete"])
+        self.assertIsNone(out.usage(file, 0, "codex", "sid")["tokens_total"])
+        file = self.write_log(first)
+        with file.open("a") as f:
+            f.write('{"partial":')
+        self.assertFalse(out.usage(file, 0, "codex", "sid")["complete"])
+
+    def test_review_reported_counts_and_negative_controls(self):
+        meta = dict(task_id=self.task, review_target_task_id=self.task, review_head="abc")
+        obj = dict(schema_version=1, target_task_id=self.task, head="abc", round=1,
+                   findings=dict(high=0, medium=1, low=0), finding_ids=[dict(id="F1", severity="medium")])
+        def text(o):
+            return 'REVIEW_OUTCOME: ' + json.dumps(o) + '\nVERDICT: merge after fixes\n'
+        good = text(obj)
+        data = out.review(meta, "run", good, good)
+        self.assertEqual(data["findings"]["medium"], 1)
+        self.assertEqual(data["provenance"], "reported_not_adjudicated")
+        self.assertIsNone(data["adjudication"])
+        zero = obj | dict(findings=dict(high=0, medium=0, low=0), finding_ids=[])
+        self.assertEqual(out.review(meta, "run", text(zero), text(zero))["findings"]["high"], 0)
+        bad = ["", "REVIEW_OUTCOME: {broken}\nVERDICT: merge", "REVIEW_OUTCOME: []\nVERDICT: merge", good + good,
+               text(obj | dict(target_task_id=str(uuid.uuid4()))), text(obj | dict(head="wrong")),
+               text(obj | dict(finding_ids=obj["finding_ids"] * 2)),
+               text(obj | dict(findings=dict(high=0, medium=True, low=0))),
+               text(obj | dict(findings=dict(high=-1, medium=1, low=0))), text(zero)]
+        for other in bad:
+            result = out.review(meta, "run", good, other)
+            self.assertIsNone(result["findings"], other)
+            self.assertTrue(result["diagnostics"])
+
+
+class Lifecycle(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.home = Path(os.environ["AGENT_HUB_HOME"])
+        cls.work = cls.home / "w"
+        cls.work.mkdir()
+        (cls.work / "brief.md").write_text("# Fixture task\n")
+        cls.stage = cls.home / "stage-a"
+        cls.roles = set()
+
+    @classmethod
+    def tearDownClass(cls):
+        for role in cls.roles:
+            subprocess.run([str(BIN / "agent"), "stop", role], capture_output=True)
+
+    def command(self, *args, env=None, ok=True):
+        r = subprocess.run([str(BIN / "agent"), *args], env=os.environ | (env or {}), capture_output=True, text=True)
+        if ok:
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        else:
+            self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def spawn(self, role, *flags, env=None):
+        self.roles.add(role)
+        return self.command("spawn", "--role", role, "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                            "--engine", "claude", "--model", "haiku", "--effort", "high", *flags, env=env)
+
+    def meta(self, role):
+        return json.loads((self.stage / "agents" / role / "meta.json").read_text())
+
+    def rows(self, role):
+        return out.read(out.path(self.stage, self.meta(role)["task_id"]))[0]
+
+    def wait(self, role):
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            meta = self.meta(role)
+            r = self.command("status", role)
+            if "ALIVE" not in r.stdout:
+                rows = self.rows(role)
+                if any(e["run_id"] == meta["runs"][-1]["id"] and e["type"] in ("run_ended", "run_observed_dead") for e in rows):
+                    return rows
+            time.sleep(0.1)
+        self.fail("fixture did not exit")
+
+    def test_a_spawn_resume_identity_and_auto_close(self):
+        r = self.spawn("explicit", "--task-class", "bounded", "--task-kind", "executor", "--change-class", "code",
+                       env=dict(FAKE_FINAL="DONE fixture"))
+        self.assertNotIn("--task-class omitted", r.stderr)
+        rows = self.wait("explicit")
+        meta = self.meta("explicit")
+        self.assertEqual(meta["task_class"], "bounded")
+        self.assertCountEqual([e["type"] for e in rows], ["task_started", "run_started", "run_identity", "run_ended"])
+        closure = out.project_closure(rows)
+        self.assertEqual(closure["source"], "auto_status")
+        self.assertEqual(closure["reported_status"], "DONE")
+        # Explicit snapshots survive a mutable effort change; resumes keep the task UUID.
+        mp = self.stage / "agents/explicit/meta.json"
+        meta["effort"] = "medium"
+        mp.write_text(json.dumps(meta))
+        self.command("send", "explicit", "continue", "--resume-reason", "review_fix", env=dict(FAKE_FINAL="BLOCKED fixture"))
+        rows = self.wait("explicit")
+        starts = [e for e in rows if e["type"] == "run_started"]
+        self.assertEqual([e["data"]["effort"] for e in starts], ["high", "medium"])
+        self.assertEqual(starts[-1]["data"]["resume_reason"], "review_fix")
+        self.assertEqual(self.meta("explicit")["task_id"], meta["task_id"])
+        self.assertFalse(any(e["type"] == "task_closed" for e in rows))
+        self.assertIsNone(out.project_closure(rows))
+        old_count = len(rows)
+        # A stale wrapper may neither end nor close the latest run (nor replay its unread queue).
+        self.command("exit-note", "explicit", "--code", "1", env=dict(AGENT_RUN_ID=starts[0]["run_id"], AGENT_TASK_ID=meta["task_id"]))
+        self.assertEqual(len(self.rows("explicit")), old_count)
+        self.command("exit-note", "explicit", "--code", "0")
+        self.assertEqual(len(self.rows("explicit")), old_count)
+        self.command("send", "explicit", "reply", "--resume-reason", "invented", ok=False)
+
+    def test_b_missing_class_reused_role_and_continuation(self):
+        r = self.spawn("reuse", env=dict(FAKE_FINAL="DONE fixture"))
+        self.assertEqual(r.stderr.count("--task-class omitted"), 1)
+        self.wait("reuse")
+        old = self.meta("reuse")["task_id"]
+        self.assertEqual(self.meta("reuse")["task_class"], "unknown")
+        self.spawn("reuse", "--task-class", "mechanical", "--continuation-of", old)
+        self.wait("reuse")
+        meta = self.meta("reuse")
+        self.assertNotEqual(meta["task_id"], old)
+        self.assertEqual(meta["continuation_of"], old)
+        self.assertTrue(out.path(self.stage, old).exists())
+        self.command("spawn", "--role", "bad", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                     "--model", "haiku", "--task-class", "invented", ok=False)
+        self.command("spawn", "--role", "bad", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                     "--model", "haiku", "--continuation-of", "../escape", ok=False)
+
+    def test_c_status_words_and_hub_override(self):
+        for word in ("DONE", "REVIEWED", "MERGED", "STOP", "EXIT", "BLOCKED", "QUESTION", "PROGRESS"):
+            role = "status-" + word.lower()
+            self.spawn(role, "--task-class", "mechanical", env=dict(FAKE_FINAL=word + " fixture"))
+            rows = self.wait(role)
+            closure = out.project_closure(rows)
+            self.assertFalse(any(e["type"] == "task_closed" for e in rows))
+            if word in ("BLOCKED", "QUESTION", "PROGRESS"):
+                self.assertIsNone(closure)
+            else:
+                self.assertEqual(closure["outcome"], "success" if word in ("DONE", "REVIEWED", "MERGED") else "failure")
+        file = self.work / "override.json"
+        data = dict(outcome="failure", closed_at=out.now(), evidence_path="fixture", artifact_ids=[],
+                    review_applicability="unknown", ci_applicability="unknown")
+        file.write_text(json.dumps(dict(type="task_closed", event_id="owner-override", data=data)))
+        self.command("outcome", "status-done", "--file", str(file))
+        latest = self.rows("status-done")[-1]
+        self.assertEqual(latest["source"], "hub")
+        self.assertEqual(out.project_closure(self.rows("status-done"))["outcome"], "failure")
+        self.assertNotIn("supersedes", latest)
+        count_before = len(self.rows("status-done"))
+        self.command("outcome", "--task-id", self.meta("status-done")["task_id"], "--file", str(file))
+        self.assertEqual(len(self.rows("status-done")), count_before)
+        file.write_text(json.dumps(dict(type="task_closed", event_id="second-override", data=data | dict(outcome="success"))))
+        self.command("outcome", "status-done", "--file", str(file))
+        self.assertEqual(self.rows("status-done")[-1]["supersedes"], "owner-override")
+        file.write_text(json.dumps(dict(type="task_closed", task_id=str(uuid.uuid4()), data=data)))
+        self.command("outcome", "status-done", "--file", str(file), ok=False)
+
+    def test_d_kill_recovery_and_init_failure(self):
+        self.spawn("kill", "--task-class", "mechanical", env=dict(FAKE_HOLD="60"))
+        meta = self.meta("kill")
+        os.killpg(meta["pid"], signal.SIGKILL)
+        rows = self.wait("kill")
+        dead = [e for e in rows if e["type"] == "run_observed_dead"]
+        self.assertEqual(len(dead), 1)
+        self.assertIsNone(dead[0]["data"]["exit_code"])
+        self.assertIsNone(dead[0]["data"]["ended_at"])
+        self.assertEqual(rows[-1]["data"]["reported_status"], "EXIT")
+        self.assertEqual(dead[0]["data"]["termination_reason"], "abnormal_exit")
+        self.command("status", "kill")
+        self.assertEqual(len(self.rows("kill")), len(rows))
+        self.command("send", "kill", "recover", "--resume-reason", "recovery", env=dict(FAKE_FINAL="DONE recovered"))
+        self.assertEqual(out.project_closure(self.wait("kill"))["outcome"], "success")
+        r = self.command("spawn", "--role", "initfail", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                         "--model", "haiku", "--task-class", "bounded", env=dict(FAKE_CLAUDE="die"), ok=False)
+        self.assertIn("exited", r.stderr)
+        archived = list((self.stage / "agents").glob("*initfail*"))
+        meta = json.loads((archived[0] / "meta.json").read_text())
+        rows = out.read(out.path(self.stage, meta["task_id"]))[0]
+        self.assertEqual(out.project_closure(rows)["outcome"], "failure")
+        self.assertFalse(any(e["type"] == "task_closed" for e in rows))
+        self.assertEqual([e for e in rows if e["type"] == "run_ended"][0]["data"]["termination_reason"], "init_failure")
+        started = time.monotonic()
+        self.command("send", "kill", "resume that fails before init", env=dict(FAKE_CLAUDE="die", AGENT_INIT_TIMEOUT="8"), ok=False)
+        self.assertLess(time.monotonic() - started, 7)  # child exit evidence avoids the lock/init-wait deadlock
+        rows = self.rows("kill")
+        self.assertEqual([e for e in rows if e["type"] == "run_ended"][-1]["data"]["termination_reason"], "init_failure")
+
+    def test_failed_pre_init_resume_journals_one_exit(self):
+        journal = hc.journal_path("stage-a", hc.now().date())
+        role = "failed-resume"
+        self.spawn(role, "--task-class", "bounded", env=dict(FAKE_FINAL="DONE fixture"))
+        self.assertEqual(out.project_closure(self.wait(role))["outcome"], "success")
+        meta = self.meta(role)
+        result = self.command("send", role, "resume that fails before init",
+                              env=dict(FAKE_CLAUDE="die", AGENT_INIT_TIMEOUT="8"), ok=False)
+        self.assertIn("exited with code 1", result.stderr)
+        self.command("status", role)
+        lines = [line for line in journal.read_text().splitlines() if f"[{role}] EXIT {role}:" in line]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("exited with code 1", lines[0])
+        self.assertEqual(self.meta(role)["runs"], meta["runs"])
+        self.command("send", role, "recover", env=dict(FAKE_FINAL="DONE resumed"))
+        self.assertEqual(out.project_closure(self.wait(role))["outcome"], "success")
+        self.assertEqual(journal.read_text().count(f"[{role}] EXIT {role}:"), 1)
+
+    def test_failed_unread_replay_journals_one_exit(self):
+        role = "failed-replay"
+        fixture = self.work / "fail-resume"
+        fixture.write_text('#!/bin/sh\nif [ "$1" = --resume ]; then export FAKE_CLAUDE=die; fi\n'
+                           + "exec " + shlex.quote(os.environ["CLAUDE_BIN"]) + ' "$@"\n')
+        fixture.chmod(0o755)
+        release = self.work / "replay.release"
+        gate = 'i=0; while [ ! -e ' + shlex.quote(str(release)) + ' ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i+1)); done'
+        self.spawn(role, "--task-class", "bounded", env=dict(CLAUDE_BIN=str(fixture), FAKE_SHELL=gate))
+        original_runs = self.meta(role)["runs"]
+        self.assertIn("agent alive", self.command("send", role, "queued fixture").stdout)
+        release.touch()
+        journal = hc.journal_path("stage-a", hc.now().date())
+        # Lock behind a completed failure so a delayed replay error cannot escape the count.
+        agent = load_agent()
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            lines = [line for line in journal.read_text().splitlines() if f"[{role}] EXIT {role}:" in line]
+            if lines:
+                with agent.AgentLock("stage-a", role):
+                    lines = [line for line in journal.read_text().splitlines() if f"[{role}] EXIT {role}:" in line]
+                    self.assertEqual(len(lines), 1, lines)
+                    self.assertIn("could not be replayed and stays queued", lines[0])
+                    self.assertEqual(self.meta(role)["runs"], original_runs)
+                    self.assertEqual(self.meta(role)["inbox_unread"][0]["msg"], "queued fixture")
+                break
+            time.sleep(0.1)
+        else:
+            self.fail("queued resume failure did not reach the journal")
+
+    def test_status_recovers_done_after_wrapper_loss(self):
+        self.spawn("wrapper-lost", "--task-class", "bounded", env=dict(FAKE_HOLD="60"))
+        meta = self.meta("wrapper-lost")
+        hc.journal_append("stage-a", meta["tag"], "DONE fixture")
+        journal = hc.journal_path("stage-a", hc.now().date())
+        log = Path(meta["dir"]) / "log.jsonl"
+        with log.open("a") as stream:
+            stream.write(json.dumps(dict(type="result", subtype="success", result="report saved")) + "\n")
+        os.killpg(meta["pid"], signal.SIGKILL)
+        rows = self.wait("wrapper-lost")
+        observed, = [e["data"] for e in rows if e["type"] == "run_observed_dead"]
+        self.assertEqual((observed["reported_status"], observed["termination_reason"]), ("DONE", "wrapper_lost"))
+        self.assertEqual(out.project_closure(rows)["outcome"], "success")
+        self.assertNotIn(b"[wrapper-lost] EXIT", journal.read_bytes())
+
+    def test_e_reviewer_link_and_legacy(self):
+        self.spawn("author", "--task-class", "bounded", env=dict(FAKE_FINAL="DONE author"))
+        self.wait("author")
+        task = self.meta("author")["task_id"]
+        author = reviewers.parse_author("author", "stage-a")
+        entry = reviewers.Entry(0, dict(name="test", kind="agent", model="opus", effort="high", engine="claude"))
+        line = reviewers.start_line(entry, "stage-a", author.engine, "code", author.task_id)
+        self.assertIn("--task-kind review --task-class judgement --change-class code", line)
+        self.assertIn("--review-target-task-id " + task, line)
+        self.assertNotIn("--review-target-task-id", reviewers.start_line(entry, "stage-a", "codex", "code"))
+        self.spawn("review-fixture", "--task-class", "judgement", "--task-kind", "review", "--review-target-task-id", task,
+                   env=dict(FAKE_FINAL="VERDICT: merge"))
+        rows = self.wait("review-fixture")
+        review = next(e for e in rows if e["type"] == "review_observed")
+        self.assertIsNone(review["data"]["findings"])
+        self.assertTrue(review["data"]["diagnostics"])
+        # A legacy agent remains readable and unmodified by both legacy readers.
+        meta = self.meta("author")
+        for key in ("task_id", "outcome_schema", "task_class", "task_kind", "change_class", "assignment_source"):
+            meta.pop(key, None)
+        file = self.stage / "agents/author/meta.json"
+        file.write_text(json.dumps(meta))
+        before = file.read_bytes()
+        self.command("status", "author")
+        r = subprocess.run([str(BIN / "retro"), "measure", "--out", str(self.work / "retro"), "--exclude-stage", "other"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(file.read_bytes(), before)
+
+    def test_review_correction_addresses_linked_and_unlinked_tasks(self):
+        self.spawn("review-target", "--task-class", "bounded", "--task-kind", "executor")
+        self.wait("review-target")
+        target = self.meta("review-target")["task_id"]
+        file = self.work / "review-correction.json"
+        for role, link in (("review-linked", target), ("review-no-link", None)):
+            flags = ("--review-target-task-id", link) if link else ()
+            self.spawn(role, "--task-class", "judgement", "--task-kind", "review", *flags,
+                       env=dict(FAKE_FINAL="VERDICT: merge"))
+            rows = self.wait(role)
+            original, = [e for e in rows if e["type"] == "review_observed"]
+            self.assertIsNone(original["data"]["findings"])
+            reviewer = original["task_id"]
+            correction = dict(type="review_observed", supersedes=original["event_id"], reason="verified report",
+                              run_id=original["run_id"], data=original["data"] | dict(
+                                  head="abc", round=1, verdict="approve", findings=dict(high=0, medium=0, low=0),
+                                  finding_ids=[], diagnostics=[]))
+            (self.stage / "agents" / role / "meta.json").rename(self.stage / "agents" / role / "archived-meta.json")
+            # A canonical task UUID can still address the review after its metadata is gone.
+            file.write_text(json.dumps(correction | dict(data=correction["data"] | dict(target_task_id=reviewer))))
+            rejected = self.command("outcome", "--task-id", reviewer, "--file", str(file), ok=False)
+            self.assertIn("target_task_id mismatch", rejected.stderr)
+            if link:
+                file.write_text(json.dumps(correction | dict(data=correction["data"] | dict(target_task_id=None))))
+                rejected = self.command("outcome", "--task-id", reviewer, "--file", str(file), ok=False)
+                self.assertIn("target_task_id mismatch", rejected.stderr)
+            file.write_text(json.dumps(correction))
+            self.command("outcome", "--task-id", reviewer, "--file", str(file))
+            fixed = out.read(out.path(self.stage, reviewer))[0][-1]
+            self.assertEqual((fixed["supersedes"], fixed["data"]["target_task_id"]), (original["event_id"], link))
+            self.assertEqual(fixed["data"]["findings"], dict(high=0, medium=0, low=0))
+        # An external reviewer can still import verified findings on the executor task.
+        external = correction["data"] | dict(target_task_id=target, reviewer_task_id=None, reviewer_run_id=None)
+        file.write_text(json.dumps(dict(type="review_observed", data=external)))
+        self.command("outcome", "review-target", "--file", str(file))
+
+    def test_limits_and_journal_only_status(self):
+        extra = dict(is_error=True, subtype="error_during_execution", result="You've hit your usage limit")
+        self.spawn("limited", "--task-class", "bounded", env=dict(FAKE_FINAL="DONE old text", FAKE_CLAUDE_RESULT_EXTRA=json.dumps(extra)))
+        rows = self.wait("limited")
+        self.assertIsNone(out.project_closure(rows))
+        self.assertEqual(next(e for e in rows if e["type"] == "run_ended")["data"]["termination_reason"], "limit")
+        self.spawn("journalonly", "--task-class", "bounded", env=dict(FAKE_FINAL="report written", FAKE_SHELL='"$HUB_BIN/jlog" "DONE fixture report"'))
+        rows = self.wait("journalonly")
+        self.assertEqual(out.project_closure(rows)["reported_status"], "DONE")
+        # An explicit executor kind wins over a review-looking role name.
+        self.spawn("review-executor", "--task-class", "bounded", "--task-kind", "executor", env=dict(FAKE_FINAL="report written"))
+        self.assertIsNone(out.project_closure(self.wait("review-executor")))
+
+    def test_f03_expected_applicability_and_late_artifact(self):
+        self.spawn("applicability", "--task-class", "bounded", "--review-applicability", "required", "--ci-applicability", "not_required",
+                   env=dict(FAKE_FINAL="DONE fixture"))
+        rows = self.wait("applicability")
+        self.assertEqual(rows[0]["data"]["review_applicability"], "required")
+        self.assertEqual(rows[0]["data"]["ci_applicability"], "not_required")
+        before = out.project_closure(rows)
+        file = self.work / "artifact.json"
+        target = self.meta("applicability")["task_id"]
+        file.write_text(json.dumps(dict(type="artifact_observed", data=dict(target_task_id=target, artifact_ids=["fixture:pr:1"],
+                                                                           review_applicability="required", ci_applicability="not_required"))))
+        self.command("outcome", "applicability", "--file", str(file))
+        self.assertEqual(out.project_closure(self.rows("applicability")), before)
+        file.write_text(json.dumps(dict(type="artifact_observed", data=dict(target_task_id=str(uuid.uuid4()), artifact_ids=["fixture:pr:1"],
+                                                                           review_applicability="required", ci_applicability="not_required"))))
+        self.command("outcome", "applicability", "--file", str(file), ok=False)
+        self.spawn("applicability-unknown", "--task-class", "bounded")
+        self.wait("applicability-unknown")
+        self.assertEqual(self.rows("applicability-unknown")[0]["data"]["ci_applicability"], "unknown")
+
+    def test_f04_current_run_status_and_blocked_reviewer(self):
+        agent = load_agent()
+        stamp = hc.now()
+        file = hc.journal_path("stage-a", stamp.date())
+        hc.journal_append("stage-a", "same-minute", "DONE old run")
+        run = dict(at=stamp.isoformat(), journal_day=stamp.date().isoformat(), journal_offset=file.stat().st_size)
+        self.assertIsNone(agent.reported_status("stage-a", dict(tag="same-minute"), run, "neutral answer"))
+        hc.journal_append("stage-a", "same-minute", "DONE new run")
+        self.assertEqual(agent.reported_status("stage-a", dict(tag="same-minute"), run, "neutral answer"), "DONE")
+        damaged = self.work / "damaged-journal.md"
+        damaged.write_bytes(file.read_bytes() + b"unrelated malformed line \xff\n")
+        with patch.object(hc, "journal_path", return_value=damaged):
+            self.assertEqual(agent.reported_status("stage-a", dict(tag="same-minute"), run, "neutral answer"), "DONE")
+        self.spawn("review-blocked", "--task-class", "judgement", "--task-kind", "review", env=dict(FAKE_FINAL="BLOCKED missing evidence"))
+        rows = self.wait("review-blocked")
+        self.assertIsNone(out.project_closure(rows))
+        self.assertEqual(next(e for e in rows if e["type"] == "run_ended")["data"]["reported_status"], "BLOCKED")
+        journal = file.read_text()
+        self.assertIn("[review-blocked] BLOCKED review-blocked", journal)
+        self.assertNotIn("[review-blocked] REVIEWED", journal)
+
+    def test_f05_active_stop_and_hub_precedence(self):
+        self.spawn("stop-active", "--task-class", "mechanical", env=dict(FAKE_HOLD="60"))
+        self.assertIsNone(out.project_closure(self.rows("stop-active")))
+        self.command("stop", "stop-active")
+        closure = out.project_closure(self.rows("stop-active"))
+        self.assertEqual((closure["outcome"], closure["reported_status"]), ("failure", "STOP"))
+        self.spawn("stop-overridden", "--task-class", "mechanical", env=dict(FAKE_HOLD="60"))
+        file = self.work / "cancel.json"
+        file.write_text(json.dumps(dict(type="task_closed", data=dict(outcome="cancelled", closed_at=out.now(),
+                             evidence_path="fixture", artifact_ids=[], review_applicability="unknown", ci_applicability="unknown"))))
+        self.command("outcome", "stop-overridden", "--file", str(file))
+        self.command("stop", "stop-overridden")
+        closure = out.project_closure(self.rows("stop-overridden"))
+        self.assertEqual((closure["outcome"], closure["source"]), ("cancelled", "hub"))
+
+    def test_f06_repository_key_across_worktrees(self):
+        repo = self.work / "repo"
+        linked = self.work / "linked"
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", "fixture-linked", str(linked)], check=True, capture_output=True)
+        self.assertEqual(out.repository_key(repo), out.repository_key(linked))
+        self.assertIsNotNone(out.repository_key(repo))
+        self.assertIsNone(out.repository_key(self.work))
+        entry = reviewers.Entry(0, dict(name="git-target", kind="agent", model="gpt-fixture",
+                                         effort="medium", engine="codex"))
+        line = reviewers.start_line(entry, "stage-a", "claude", "code")
+        argv = [str(linked) if arg == "<REPO>" else str(self.work / "brief.md") if arg == "<BRIEF>" else arg
+                for arg in shlex.split(line)[1:]]
+        self.roles.add("review-git-target")
+        self.command(*argv)
+        self.wait("review-git-target")
+        self.assertEqual(self.rows("review-git-target")[0]["data"]["repository_key"], out.repository_key(repo))
+        target_index = argv.index("--target-repo")
+        del argv[target_index:target_index + 2]
+        argv[argv.index("--role") + 1] = "repo-target"
+        self.roles.add("repo-target")
+        self.command(*argv)
+        self.wait("repo-target")
+        self.assertIsNone(self.rows("repo-target")[0]["data"]["repository_key"])
+
+    def test_f07_terminal_projection_survives_missing_second_write(self):
+        rows = self.rows("status-done")
+        automatic = [e for e in rows if e["type"] != "task_closed"]
+        before = json.dumps(automatic)
+        self.assertEqual(out.project_closure(automatic)["outcome"], "success")
+        self.assertEqual(json.dumps(automatic), before)  # the projection never repairs/writes evidence
+        next_run = dict(automatic[1], run_id="new-run", event_id="new-run:start")
+        self.assertIsNone(out.project_closure(automatic + [next_run]))
+        neutral = [dict(e, data=e["data"] | dict(reported_status=None)) if e["type"] == "run_ended" else e for e in automatic]
+        self.assertIsNone(out.project_closure(neutral))
+
+    def test_f10_helper_links_and_accounting_boundary(self):
+        parent = self.meta("status-done")["task_id"]
+        self.spawn("helper", "--task-class", "mechanical", "--parent-task-id", parent, "--usage-in-parent", "excluded", "--usage-boundary", "own_only")
+        self.wait("helper")
+        data = self.rows("helper")[0]["data"]
+        self.assertEqual((data["parent_task_id"], data["usage_in_parent"], data["usage_boundary"]), (parent, "excluded", "own_only"))
+        self.assertEqual(self.rows("status-done")[0]["data"]["usage_boundary"], "unknown")
+        self.command("spawn", "--role", "bad-helper", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                     "--model", "haiku", "--usage-in-parent", "maybe", ok=False)
+
+    def test_f11_unlinked_review_keeps_reported_findings(self):
+        obj = dict(schema_version=1, target_task_id=None, head="abc", round=1, findings=dict(high=2, medium=0, low=0),
+                   finding_ids=[dict(id="F1", severity="high"), dict(id="F2", severity="high")])
+        final = "REVIEW_OUTCOME: " + json.dumps(obj) + "\nVERDICT: changes requested"
+        report = self.stage / "coordinator/work/unlinked-REPORT.md"
+        report.write_text(final)
+        self.spawn("unlinked", "--task-class", "judgement", "--task-kind", "review", "--review-head", "abc", env=dict(FAKE_FINAL=final))
+        rows = self.wait("unlinked")
+        observed = next(e for e in rows if e["type"] == "review_observed")
+        self.assertEqual(observed["data"]["findings"]["high"], 2)
+        self.assertIsNone(observed["data"]["target_task_id"])
+        self.assertEqual(out.project_closure(rows)["outcome"], "success")
+        bad = out.review(dict(task_id=self.meta("unlinked")["task_id"], review_head="different"), "run", final, final)
+        self.assertIsNone(bad["findings"])
+        self.assertTrue(bad["diagnostics"])
+
+    def test_queued_resume_reason_is_preserved_without_guessing(self):
+        for mixed in (False, True):
+            role = "queued-mixed" if mixed else "queued-labelled"
+            release = self.work / (role + ".release")
+            gate = 'i=0; while [ ! -e ' + shlex.quote(str(release)) + ' ] && [ "$i" -lt 200 ]; do sleep 0.1; i=$((i+1)); done'
+            self.spawn(role, "--task-class", "bounded", env=dict(FAKE_SHELL=gate, FAKE_FINAL="DONE queued fixture"))
+            self.assertIn("agent alive", self.command("send", role, "repair", "--resume-reason", "ci_fix").stdout)
+            if mixed:
+                self.command("send", role, "unlabelled reply")
+            release.touch()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                rows = self.rows(role)
+                starts = [e for e in rows if e["type"] == "run_started"]
+                if len(starts) == 2 and any(e["type"] == "run_ended" and e["run_id"] == starts[-1]["run_id"] for e in rows):
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("queued fixture did not resume and finish")
+            self.assertEqual(starts[-1]["data"]["resume_reason"], None if mixed else "ci_fix")
+
+    def test_spawn_exit_cannot_beat_metadata_registration(self):
+        # Delay the real post-Popen metadata write, letting the actual wrapper try to finish first.
+        script = """
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader('delayed_spawn', sys.argv[1])
+spec = importlib.util.spec_from_loader(loader.name, loader)
+agent = importlib.util.module_from_spec(spec)
+loader.exec_module(agent)
+original = agent.save_meta
+def delayed(stage, role, meta):
+    if meta.get('runs'):
+        time.sleep(0.5)
+    return original(stage, role, meta)
+agent.save_meta = delayed
+sys.exit(agent.main(sys.argv[2:]))
+"""
+        self.roles.add("registration-race")
+        result = subprocess.run([sys.executable, "-c", script, str(BIN / "agent"), "spawn", "--role", "registration-race",
+                                 "--cwd", str(self.work), "--brief", str(self.work / "brief.md"), "--model", "haiku",
+                                 "--task-class", "bounded"], env=os.environ | dict(FAKE_FINAL="DONE fast fixture"), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        rows = self.wait("registration-race")
+        self.assertFalse(any(e["type"] == "run_observed_dead" for e in rows))
+        self.assertEqual(out.project_closure(rows)["outcome"], "success")
+
+    def test_fixture_export(self):
+        extra = dict(usage=dict(input_tokens=62, output_tokens=15783, cache_creation_input_tokens=135901,
+                               cache_read_input_tokens=2982021), num_turns=30, total_cost_usd=1.9995202)
+        self.spawn("claude-example", "--task-class", "judgement", "--task-kind", "executor", "--change-class", "code",
+                   env=dict(FAKE_FINAL="DONE fixture", FAKE_CLAUDE_RESULT_EXTRA=json.dumps(extra)))
+        rows = self.wait("claude-example")
+        usage = next(e for e in rows if e["type"] == "run_ended")["data"]["usage"]
+        self.assertEqual(usage["tokens_total"], 3133767)
+        self.assertEqual(usage["turns"], 30)
+        self.assertEqual(usage["cost_usd"], 1.9995202)
+        if os.environ.get("MODEL_OUTCOME_EXAMPLES"):
+            dest = Path(os.environ["MODEL_OUTCOME_EXAMPLES"])
+            dest.mkdir(parents=True, exist_ok=True)
+            for role in ("claude-example", "codex", "status-exit"):
+                dest.joinpath(role + ".jsonl").write_bytes(out.path(self.stage, self.meta(role)["task_id"]).read_bytes())
+
+    def test_f_codex_real_launch_and_resume(self):
+        self.roles.add("codex")
+        self.command("spawn", "--role", "codex", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                     "--engine", "codex", "--model", "gpt-6.1-sol", "--effort", "medium", "--task-class", "bounded",
+                     env=dict(FAKE_CODEX_FINAL="DONE fixture"))
+        rows = self.wait("codex")
+        run = next(e for e in rows if e["type"] == "run_ended")
+        self.assertEqual(run["data"]["usage"]["tokens_total"], 130)
+        self.assertEqual(run["data"]["usage"]["turns"], 1)
+        self.assertIsNone(run["data"]["usage"]["cost_usd"])
+        self.command("send", "codex", "reply", env=dict(FAKE_CODEX_FINAL="DONE fixture"))
+        rows = self.wait("codex")
+        runs = [e for e in rows if e["type"] == "run_ended"]
+        self.assertEqual(runs[-1]["data"]["usage"]["tokens_total"], 0)  # same cumulative fixture totals
+        self.assertEqual(len([e for e in rows if e["type"] == "task_started"]), 1)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

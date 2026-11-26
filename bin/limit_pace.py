@@ -536,7 +536,7 @@ def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: di
     p = paces.get(engine, {}).get("7d") or Pace(engine, "7d")
     q = paces.get(other(engine), {}).get("7d") or Pace(other(engine), "7d")
     adv.pace = p
-    cls = task_class or classify(model)
+    cls = (None if task_class == "unknown" else task_class) or classify(model)
     five = paces.get(engine, {}).get("5h")
     if five is not None and five.level == "exhaust":
         adv.lines.append(describe(five) + "; consider this window when choosing the engine for this launch")

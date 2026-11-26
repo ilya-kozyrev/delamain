@@ -175,6 +175,8 @@ REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE
 
 
 def is_review_role(meta):
+    if meta.get("task_kind") in ("executor", "review"):
+        return meta["task_kind"] == "review"
     return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
 
 

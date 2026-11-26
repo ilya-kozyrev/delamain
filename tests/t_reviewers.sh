@@ -14,7 +14,7 @@ jfield(){ python3 -c 'import json,sys; d=json.load(sys.stdin); print(eval(sys.ar
 # ---- built-in default: one `agent` entry
 rv > $P/d.out 2> $P/d.err; check $? 0 "default: exit 0"
 grep -q '^reviewer: agent (agent opus/high)$' $P/d.out; check $? 0 "default: the built-in agent reviewer, opus/high"
-grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>$' $P/d.out; check $? 0 "default: the full agent spawn line with placeholders"
+grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --task-kind review --task-class judgement --change-class unknown --brief <BRIEF>$' $P/d.out; check $? 0 "default: the full agent spawn line with placeholders"
 grep -q -- '--worktree' $P/d.out; check $? 1 "negative: no --worktree (a reviewer only reads)"
 check "$(grep -vc 'author unknown' $P/d.err)" 0 "default: nothing on stderr but the unknown-author line"
 check "$(AGENT_HUB_REVIEW_MODEL=sonnet AGENT_HUB_REVIEW_EFFORT=xhigh rv | sed -n 's/^start: .*--model \([a-z]*\) --effort \([a-z]*\) .*/\1 \2/p')" "sonnet xhigh" "AGENT_HUB_REVIEW_MODEL / _EFFORT set the default agent reviewer"
@@ -207,7 +207,7 @@ for m in 'claude-x;ls' 'claude-x y' 'claude-$(id)' 'claude-`id`' 'claude-a|b' 'c
   check "$(grep -c 'entry 1 (probe): `model` must be' $P/m.err)-$(grep -E '^(start|reviewer):' $P/m.out | grep -c ';\|\$(\|`')" "1-0" "model $(printf '%q' "$m"): refused, never printed"
 done
 mk1(){ AGENT_HUB_REVIEWERS="$(mklist "$1" agent)" rv 2>/dev/null | sed -n 's/^start: //p'; }
-check "$(mk1 '{"model": "claude-opus-4-7[1m]", "effort": "xhigh"}')" "agent spawn --role review-probe --cwd <REPO> --model 'claude-opus-4-7[1m]' --effort xhigh --brief <BRIEF>" "a valid id with brackets is accepted and quoted (shlex.quote on every value)"
+check "$(mk1 '{"model": "claude-opus-4-7[1m]", "effort": "xhigh"}')" "agent spawn --role review-probe --cwd <REPO> --model 'claude-opus-4-7[1m]' --effort xhigh --task-kind review --task-class judgement --change-class unknown --brief <BRIEF>" "a valid id with brackets is accepted and quoted (shlex.quote on every value)"
 check "$(mk1 '{"model": "mine"}' | grep -c 'model mine')" 0 "an alias that is not in AGENT_HUB_MODEL_MAP is refused…"
 check "$(AGENT_HUB_MODEL_MAP='mine=claude-x-1' mk1 '{"model": "mine"}' | grep -c -- '--model mine ')" 1 "…and accepted when AGENT_HUB_MODEL_MAP names it"
 check "$(mk1 '{"effort": "high;ls"}' | grep -c 'probe')" 0 "an effort with shell syntax is refused"
@@ -292,7 +292,7 @@ rm -f $REPO/.agent-hub/config.json $R/config.json
 LONG=$(python3 -c 'print("x"*35 + "IGNORE" + "y"*80)')
 
 # ---- 1. "@" is allowed in a model id (Vertex: claude-sonnet-4-5@20250929)
-check "$(mk1 '{"model": "claude-sonnet-4-5@20250929"}')" "agent spawn --role review-probe --cwd <REPO> --model claude-sonnet-4-5@20250929 --effort high --brief <BRIEF>" "a Vertex model id (with @) is accepted by a reviewer entry"
+check "$(mk1 '{"model": "claude-sonnet-4-5@20250929"}')" "agent spawn --role review-probe --cwd <REPO> --model claude-sonnet-4-5@20250929 --effort high --task-kind review --task-class judgement --change-class unknown --brief <BRIEF>" "a Vertex model id (with @) is accepted by a reviewer entry"
 check "$(AGENT_HUB_REVIEW_MODEL=claude-sonnet-4-5@20250929 rv | grep -c -- '--model claude-sonnet-4-5@20250929 ')" 1 "…and by AGENT_HUB_REVIEW_MODEL"
 HUB_STAGE=stage-a $B/agent spawn --role vx --cwd $P/w --model claude-sonnet-4-5@20250929 --brief $P/w/nope.md > $P/vx.out 2>&1; check "$?-$(grep -c -- '--model:' $P/vx.out)" "2-0" "agent spawn takes it (it gets as far as the missing brief)"
 M100="{\"model\": \"claude-$(python3 -c 'print("a"*100)')\"}"; M101="{\"model\": \"claude-$(python3 -c 'print("a"*101)')\"}"
@@ -373,7 +373,7 @@ rm $REPO/.agent-hub/config.json
 # ---- --stage on every hub subcommand (reviewer and home had none), HUB_STAGE as the fallback
 rm -f $R/config.json
 rv --for code --stage web > $P/st1.out 2> $P/st1.err; check $? 0 "hub reviewer --for code --stage S is accepted"
-grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --stage web --brief <BRIEF>$' $P/st1.out; check $? 0 "…and the agent spawn line it prints carries --stage"
+grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --stage web --task-kind review --task-class judgement --change-class code --brief <BRIEF>$' $P/st1.out; check $? 0 "…and the agent spawn line it prints carries --stage"
 check "$(grep -vc 'author unknown' $P/st1.err)" 0 "…with nothing on stderr but the unknown-author line"
 rv --for code > $P/st2.out 2>&1; grep -q -- '--stage' $P/st2.out; check $? 1 "negative: without a stage the printed line is unchanged"
 check "$(HUB_STAGE=web2 rv | grep -c -- '--stage web2 ')" 1 "HUB_STAGE is the fallback"
@@ -391,11 +391,33 @@ grep -q 'starts stage web' $P/st6.out; check $? 0 "…the stage it names"
 # ---- a printed --engine is the reviewer policy's choice: the line carries --reason, so spawning it does not warn
 mkdir -p $P/w; printf '# Brief: r\n\nbody\n' > $P/w/b.md; echo '{"AGENT_HUB_ENGINE": "claude"}' > $R/config.json
 line=$(AGENT_HUB_REVIEWERS="$(mklist '{"engine": "codex", "model": "gpt-fixture"}' agent)" rv --author claude --for code --stage web 2>/dev/null | sed -n 's/^start: //p')
-case "$line" in *" --engine codex "*"--reason 'reviewer policy: claude author -> codex reviewer' --brief <BRIEF>") a=0;; *) a=1;; esac
+case "$line" in *" --engine codex "*"--reason 'reviewer policy: claude author -> codex reviewer' --task-kind review --task-class judgement --change-class code --brief <BRIEF>") a=0;; *) a=1;; esac
 check $a 0 "a Codex reviewer line for a Claude author carries --reason naming both engines"
-line=${line//<BRIEF>/$P/w/b.md}; mkdir -p $R/web/coordinator/work
+case "$line" in *" --target-repo <REPO> "*) a=0;; *) a=1;; esac
+check $a 0 "Codex reviewer: the hub work cwd has a separate Git target placeholder"
+line=${line//<REPO>/$P/w}; line=${line//<BRIEF>/$P/w/b.md}; mkdir -p $R/web/coordinator/work
 (eval "HUB_STAGE=web CODEX_BIN=$T/fake_codex.py AGENT_HUB_LIMIT_PACE=off AGENT_HUB_REASON_POLICY=refuse $B/$line --dry-run") > $P/pl.out 2> $P/pl.err
 check $? 0 "…and running it with --dry-run (policy refuse, ENGINE=claude) is not refused"
 check "$(grep -c 'differs' $P/pl.err)" 0 "…and running it (policy refuse, ENGINE=claude) says nothing about a differing engine"
+for cls in 'money/masking' 'code,risky' ' code' 'custom.class-2'; do
+    rv --author codex --for "$cls" --stage web > "$P/class.out" 2> "$P/class.err"
+    check $? 0 "reviewer emits an agent line for class '$cls'"
+    if [ "$cls" = 'custom.class-2' ]; then
+        expected=$cls; warnings=0
+    else
+        expected=unknown; warnings=1
+    fi
+    grep -q -- " --change-class $expected " "$P/class.out"
+    check $? 0 "class '$cls' is recorded as $expected"
+    check "$(grep -c 'recording change class unknown' "$P/class.err")" "$warnings" "class '$cls': warning count"
+    line=$(sed -n 's/^start: //p' "$P/class.out")
+    line=${line//<REPO>/$P/w}; line=${line//<BRIEF>/$P/w/b.md}
+    (eval "CLAUDE_BIN=$T/fake_claude.py AGENT_HUB_LIMIT_PACE=off $B/$line --dry-run") > "$P/class-spawn.out" 2>&1
+    check $? 0 "class '$cls': the emitted line can spawn in dry-run mode"
+done
+rv --author codex --stage web > "$P/class.out" 2> "$P/class.err"
+grep -q -- ' --change-class unknown ' "$P/class.out"
+check $? 0 "omitted --for records unknown"
+check "$(grep -c 'recording change class unknown' "$P/class.err")" 0 "omitted --for is silent"
 rm -f $R/config.json
 exit $fail
