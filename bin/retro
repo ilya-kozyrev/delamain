@@ -1181,8 +1181,8 @@ def output(audit, out, incumbents=None):
             record["baseline"] = prev.get("value")
             record["baseline_per_day"] = prev.get("per_day")
             record["baseline_source"] = str(base_path / "metrics.json") + ":" + name
-    write_json(out / "window.json", audit.win)
     model_outcomes, outcome_sections = retro_outcomes.measure(audit, out, base, read, write_json, csv_write, table, incumbents)
+    write_json(out / "window.json", audit.win)
     write_json(out / "metrics.json", dict(schema_version=1, window=audit.win, metrics=audit.metrics,
         outcome_schema_version=retro_outcomes.SCHEMA, model_outcomes=model_outcomes,
         price_fit=dict(unit="USD per million tokens; input/output/cache-read/cache-create", rates=audit.rates,

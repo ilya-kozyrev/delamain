@@ -51,7 +51,7 @@ def snapshot(audit, out, load_json, write_json):
         if frozen["window"] != identity or frozen["schema_version"] != SCHEMA:
             raise ValueError("frozen outcome inputs belong to a different window or schema; choose a new --out")
         return frozen
-    records, sources, warnings = [], [], []
+    records, sources, warnings, damaged = [], [], [], set()
     stage_dirs = set(audit.stages) | {p.parent for p in audit.home.glob("*/task-outcomes") if p.is_dir()}
     for stage in sorted(stage_dirs):
         if stage.name in audit.win["exclude_stages"]:
@@ -64,6 +64,7 @@ def snapshot(audit, out, load_json, write_json):
                 source = f"{file}:{number}"
                 if not line.endswith(b"\n"):
                     warnings.append(f"{source}: torn final line")
+                    damaged.add(file.stem)
                     continue
                 try:
                     ev = json.loads(line)
@@ -74,6 +75,7 @@ def snapshot(audit, out, load_json, write_json):
                         raise ValueError("task ID does not match filename")
                 except (ValueError, KeyError, TypeError, UnicodeError) as exc:
                     warnings.append(f"{source}: {exc}")
+                    damaged.add(file.stem)
                     continue
                 if stamp(ev["recorded_at"]) <= audit.until:
                     prefix.append(line)
@@ -104,7 +106,8 @@ def snapshot(audit, out, load_json, write_json):
                            review_applicability="unknown", ci_applicability="unknown",
                            turns=usage.get("turns"), turn_unit=usage.get("turn_unit"),
                            tokens=usage.get("tokens_total"), cost_usd=usage.get("cost_usd")))
-    frozen = dict(schema_version=SCHEMA, window=identity, sources=sources, records=records, legacy=legacy, warnings=warnings)
+    frozen = dict(schema_version=SCHEMA, window=identity, sources=sources, records=records, legacy=legacy,
+                  warnings=warnings, damaged=sorted(damaged))
     write_json(target, frozen)
     return frozen
 
@@ -185,8 +188,9 @@ def contract_usage(runs, helpers_complete):
     bases = {u.get("cost_basis") for u in counters}
     turn_unit = next(iter(units)) if len(units) == 1 else None
     cost_basis = "reported_claude_usd_delta" if bases == {"reported_claude_usd_delta"} else None
-    return dict(tokens=complete_sum(u.get("tokens_total") if u.get("complete") else None for u in counters)
-                if helpers_complete else None,
+    observed_tokens = complete_sum(u.get("tokens_total") if u.get("complete") else None for u in counters)
+    return dict(tokens=observed_tokens if helpers_complete else None,
+                observed_tokens=observed_tokens, usage_boundary_complete=helpers_complete,
                 turn_unit=turn_unit,
                 turns=complete_sum(u.get("turns") for u in counters) if turn_unit and helpers_complete else None,
                 cost_basis=cost_basis, cost_usd=complete_sum(u.get("cost_usd") for u in counters)
@@ -277,7 +281,7 @@ class Evidence:
         self.reviews = defaultdict(list)
         self.children = defaultdict(list)
         self.starts = {}
-        self.ambiguous = set()
+        self.ambiguous = set(frozen.get("damaged", []))
         self.warnings = list(frozen["warnings"])
         seen = {}
         for entry in frozen["records"]:
@@ -513,6 +517,7 @@ def incumbent_assignments(path):
 def trials(evidence, chains, since, until, incumbents):
     groups = defaultdict(list)
     excluded = Counter()
+    incomplete_strata = Counter()
     for root, members in chains.items():
         when = stamp(evidence.starts[root]["occurred_at"])
         if not since <= when < until:
@@ -525,18 +530,21 @@ def trials(evidence, chains, since, until, incumbents):
         if row["task_kind"] != "executor" or row["helper"]:
             excluded["review_or_helper"] += 1
             continue
-        if (not row["repository_key"] or not row["explicit"] or row["task_class"] == "unknown"
-                or row["change_class"] == "unknown" or row["ambiguous"]):
-            excluded["unknown_or_ambiguous_assignment"] += 1
-            continue
-        model = (row["assigned_engine"], row["assigned_model"], row["assigned_effort"])
-        if "unknown" in model or model[1].startswith("requested:"):
-            excluded["unresolved_execution_identity"] += 1
-            continue
         if horizon > until:
             excluded["insufficient_followup"] += 1
             continue
-        key = (row["repository_key"], row["task_class"], row["change_class"], *model)
+        stratum = tuple(row[k] for k in ("repository_key", "task_class", "change_class"))
+        if (not row["repository_key"] or not row["explicit"] or row["task_class"] == "unknown"
+                or row["change_class"] == "unknown"):
+            excluded["unknown_or_ambiguous_assignment"] += 1
+            continue
+        model = (row["assigned_engine"], row["assigned_model"], row["assigned_effort"])
+        if row["ambiguous"] or "unknown" in model or model[1].startswith("requested:"):
+            # An unidentifiable assignment could be an unsuccessful candidate or incumbent.
+            # Keep it visible and block comparisons in this stratum.
+            incomplete_strata[stratum] += 1
+            excluded["unresolved_execution_identity"] += 1
+        key = stratum + model
         groups[key].append(row)
     proposals, assignments = [], []
     for key, rr in sorted(groups.items()):
@@ -545,12 +553,15 @@ def trials(evidence, chains, since, until, incumbents):
         row = dict(zip(INCUMBENT_FIELDS, key))
         row.update(id=key_id("assignment", key), full=full,
                    direct=comparison_summary(direct) if direct else None,
-                   excluded_mixed=len(rr) - len(direct))
+                   excluded_mixed=len(rr) - len(direct),
+                   unresolved_in_stratum=incomplete_strata[key[:3]],
+                   trial_status="incumbent" if incumbents.get(key[:3]) == key[3:]
+                   else "insufficient evidence (n/coverage)")
         assignments.append(row)
     for b in assignments:
         key = tuple(b[k] for k in INCUMBENT_FIELDS)
         incumbent = incumbents.get(key[:3])
-        if not incumbent or key[3:] == incumbent:
+        if not incumbent or key[3:] == incumbent or b["unresolved_in_stratum"]:
             continue
         a = next((row for row in assignments if row["id"] == key_id("assignment", key[:3] + incumbent)), None)
         if not a or not a["direct"] or not b["direct"]:
@@ -563,6 +574,7 @@ def trials(evidence, chains, since, until, incumbents):
         coherent = any(x is not None and y is not None and max(x, y) <= -0.20
                        for x, y in ((direct_tokens, tokens), (direct_cost, cost)))
         if direct_gate and full_gate and coherent:
+            b["trial_status"] = "eligible owner trial"
             proposals.append(dict(incumbent=a["id"], candidate=b["id"], token_change=tokens, cost_change=cost,
                                   direct_token_change=direct_tokens, direct_cost_change=direct_cost,
                                   conflict=tokens is not None and cost is not None and tokens * cost < 0))
@@ -648,12 +660,12 @@ def render(rows, assignments, proposals, excluded, warnings, window, table, incu
         "Mixed contracts retain their full spend and outcomes in the original-assignment cohort.",
         f"Incumbent source {incumbent_source or 'unavailable'}. Exclusions {json.dumps(excluded, sort_keys=True)}.",
         table(["row", "repository", "class", "change", "assignment", "n", "closed", "pending", "cancelled",
-               "handoffs", "mixed", "success bounds", "review coverage", "CI coverage"],
+               "handoffs", "mixed", "success bounds", "review coverage", "CI coverage", "trial"],
               [[r["id"], r["repository_key"], r["task_class"], r["change_class"],
                 "/".join(r[k] for k in ("engine", "model", "effort")), r["full"]["n"], r["full"]["closed"],
                 r["full"]["pending"], r["full"]["cancelled"], r["full"]["handoffs"], r["excluded_mixed"],
                 r["full"]["success_bounds"], rate(r["full"]["review_observed"], r["full"]["review_applicable"], True),
-                rate(r["full"]["ci_known"], r["full"]["ci_applicable"], True)] for r in assignments]),
+                rate(r["full"]["ci_known"], r["full"]["ci_applicable"], True), r["trial_status"]] for r in assignments]),
     ]
     if proposals:
         indexed = {r["id"]: r for r in assignments}
