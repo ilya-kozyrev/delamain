@@ -225,7 +225,7 @@ def usage(file, offset, engine, session_id=None):
         previous = [e for e in before[last_init + 1:] if e.get("type") == "turn.completed"]
         previous_sid = next((e.get("thread_id") for e in reversed(before) if e.get("type") == "thread.started"), None)
         current_sid = next((e.get("thread_id") for e in events if e.get("type") == "thread.started"), session_id)
-        baseline = {}
+        baseline = {} if any(e.get("type") == "thread.started" for e in events) else None
         if offset:
             if previous_sid == current_sid:
                 baseline = previous[-1].get("usage") if previous else None
@@ -247,7 +247,8 @@ def usage(file, offset, engine, session_id=None):
             first = 0 if baseline == {} else count((baseline or {}).get(key))
             if monotonic and last is not None and first is not None and last >= first and intact and prior_intact:
                 result[field] = last - first
-        result["turns"] = sum(e.get("type") == "turn.started" for e in events) if intact and events else None
+        turns = sum(e.get("type") == "turn.started" for e in events)
+        result["turns"] = turns if intact and turns else None
         fields = [result[k] for k in ("input_tokens", "output_tokens")]
     result["complete"] = intact and prior_intact and all(x is not None for x in fields) and result["turns"] is not None
     if result["complete"]:
