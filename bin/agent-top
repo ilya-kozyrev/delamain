@@ -1178,7 +1178,7 @@ class Collector:
             "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
             "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
             "model_id": model_id,
-            "ctx_window": ls.ctx_window(model_id),
+            "ctx_window": ls.ctx_window(model_id or meta.get("model")),
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": meta.get("pid"), "session_id": meta.get("session_id"),

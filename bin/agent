@@ -738,7 +738,7 @@ def claude_argv(meta: dict, resume: bool) -> list:
 
 def model_name(meta: dict) -> str:
     """The model of an agent: the id its run reported, else the one requested (`sonnet`, or a pinned id)."""
-    return model_catalog.recorded_model(meta) or "CLI default"
+    return model_catalog.recorded_model(meta) or meta.get("model") or "CLI default"
 
 
 def model_text(meta: dict) -> str:

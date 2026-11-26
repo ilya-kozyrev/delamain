@@ -90,7 +90,7 @@ CODEX_HOME="$missing" "$B/hub" reviewer --author claude/opus >"$out" 2>"$err"
 check $? 1 'a family reviewer cannot be chosen with no readable catalog'
 grep -Fq "$missing/models_cache.json is missing or unreadable" "$err"; check $? 0 'reviewer refusal names the catalog'
 
-printf 'Use `gpt-6.1-sol` for routine work. Use gpt-6-astra. Example: gpt-6.1-sol-preview.\n' > "$AGENT_HUB_HOME/$HUB_STAGE/hub-rules.md"
+printf 'Use `gpt-6.1-sol` for routine work. Use codex/gpt-6-astra. Example: gpt-6.1-sol-preview.\n' > "$AGENT_HUB_HOME/$HUB_STAGE/hub-rules.md"
 python3 - "$CODEX_HOME/models_cache.json" <<'PY'
 import json
 from pathlib import Path

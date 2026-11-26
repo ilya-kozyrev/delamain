@@ -13,7 +13,7 @@ import hubcore as hc
 FAMILIES = ("luna", "terra", "sol", "astra")
 _ID = r"gpt-(\d+)(?:\.(\d+))?-(" + "|".join(FAMILIES) + r")"
 _MODEL_ID = re.compile(_ID)
-_MENTION = re.compile(rf"(?<![\w./-]){_ID}(?![\w/-]|\.[\w])")
+_MENTION = re.compile(rf"(?:(?<=codex/)|(?<![\w./-])){_ID}(?![\w/-]|\.[\w])")
 
 
 def model_version(model):
@@ -39,7 +39,7 @@ def mentioned_pins(text):
 
 def recorded_model(meta, reported=None):
     """Display the run's recorded identity without applying today's catalog to past launches."""
-    return meta.get("resolved_model") or reported or meta.get("model")
+    return meta.get("resolved_model") or reported
 
 
 def codex_home():
