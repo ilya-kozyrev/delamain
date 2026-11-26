@@ -8,6 +8,12 @@
   `AGENT_HUB_MODEL_PINS`. Start and takeover digests also warn about stale pins and catalogs older than seven days.
   Detached successors inherit the requested family, and thread resumes warn when their recorded model is stale.
   The built-in reviewer falls back to Claude with a reason when Codex or a listed Astra is unavailable.
+- Capture per-task outcomes with stable UUIDs, explicit difficulty/kind/change class and append-only run evidence
+  across spawn, resume, exit and kill recovery. Automatic status closure can be overridden by `agent outcome`;
+  BLOCKED/QUESTION and usage limits remain open. Claude invocation usage/session cost deltas and Codex cumulative
+  usage deltas retain nullable counters and engine-specific turn units (Codex cost stays unknown). Reviewer start
+  lines link author tasks and structured `REVIEW_OUTCOME` findings; hub adjudication is optional. CI first-attempt
+  evidence and retro model comparisons remain planned for the second implementation PR.
 
 ## 1.0.28 — 2026-11-22
 

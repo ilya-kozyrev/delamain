@@ -169,12 +169,13 @@ More: `references/launch-and-executors.md`.
 - Before each launch, use [limit-pace advice](../../docs/reference.md#limit-pace) for its engine, model and effort;
   keep engine locks (ask about this launch only; default: run locked engine), and keep ready work moving.
 - Work that pushes or waits is a headless agent:
-  `agent spawn --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`;
+  `agent spawn --role R --cwd DIR --task-class CLASS --task-kind executor --change-class code [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`;
   the role says what the work is (`mainmerge-fix`, never `wp23`). It survives the hub's handoff and any hub can talk to it. Its tag is `hub-<N>-<role>` (a sub-tag `hub-<N>/…` is
   filtered out of your own `jwait`). An abnormal end leaves `EXIT <role>: …` in the journal, a normal one without a
   status word `ENDED <role>: …` (`REVIEWED …` for a review role).
 - `agent status [R]`; `agent send R "…"` — into its inbox, or resumes the session if the process is gone; `agent stop R`.
   An agent's question arrives as `@hub QUESTION …`; answer with `agent send`.
+- Pass `--task-class mechanical|bounded|judgement` on every spawn from the brief; taxonomy and auto outcomes: [task outcomes](../../docs/reference.md#task-outcomes).
 - Executors may use sub-agents too: digests, bounded worktree changes.
 - Why is code here: `hub why <sha|file:line>` — its agent run, brief, report, journal.
 - Every agent that writes code gets `--worktree [BRANCH]` (two agents in one checkout overwrite each other's files);

@@ -315,3 +315,21 @@ most twice (a real review needed one or two resumes).
 
 **Cost.** One review of a real change took 6–12 minutes and 6–13 % of a Pro week's Argon quota, so roughly eight to fifteen
 reviews a week: a second opinion for changes where a miss is expensive, not a review of every change.
+
+## Structured outcome evidence
+
+Reviewer start lines pass `--task-kind review --task-class judgement` and `--change-class` from `--for` (unknown
+when absent). A role-based `--author` links its `task_id` via `--review-target-task-id`; an engine-only author stays
+unlinked. Fill the reviewed head and target in [the brief](../templates/brief-review.md); optionally pass
+`--review-head SHA` for an expected-head check. Immediately before VERDICT in both full report and final answer:
+
+```text
+REVIEW_OUTCOME: {"schema_version":1,"target_task_id":"<UUID>","head":"<SHA>","round":1,"findings":{"high":0,"medium":1,"low":0},"finding_ids":[{"id":"F1","severity":"medium"}]}
+VERDICT: merge after fixes
+```
+
+Use null for an unlinked target. IDs must be distinct; severity counts must match their entries, and the copies must
+agree. Rechecks retain IDs; new defects get new IDs. Missing/malformed evidence stays null with diagnostics.
+V1 records reviewer-reported findings; per-finding hub adjudication is optional. Retro PR 2 labels absent adjudication
+"reported, not adjudicated". A rejecting verdict does not mean the reviewer failed its task. Full schema and hub
+imports: [task outcomes](reference.md#task-outcomes).

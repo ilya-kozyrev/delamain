@@ -58,7 +58,7 @@ flowchart LR
 
 | Tool | What it does |
 |---|---|
-| `agent spawn / status / send / stop` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
+| `agent spawn / status / send / stop / outcome` | Start a detached Claude Code or Codex agent from a brief; check it; message it (inbox while alive, resume after exit); stop it. |
 | `agent worktrees` | List every worktree of a repository — who made it, in use or not, dirty, on a remote, merged (squash merges through `gh`), age — and, with `--prune`, remove the finished ones. Read-only by default; never removes unpushed or uncommitted work. [Details](#agent-worktrees-the-ledger-of-a-repositorys-worktrees). |
 | `agent desktop-idle` | List the Claude Desktop sessions idle for `--idle-for` (default 12 h) that still hold their `claude` and MCP processes, with the memory each holds, and which are safe to archive (clean worktree, nothing unpushed, no open PR/MR). Read-only; `--ids` prints the ids to archive. |
 | `jlog` | Append `- HH:MM [tag] text` to today's stage journal. In another stage's journal the derived tag is stage-qualified (`[core-c-hub-30]`); the writer's `jwait --tag hub-30` on its own stage (core-c) also wakes on the answer `@core-c-hub-30`. |
@@ -113,7 +113,7 @@ export HUB_STAGE=csv-export                   # one directory per stream of work
 hub start --stage csv-export --goal "Export the table as CSV" --session self
 
 # 2. write a brief (template: templates/brief-executor-template.md) and start an agent in its own worktree
-agent spawn --engine claude --role builder --cwd ~/code/webapp --model sonnet --worktree --brief ./brief-builder.md
+agent spawn --engine claude --role builder --cwd ~/code/webapp --model sonnet --task-class bounded --task-kind executor --change-class code --worktree --brief ./brief-builder.md
 #    its title (agent-top, the roles list) is "builder — <the brief's first heading> (stage-a)"; an effort or a model
 #    above the default needs --reason "…" (AGENT_HUB_EFFORT_DEFAULTS, AGENT_HUB_REASON_*)
 
@@ -314,6 +314,47 @@ agent-top the summary has a block with the same split and `desktop_idle` is in `
 because it runs git and `gh`/`glab` (`agent desktop-idle` always checks afresh). `hub close` names the stage's own idle
 Desktop sessions (its roles and the hubs it retired). Exit 0 whenever the command ran, 2 for a usage error.
 
+### Task outcomes
+
+One spawn creates a UUID `task_id` and immutable taxonomy in meta.json (`outcome_schema=1`). Pass
+`--task-class mechanical|bounded|judgement`, `--task-kind executor|review`, and `--change-class docs|code|risky|custom`.
+Omitted difficulty is unknown with a warning; omitted kind uses the legacy review-role detector with provenance.
+Resumes preserve task identity; new spawns, including reused roles, get new UUIDs. Reassignment/repair agents use
+`--continuation-of UUID`; reviewers use `--review-target-task-id UUID` and optionally `--review-head SHA` to validate
+the expected artifact. `agent send --resume-reason review_fix|ci_fix|reply|rebase|recovery|other R "…"` labels a resume;
+an unlabeled resume has unknown fix reason. A queued message is not itself a new run.
+
+Canonical append-only evidence lives at `<stage>/task-outcomes/<task_id>.jsonl`, independent of archived role dirs.
+`task_started`, per-invocation `run_started`, init `run_identity`, and `run_ended` capture requested/resolved identity,
+log offset, usage and exit evidence. A killed wrapper is reconciled under the agent lock on status/resume as
+`run_observed_dead` (actual end time and code unknown). Event IDs deduplicate retries; conflicting evidence fails.
+The writer locks, fsyncs, warns/repairs only a torn tail and rejects complete corrupt lines. Telemetry errors warn
+without changing process/journal semantics. Old meta.json stays readable; no backfill or model-based class inference.
+
+`task_closed` has `source=auto_status`: reported DONE/REVIEWED/MERGED → success; abnormal EXIT/STOP → failure.
+BLOCKED/QUESTION and limit exhaustion remain open. Process exit 0 alone does not close an executor contract.
+A review may succeed with a rejecting verdict. A resume/continuation reopens the contract without deleting evidence.
+
+`agent outcome ROLE --file evidence.json` (or `agent outcome --task-id UUID --file evidence.json` for archived tasks)
+imports a JSON object with `type`, typed `data`, optional `event_id`, `run_id`, `supersedes` and `reason`. Optional
+`task_id` must match. Supported imports: `review_observed`, `ci_observed`, `task_closed`, or an explicit typed correction; `bin/task_outcomes.py:validate`
+defines their required fields. Hub imports have `source=hub`; manual closure automatically supersedes the latest
+closure and wins over automatic status. Corrections name an existing event ID and a reason. For example:
+
+```json
+{"type":"task_closed","event_id":"owner-acceptance-1","data":{"outcome":"success","closed_at":"2026-11-26T10:00:00+00:00","evidence_path":"work/result-REPORT.md","artifact_ids":[],"review_applicability":"unknown","ci_applicability":"unknown"}}
+```
+
+Usage is nullable with raw counters, basis, scope, completeness and diagnostics. Claude sums invocation `result.usage`
+and result `num_turns`, using session cumulative cost deltas. Codex subtracts the prior session cumulative usage,
+counts `turn.started`, includes cached input once, and leaves cost null (`unavailable`). Tokens total is input
+including cache plus output; reasoning tokens are an output subset. Missing baselines, results, regressing counters
+or partial logs leave totals incomplete/null. Claude result turns and Codex turn starts are different units.
+Review counts come from identical `REVIEW_OUTCOME:` lines in the full report and final answer; absent or invalid
+lines give null diagnostics. Adjudication is optional: counts without it are reported, not adjudicated.
+CI first-attempt capture and the retro class × model report are deferred to PR 2 of the
+[design](proposals/model-outcomes.md); this capture does not switch models.
+
 ## Retro: period audit
 
 Load [the retro skill](../skills/retro/SKILL.md) for a period audit of hub work: rule compliance, repeated mistakes,
@@ -506,8 +547,8 @@ refusal; `off` drops both.
 Where it shows:
 
 ```text
-agent spawn … [--task-class mechanical|bounded|judgement] [--dry-run]
-    the numbers and the advice for this launch; --task-class (default: by the model) sets the class the effort and
+agent spawn … [--task-class mechanical|bounded|judgement|unknown] [--dry-run]
+    the numbers and the advice for this launch; --task-class sets persisted brief difficulty (omitted = unknown); advice alone falls back by model. The effort and
     the equivalent are judged by; --dry-run runs every check, prints the advice and starts or writes nothing
 hub start / hub takeover     one line per engine in the digest
 agent-top --once             "Limit pace" lines per engine; --json: limit_pace {engine: level, used, expected, eta, …}

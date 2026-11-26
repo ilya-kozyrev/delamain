@@ -1,6 +1,6 @@
 # Per-task model outcomes
 
-Status: design only, 2026-11-26. No routing or policy changes are implemented by this proposal.
+Status: capture implementation in PR 1; CI history and retro are deferred to PR 2. No automatic routing or policy changes.
 Business result: every delegated task has independently assigned difficulty, execution identity and observed outcomes;
 retro compares these records and offers evidence to the owner, who alone decides model changes.
 Source references below use repository revision `072559c15279842afce4a3eb222fd8cca2e90ff1`.
@@ -67,15 +67,15 @@ line; a subsequent writer truncates only that torn tail under lock before append
 | `run_observed_dead` / death observer | Observed-at time, process-death evidence, available partial usage; actual end time/exit code remain null. |
 | `review_observed` / exit-note or hub import | Reviewer's task/run, target UUID, artifact/head, review round, verdict, findings counts/IDs and provenance. |
 | `ci_observed` / await completion adapter | Target UUID, canonical repository/item/head, pipeline/suite identity and attempt, history coverage, status and provider times. |
-| `task_closed` / hub | `success|failure|cancelled`, evidence path, closure time, linked artifact IDs, review/CI applicability. |
+| `task_closed` / exit-note, death observer or hub override | `success|failure|cancelled`, evidence path, closure time, linked artifact IDs, review/CI applicability. |
 
-A new proposed `agent outcome ROLE --file FILE` validates/imports typed review, CI, closure or correction events;
-it also accepts `--task-id` for archived agents. It resolves role to UUID once, rejects mismatched targets, and never
-reads arbitrary prose for identity. Hub closes the contract after checking the deliverable; DONE is a reported status,
-not acceptance. A clean CLI exit is process success only. A delivered review can succeed with a rejecting verdict.
-Closure is required by the new hub completion checklist; absent closure stays `unknown`, visibly reducing coverage.
-A resume or continuation after closure reopens the contract; it needs a fresh closure and retains the old evidence.
-BLOCKED/QUESTION and limit exhaustion do not close the task as a failure. Intentional cancellations are separate.
+`task_closed` is automatic from the agent's reported terminal status: DONE/REVIEWED/MERGED mean success;
+abnormal EXIT/STOP mean failure, with `source=auto_status`. BLOCKED/QUESTION and limit exhaustion leave the
+contract open. A clean process exit alone is not acceptance; a delivered review can succeed with a rejecting verdict.
+There is no mandatory per-task hub closing step. `agent outcome ROLE --file FILE` validates/imports typed review,
+CI, closure or correction events; `--task-id` addresses archived agents. It resolves role to UUID once and rejects
+mismatched targets. A manual closure has `source=hub`, supersedes the previous closure and takes precedence over
+automatic evidence. A resume or continuation reopens the contract, retains old evidence and needs a fresh closure.
 Persist a provisional start even when launch fails; retain failure evidence rather than losing a task before init.
 
 Capture immutable task/run IDs and log offset in the exit wrapper: an old wrapper must never finish a newer resume.
@@ -115,9 +115,11 @@ in both report and final answer. The parser reads the full report/result, not th
 agreement between copies. Missing, malformed or contradictory lines yield null plus diagnostics, never zero.
 Each nonempty finding entry is `{"id":"F1","severity":"high"}`; counts must equal entries by severity.
 Verdict aliases (`APPROVE`, `merge`, `merge after fixes`, `changes requested`) normalize with raw text retained.
-The hub appends adjudication per finding (`accepted|rejected|pending`) and maps duplicate IDs across reviewers/rounds;
-rechecks retain IDs, genuinely new defects get new IDs. Executor findings/task = distinct accepted defects across
-its linked reviews; pending adjudication makes that aggregate incomplete. Unreviewed tasks have null, not zero.
+V1 records the reviewer-reported counts; per-finding hub adjudication (`accepted|rejected|pending`) is optional.
+Without adjudication, retro (PR 2) labels these counts "reported, not adjudicated". When provided, the hub maps duplicate IDs across reviewers/rounds;
+rechecks retain IDs, genuinely new defects get new IDs. Executor accepted findings/task = distinct accepted defects across
+its linked reviews; absent or pending adjudication makes that accepted aggregate incomplete. Reported counts stay
+available separately without a mandatory adjudication flow. Unreviewed tasks have null, not zero.
 Reviewer cells show reported and accepted findings separately: zero findings/APPROVE is not reviewer accuracy.
 External reviewer skills import the same event through the hub; missing usage is explicit, not fabricated.
 
@@ -184,7 +186,7 @@ Both engines use the same schema with explicit counter bases. Core is macOS/Linu
 not a new native writer (`docs/agents/README.md:27-30`; `docs/windows-workflow.md:3-15,116-122`). Use Python pathlib,
 UTF-8, existing POSIX locking conventions inside WSL; do not introduce platform-specific path parsing.
 
-Two implementation PRs (this document is not either implementation):
+Two implementation PRs (this PR implements §1; CI history and retro remain §2):
 1. **Capture and lifecycle:** `bin/task_outcomes.py`, `bin/agent`, `bin/reviewers.py`, `bin/limit_pace.py` help separation;
    `templates/brief-executor-template.md`, `templates/brief-review.md`, hub launch/completion references,
    `docs/reference.md`, `docs/reviewers.md`, CHANGELOG. Add `tests/t_task_outcomes.sh` and agent/reviewer regressions.

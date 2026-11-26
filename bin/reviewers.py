@@ -150,8 +150,9 @@ class Loaded:
 class Author:
     """Who wrote the change: engine (claude | codex) and, when known, the model; `source` says where it was read."""
 
-    def __init__(self, engine: str, model: Optional[str], source: str):
+    def __init__(self, engine: str, model: Optional[str], source: str, task_id=None):
         self.engine, self.model, self.source = engine, model, source
+        self.task_id = task_id
 
     def __str__(self) -> str:
         return f"{self.engine}/{self.model}" if self.model else self.engine
@@ -195,7 +196,14 @@ def parse_author(spec: str, stage: Optional[str] = None) -> Author:
         raise hc.UsageError(f"--author {show(spec)}: {path} names engine {show(engine)}")
     model = meta.get("resolved_model") or meta.get("model")
     model = model if isinstance(model, str) and MODEL_RE.fullmatch(model) else None
-    return Author(engine, model, f"role {spec}")
+    task_id = meta.get("task_id")
+    if task_id is not None:
+        import task_outcomes
+        try:
+            task_outcomes.task_uuid(task_id)
+        except ValueError:
+            raise hc.UsageError(f"--author {show(spec)}: invalid task_id") from None
+    return Author(engine, model, f"role {spec}", task_id)
 
 
 # ---------------------------------------------------------------- reading the list
@@ -474,7 +482,8 @@ def walk_second(loaded: Loaded, change_class: Optional[str], every: bool = False
 
 # ---------------------------------------------------------------- how to start it
 
-def start_line(entry: Entry, stage: str | None = None, author_engine: str | None = None) -> str:
+def start_line(entry: Entry, stage: str | None = None, author_engine: str | None = None,
+               change_class: str | None = None, target_task_id: str | None = None) -> str:
     """What the hub does to start this reviewer. An `agent` reviewer only reads: no --worktree. With a stage the
     `agent spawn` line names it, so the reviewer joins that stage whatever the shell's HUB_STAGE is. A printed --engine
     is the reviewer policy's choice, not a deviation: the line carries --reason, so `agent spawn` does not warn."""
@@ -493,8 +502,11 @@ def start_line(entry: Entry, stage: str | None = None, author_engine: str | None
     reason = ""
     if engine:
         reason = " --reason " + shlex.quote(f"reviewer policy: {author_engine or 'unknown'} author -> {entry.engine} reviewer")
+    taxonomy = " --task-kind review --task-class judgement --change-class " + shlex.quote(change_class or "unknown")
+    if target_task_id:
+        taxonomy += " --review-target-task-id " + shlex.quote(target_task_id)
     return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd {cwd}{engine}{sandbox}{model}"
-            f"{effort}{in_stage}{reason} --brief <BRIEF>")
+            f"{effort}{in_stage}{reason}{taxonomy} --brief <BRIEF>")
 
 
 def describe(entry: Entry) -> str:
