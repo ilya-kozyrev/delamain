@@ -55,6 +55,17 @@ assert valid['chosen'] == 'codex' and valid['entries'][0]['resolved_model'] == '
 assert valid['invalid'] == [], valid
 PY_MAP
 check $? 0 'a malformed map disables only Codex entries; a valid map resolves the alias'
+AGENT_HUB_REVIEWERS="$mixed" AGENT_HUB_CODEX_MODEL_MAP='{}' \
+    "$B/hub" reviewer --author claude/opus --all --json > "$AGENT_HUB_HOME/unmapped.json" 2>/dev/null
+python3 - "$AGENT_HUB_HOME/unmapped.json" <<'PY_UNMAPPED'
+import json
+import sys
+
+result = json.load(open(sys.argv[1]))
+assert result['chosen'] == 'claude' and [entry['name'] for entry in result['entries']] == ['claude'], result
+assert any('Claude alias' in problem for problem in result['invalid']), result
+PY_UNMAPPED
+check $? 0 'a Claude name without a Codex alias is still an invalid Codex entry'
 AGENT_HUB_ENGINE=codex "$B/hub" reviewer --stage stage-a --json > "$AGENT_HUB_HOME/stage.json"
 python3 - "$AGENT_HUB_HOME/stage.json" "$AGENT_HUB_HOME" <<'PY_STAGE'
 import json,shlex,sys
