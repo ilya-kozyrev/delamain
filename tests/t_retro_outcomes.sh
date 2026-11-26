@@ -52,7 +52,7 @@ def start(stage, name, model="old", day=0, parent=None, continuation=None, engin
         usage_boundary=usage_boundary, usage_in_parent=usage_in_parent), day, name=f"{tid}:start")
     return tid
 
-def launch(stage, tid, model, day, tag="1", engine="claude", effort="high", end="DONE", tokens=100, cost=1):
+def launch(stage, tid, model, day, tag="1", engine="claude", effort="high", end="DONE", tokens=100, cost=1, usage_basis=None):
     rid = f"{tid}:{tag}"
     emit(stage, tid, "run_started", dict(session_id=tid, kind="spawn" if tag == "1" else "resume",
         engine=engine, requested_model=model, effort=effort, log_offset=0,
@@ -64,6 +64,8 @@ def launch(stage, tid, model, day, tag="1", engine="claude", effort="high", end=
         emit(stage, tid, "run_ended", dict(ended_at=time(day + .25), exit_code=0, cli_result="success",
              termination_reason="exit", reported_status=end, complete=True,
              usage=dict(complete=tokens is not None, tokens_total=tokens, turns=5, turn_unit=unit,
+                        usage_basis=usage_basis or (task.CLAUDE_USAGE_BASIS if engine == "claude" else
+                                                    "codex_session_cumulative_delta"),
                         cost_usd=cost if engine == "claude" else None, cost_basis=cost_basis)), day + .25, rid)
     return rid
 
@@ -109,14 +111,15 @@ def reset(label):
     return stage
 
 def cohort(label, new_n=5, missing=False, mixed=False, pending=False, uninitialized=False,
-           high=False, ci_false=False, equal_tokens=False):
+           high=False, ci_false=False, equal_tokens=False, old_claude_basis=False):
     stage = reset(label)
     ids = {}
     for model, n in (("old", 5), ("new", new_n)):
         for i in range(n):
             tid = start(stage, f"{model}-{i}", model)
             rid = launch(stage, tid, model, .1, tokens=100 if model=="old" or equal_tokens else 75,
-                         cost=1 if model=="old" else 1.5)
+                         cost=1 if model=="old" else 1.5,
+                         usage_basis=task.CLAUDE_LEGACY_USAGE_BASIS if old_claude_basis and model == "new" else None)
             ids[(model, i)] = (tid, rid)
             if model == "new":
                 review(stage, tid, day=.8, high=2, count=2, primary=False)
@@ -193,11 +196,15 @@ for label, kwargs in (
     ("uninitialized-assignment", dict(uninitialized=True)),
     ("higher-high-findings", dict(high=True)), ("worse-first-ci", dict(ci_false=True)),
     ("less-than-20-percent", dict(equal_tokens=True)),
+    ("legacy-primary-usage", dict(old_claude_basis=True)),
 ):
     stage, ids = cohort(label, **kwargs)
     dest, metrics = run(label, baseline=old)
     assert not metrics["model_outcomes"]["proposals"], label
     assert "Insufficient evidence (n/coverage)" in (dest / "measure.md").read_text()
+    if label == "legacy-primary-usage":
+        typed = next(r for r in table(dest, "task-outcomes") if r["id"] == ids[("new", 0)][0])
+        assert not typed["tokens"] and not typed["observed_tokens"] and typed["cost_usd"] == "1.5"
     if label == "mixed-model":
         tid = ids[("new", 0)][0]
         row = next(r for r in table(dest, "task-outcomes") if r["id"] == tid)

@@ -21,7 +21,7 @@ DEFINITION = {
     "descriptive_tokens": "observed tokens by completion or legacy cohort; unknown usage boundary reported separately",
     "assignment": "root assignment in [since, until); evidence through assignment + 7 days",
     "visibility": "recorded_at <= cutoff",
-    "tokens": "input including cache plus output",
+    "tokens": "input including cache plus output; Claude all-model deltas; Codex cumulative usage deltas",
     "turns": ["claude_result_turns", "codex_turn_started"],
     "review": "first primary report per artifact; reported counts",
     "ci": "first eligible CI attempt per applicable artifact",
@@ -189,7 +189,9 @@ def contract_usage(runs, helpers_complete):
     bases = {u.get("cost_basis") for u in counters}
     turn_unit = next(iter(units)) if len(units) == 1 else None
     cost_basis = "reported_claude_usd_delta" if bases == {"reported_claude_usd_delta"} else None
-    observed_tokens = complete_sum(u.get("tokens_total") if u.get("complete") else None for u in counters)
+    observed_tokens = complete_sum(
+        u.get("tokens_total") if u.get("complete") and u.get("usage_basis") != outcomes.CLAUDE_LEGACY_USAGE_BASIS
+        else None for u in counters)
     return dict(tokens=observed_tokens if helpers_complete else None,
                 observed_tokens=observed_tokens, usage_boundary_complete=helpers_complete,
                 turn_unit=turn_unit,

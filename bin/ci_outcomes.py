@@ -131,8 +131,12 @@ def github(api, project, number, data):
     required = github_required(api, repo, branch, branch_info)
     data["required_checks_source"] = "policy" if required else "inferred"
     data["required_checks"] = [{"name": name, "app_id": app} for name, app in required]
-    initial = commits[0]
-    initial_at = min(created, timestamp(initial["commit"]["committer"]["date"]))
+    initial_head, initial_at = None, created
+    for commit in reversed(commits):
+        committed = timestamp(commit["commit"]["committer"]["date"])
+        if committed <= created:
+            initial_head, initial_at = commit["sha"], committed
+            break
     query = f"branch={quote(head['ref'], safe='')}&created={quote('>=' + initial_at.isoformat(), safe='')}"
     runs = api.pages(f"{repo}/actions/runs?{query}", "workflow_runs", cap=1000)
     pr_events = {"pull_request", "pull_request_target", "pull_request_review"}
@@ -149,7 +153,7 @@ def github(api, project, number, data):
             continue
         if sha not in heads:
             raise CoverageError("GitHub workflow refers to an unverified historical head")
-        if at < created and (event != "push" or sha != initial["sha"]):
+        if at < created and (event != "push" or sha != initial_head):
             continue
         eligible.append((at, run["id"], sha, run))
     eligible.sort()
@@ -172,7 +176,7 @@ def github(api, project, number, data):
                     jobs=jobs)
         if not github_replaced(api, repo, first_runs, jobs, eligible):
             break
-        data["superseded_attempts"].append(data["attempt_id"])
+        record_supersession(data, "superseded_confirmed")
         eligible = [row for row in eligible if row[2] != first_head]
     else:
         raise CoverageError("no eligible GitHub workflow history")
@@ -241,14 +245,30 @@ def github_replaced(api, repo, runs, jobs, history):
     return True
 
 
-def gitlab_replacement(detail, candidates):
-    # Some GitLab versions expose the replacing pipeline through the canceled status tooltip.
+def record_supersession(data, source):
+    attempt = data["attempt_id"]
+    data["superseded_attempts"].append(attempt)
+    data["superseded_attempt_sources"][attempt] = source
+
+
+def gitlab_supersession(detail, candidates, revision_order, auto_cancel):
+    # Prefer an explicit replacing pipeline where the provider exposes it.
     replaced_by = detail.get("auto_canceled_by_id")
     if replaced_by is None:
         tooltip = (detail.get("detailed_status") or {}).get("tooltip") or ""
         match = re.search(r"auto[- ]canceled (?:by|because of) (?:pipeline )?#(\d+)", tooltip, re.IGNORECASE)
         replaced_by = int(match[1]) if match else None
-    return next((p for p in candidates if p["id"] == replaced_by and p["sha"] != detail["sha"]), None)
+    if replaced_by is not None:
+        if any(p["id"] == replaced_by and p["sha"] != detail["sha"] for p in candidates):
+            return "superseded_confirmed"
+        return None
+    if auto_cancel != "enabled" or not detail.get("finished_at") or detail["sha"] not in revision_order:
+        return None
+    current_revision = revision_order[detail["sha"]]
+    newer = next((p for p in candidates if revision_order.get(p["sha"], -1) > current_revision), None)
+    if newer and timestamp(newer["created_at"]) < timestamp(detail["finished_at"]):
+        return "superseded_inferred"
+    return None
 
 
 def gitlab(api, project, number, data):
@@ -265,7 +285,10 @@ def gitlab(api, project, number, data):
     if mr["source_project_id"] != mr["target_project_id"]:
         raise CoverageError("fork push history cannot be reconciled with the GitLab MR")
     versions = api.pages(f"{item}/versions")
-    heads = {version["head_commit_sha"] for version in versions}
+    revision_order = {}
+    for version in sorted(versions, key=lambda version: version["id"]):
+        revision_order.setdefault(version["head_commit_sha"], version["id"])
+    heads = set(revision_order)
     if mr["sha"] not in heads:
         raise CoverageError("incomplete GitLab MR diff history")
     initial = min(versions, key=lambda version: version["id"])["head_commit_sha"]
@@ -300,9 +323,11 @@ def gitlab(api, project, number, data):
         data.update(first_head=first["sha"], attempt_id=f"gitlab:{first['id']}:1", attempt_created_at=first["created_at"])
         if first["status"] != "canceled":
             break
-        if not gitlab_replacement(first, eligible[index + 1:]):
+        source = gitlab_supersession(first, eligible[index + 1:], revision_order,
+                                    config.get("auto_cancel_pending_pipelines"))
+        if not source:
             return None
-        data["superseded_attempts"].append(data["attempt_id"])
+        record_supersession(data, source)
     else:
         raise CoverageError("no eligible GitLab pipeline history")
     if api.pages(f"{endpoint}/bridges"):
@@ -340,7 +365,7 @@ def observe(stage, task_id, url):
     data = dict(target_task_id=task_id, provider=None, repository=None, item=unverified_item, head=None, status="unknown",
                 first_run_green=None, history_coverage="incomplete", coverage_reason=None, attempt_id=None,
                 attempt_created_at=None, first_head=None, item_created_at=None, history=[], required_checks=[],
-                required_checks_source=None, superseded_attempts=[], jobs=[])
+                required_checks_source=None, superseded_attempts=[], superseded_attempt_sources={}, jobs=[])
     try:
         provider, host, project, number = binding(url)
         repository = f"https://{host}/{project}"

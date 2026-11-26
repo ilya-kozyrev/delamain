@@ -70,7 +70,7 @@ committed = "2026-10-31T23:58:00Z"
 later = "2026-11-02T00:00:00Z"
 gh = "repos/example/project"
 gh_url = "https://github.com/Example/Project/pull/7"
-pull = dict(created_at=created, commits=2, base=dict(ref="main"),
+pull = dict(created_at=created, commits=3, base=dict(ref="main"),
             head=dict(sha="new", ref="change", repo=dict(full_name="example/project")))
 
 
@@ -93,7 +93,11 @@ scheduled = [run(100 + i, 999, "old", early, event="schedule") for i in range(99
 github = {
     f"{gh}/pulls/7": pull,
     page(f"{gh}/issues/7/timeline"): [],
-    page(f"{gh}/pulls/7/commits"): [{"sha": "old", "commit": {"committer": {"date": committed}}}, {"sha": "new"}],
+    page(f"{gh}/pulls/7/commits"): [
+        {"sha": "parent", "commit": {"committer": {"date": "2026-10-31T23:56:00Z"}}},
+        {"sha": "old", "commit": {"committer": {"date": committed}}},
+        {"sha": "new", "commit": {"committer": {"date": later}}},
+    ],
     f"{gh}/branches/main": {"protected": True, "protection": {
         "required_status_checks": {"checks": [{"context": n, "app_id": 6} for n in ("build", "lint")]}}},
     page(f"{gh}/rules/branches/main"): [],
@@ -159,10 +163,11 @@ fixture(inferred | {page(runs_endpoint): list_field("workflow_runs", [unrelated_
 unrelated = ci_outcomes.observe(stage, new_task(), gh_url)
 assert unrelated["first_run_green"] is None and unrelated["history"] == [], unrelated
 
-# M3: pre-item initial push counts if it ran a workflow used by the PR. A different pre-item SHA does not.
+# N3: this PR opened with two commits. Only its initial head can supply a pre-item push.
 pre = inferred | {page(runs_endpoint): list_field("workflow_runs", [
     run(1, 11, "old", pre_item, event="push", linked=False), run(3, 13, "new", later),
-    run(5, 15, "new", pre_item, event="push", linked=False, workflow=3)])}
+    run(4, 14, "parent", "2026-10-31T23:58:30Z", event="push", linked=False),
+    run(5, 15, "new", pre_item, event="push", linked=False)])}
 fixture(pre)
 observed = ci_outcomes.observe(stage, new_task(), gh_url)
 assert observed["first_run_green"] is False and observed["attempt_created_at"] == pre_item, observed
@@ -180,6 +185,7 @@ fixture(gh_cancel | {annotations: [{"message": "Canceling since a higher priorit
 replaced = ci_outcomes.observe(stage, new_task(), gh_url)
 assert replaced["first_run_green"] is True and replaced["first_head"] == "new", replaced
 assert replaced["superseded_attempts"] == ["github:old:1"]
+assert replaced["superseded_attempt_sources"] == {"github:old:1": "superseded_confirmed"}
 fixture(gh_cancel | {annotations: [{"message": "The workflow was canceled by a user."}]})
 manual = ci_outcomes.observe(stage, new_task(), gh_url)
 assert manual["first_run_green"] is None and manual["attempt_id"] == "github:old:1" and not manual["superseded_attempts"]
@@ -253,9 +259,30 @@ fixture(gl_cancel | {f"{pipe}/1": cancel | {"detailed_status": {
     "tooltip": "Pipeline is redundant and is auto-canceled by Pipeline #2"}}})
 observed = ci_outcomes.observe(stage, new_task(), gl_url)
 assert observed["first_run_green"] is True and observed["superseded_attempts"] == ["gitlab:1:1"], observed
+assert observed["superseded_attempt_sources"] == {"gitlab:1:1": "superseded_confirmed"}
 fixture(gl_cancel)
 observed = ci_outcomes.observe(stage, new_task(), gl_url)
 assert observed["first_run_green"] is None and observed["attempt_id"] == "gitlab:1:1" and not observed["superseded_attempts"]
+assert observed["superseded_attempt_sources"] == {}
+enabled = {"only_allow_merge_if_pipeline_succeeds": False, "auto_cancel_pending_pipelines": "enabled"}
+with_finish = cancel | {"finished_at": "2026-11-02T00:00:10Z"}
+fixture(gl_cancel | {gl: enabled, f"{pipe}/1": with_finish})
+inferred_cancel = ci_outcomes.observe(stage, new_task(), gl_url)
+assert inferred_cancel["first_run_green"] is True and inferred_cancel["first_head"] == "new", inferred_cancel
+assert inferred_cancel["superseded_attempt_sources"] == {"gitlab:1:1": "superseded_inferred"}
+same_head = pipes[2] | {"sha": "old"}
+for label, override in (
+    ("auto-cancel disabled", {gl: enabled | {"auto_cancel_pending_pipelines": "disabled"}, f"{pipe}/1": with_finish}),
+    ("no finish timestamp", {gl: enabled}),
+    ("replacement created at finish", {gl: enabled, f"{pipe}/1": cancel | {"finished_at": later}}),
+    ("same revision", {gl: enabled, f"{pipe}/1": with_finish, page(f"{mr}/pipelines"): [same_head, pipes[3]]}),
+    ("other merge request", {gl: enabled, f"{pipe}/1": with_finish,
+                             page(f"{mr}/pipelines"): [pipes[2] | {"ref": "refs/merge-requests/9/head"}, pipes[3]]}),
+):
+    fixture(gl_cancel | override)
+    observed = ci_outcomes.observe(stage, new_task(), gl_url)
+    assert observed["first_run_green"] is None and observed["attempt_id"] == "gitlab:1:1", (label, observed)
+    assert not observed["superseded_attempt_sources"], (label, observed)
 print("GitLab controls: selected detail only, inferred blocking jobs, superseded and unverified cancellations")
 
 tid = new_task()
@@ -316,6 +343,14 @@ for relative, expected in (
     examples = [line for line in text.splitlines() if "`await " in line and "--ok PASSED" in line]
     assert len(examples) == expected and all("--outcome-task " in x and "--ci-item " in x for x in examples), examples
     assert "AGENT_TASK_ID" in text and "meta.json" in text
+    normalized = " ".join(text.split()).lower()
+    assert "omit both when the executor has no `task_id`" in normalized
+    if relative.endswith("/SKILL.md"):
+        for rule in ("never a background bash", "if absent from path, an executor waits",
+                     "@hub passed|done|failed|timeout|<--on word> … <link>",
+                     "failed/timeout/conflict are decisions, not retries", "journals cancelled with no wake"):
+            assert rule in normalized, rule
+        assert '--label "MR !N"' in examples[0] and "--on 2=TIMEOUT" in examples[0]
 print("L1/M4: telemetry failure preserves the printed verdict and wait exit; CI recipes bind both arguments")
 
 PY

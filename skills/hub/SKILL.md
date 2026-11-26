@@ -62,29 +62,31 @@ When the stage's work is finished and the owner has no more tasks for it, run `r
 ## Waiting
 
 Waiting is **one** `jwait`, using the shell harness rather than a polling loop.
-- **Claude Code:** the digest's `jwait … --stream` as the command of **one** `Monitor` with `timeout_ms: 1800000`. Each
-  batch arrives as an event that already carries the lines: handle it, do not read an output file, do not re-arm.
-  Every `jwait` that ends prints a last line `NEXT WAIT: …`: arm exactly that, nothing else. While an agent or an
-  `await` of the stage runs it is a Monitor stream; when nothing runs it is ONE Bash `run_in_background` long wait
-  (hours), or on a `claude --bg` hub *dormant*: end the turn with no waiter, the watchdog resumes you on a line.
+- **Claude Code:** run the digest's `jwait … --stream` in one `Monitor` with `timeout_ms: 1800000`. Handle its
+  events directly, without reading a file or re-arming. When it ends, arm exactly its `NEXT WAIT: …`.
+  Use Monitor while an agent or `await` runs. When idle, use one long Bash `run_in_background` wait (hours).
+  A `claude --bg` hub goes *dormant* without a waiter. The watchdog resumes it on a line.
 - **Codex:** `references/codex-hub.md` (*Waiting on a Codex hub*).
 
 A stopped `jwait` loses no lines once its caller has run before: the next one delivers them.
 - `jwait --journal --tag hub-<N> --tag hub --hub-events --stream` — lines addressed to the hub, agents' status lines
   and script questions echoed into the journal; your own lines (your tag and its sub-tags `hub-<N>/…`) do not wake
-  you. Copy it from the digest. Another stage's hub (`tell`) and `[pace]` do not wake you unless they ask for it
-  (QUESTION, URGENT, a status word): their lines come with the next batch under `HELD`. Never add a `--match` that
-  wakes on another hub's signature; a reply that cannot wait goes `tell --urgent`. With `--caller <session id>` instead of the hub's tag, add `--exclude-tag hub-<N>`.
+  you. Copy from the digest. Other hubs (`tell`) and `[pace]` wake you only for QUESTION, URGENT or a status word.
+  Their other lines arrive under `HELD`. Never `--match` another hub's signature. Use `tell --urgent` for urgent
+  replies. If using `--caller <session id>` for the hub, add `--exclude-tag hub-<N>`.
 - `jwait --file <script output> --match 'AWAITING ANSWER'` — a script's question; one asked before `jwait` started is
   delivered too.
 - `jwait --until 20:23 --note "…"` — an alarm (exit 3, `ALARM …`) that dies with the hub; to wake a dead hub:
   `await --at 20:23 --label L` (`references/launch-and-executors.md`).
 - Sources and filters combine in one command.
 
-Run CI waits with `await --ok PASSED --outcome-task "$TASK_ID" --ci-item "$ITEM_URL" -- <wait command>`.
-Use the executor's `task_id` from its `meta.json` (`$AGENT_TASK_ID` in its session). The hub calls `bin/await`
-in the foreground, keeps one `jwait`, and gets one journal verdict on completion. A headless executor adds
-`--wait`. Merge and lock waits use `await` too. A cancelled waiter journals without waking the hub.
+A CI, merge or lock wait is never a background Bash of the hub itself. Run
+`await --ok PASSED --label "MR !N" --on 2=TIMEOUT --outcome-task "$TASK_ID" --ci-item "$ITEM_URL" -- <wait command>`.
+For CI, use the executor's `task_id` from `meta.json` (`$AGENT_TASK_ID` in its session). Omit both when the
+executor has no `task_id` or for merge/lock waits. `bin/await` returns at once in the foreground. If absent from
+PATH, an executor waits. It stays silent until one journal line `@hub PASSED|DONE|FAILED|TIMEOUT|<--on word> … <link>`
+wakes the hub. FAILED/TIMEOUT/CONFLICT are decisions, not retries. Killing a superseded waiter journals CANCELLED
+with no wake. Executors use the same `await`, with `--wait` when headless.
 
 A message starting `[agent-hub watchdog]` or `[delamain watchdog]` means the watchdog woke you: run the digest `jwait`
 with its `--since HH:MM`, handle what it shows, follow its NEXT WAIT. Going quiet on purpose: `watchdog quiet`

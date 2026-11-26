@@ -360,8 +360,10 @@ closure and wins over the automatic projection. Corrections name an existing eve
 {"type":"task_closed","event_id":"owner-acceptance-1","data":{"outcome":"success","closed_at":"2026-11-26T10:00:00+00:00","evidence_path":"work/result-REPORT.md","artifact_ids":[],"review_applicability":"unknown","ci_applicability":"unknown"}}
 ```
 
-Usage is nullable with raw counters, basis, scope, completeness and diagnostics. Claude sums invocation `result.usage`
-and result `num_turns`, using session cumulative cost deltas. Codex subtracts the prior session cumulative usage,
+Usage is nullable with raw counters, basis, scope, completeness and diagnostics. Claude sums session deltas from
+all models in `modelUsage` and uses session deltas for reported cost. Primary-model `result.usage` stays in raw
+evidence. Missing all-model snapshots leave tokens incomplete. Turns sum result `num_turns`.
+Codex subtracts the prior session cumulative usage,
 counts `turn.started`, includes cached input once, and leaves cost null (`unavailable`). Tokens total is input
 including cache plus output; reasoning tokens are an output subset. Missing baselines, results, regressing counters
 or partial logs leave totals incomplete/null. Claude result turns and Codex turn starts are different units.
@@ -377,8 +379,9 @@ Both binding flags are required together. GitHub uses the first required-check a
 head; GitLab uses the earliest attached push/MR pipeline and blocking jobs, including retried jobs. An eligible push
 on the initial revision can precede item creation. Without a configured requirement, GitLab uses blocking non-manual
 jobs and GitHub uses PR workflow checks, excluding skipped and neutral entries. Evidence labels the set
-`policy` or `inferred`. A provider-confirmed superseded cancellation is skipped. Manual or unverified cancellations
-leave the first outcome unknown. The binding
+`policy` or `inferred`. A provider-confirmed superseded cancellation is skipped. On GitLab, enabled auto-cancel
+and the next pipeline on a newer MR revision before the old pipeline finished also establish inferred supersession.
+Evidence records this as `superseded_inferred`. Cancellations without either source leave the outcome unknown. The binding
 uses authenticated `gh` for github.com and `glab` for GitLab merge request URLs. Evidence records the required
 set visible to those credentials and distinguishes pending attempts, failures and gaps. API permissions, incomplete
 or ambiguous histories, and unsupported check sources can leave the result unknown. The wait command, journal

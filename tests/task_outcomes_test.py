@@ -200,27 +200,55 @@ class Outcomes(unittest.TestCase):
         file.write_text("".join(json.dumps(e) + "\n" for e in events))
         return file
 
-    def test_claude_usage_is_invocation_but_cost_session_delta(self):
+    def test_claude_all_model_session_deltas(self):
         init = dict(type="system", subtype="init", session_id="sid")
-        def result(n, cost):
-            return dict(type="result", session_id="sid", num_turns=n, total_cost_usd=cost,
-                        usage=dict(input_tokens=10, output_tokens=20, cache_read_input_tokens=30, cache_creation_input_tokens=40))
-        first = [init, result(3, 0.8)]
+        def result(n, cost, main, helper, sid="sid"):
+            keys = ("inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens", "outputTokens")
+            return dict(type="result", session_id=sid, num_turns=n, total_cost_usd=cost,
+                        usage=dict(input_tokens=10, output_tokens=20, cache_read_input_tokens=30,
+                                   cache_creation_input_tokens=40),
+                        modelUsage={"main": dict(zip(keys, [v * main for v in (10, 30, 40, 20)])),
+                                    "helper": dict(zip(keys, [v * helper for v in (2, 3, 5, 10)]))})
+        first = [init, result(3, 0.8, 1, 1)]
         file = self.write_log(first)
         offset = file.stat().st_size
-        file = self.write_log(first + [init, result(2, 1.0)])
+        resumed = result(2, 1.0, 2, 3)
+        file = self.write_log(first + [init, resumed])
         a = out.usage(file, 0, "claude", "sid")
         b = out.usage(file, offset, "claude", "sid")
-        self.assertEqual((a["tokens_total"], a["turns"], a["cost_usd"]), (200, 5, 1.0))
-        self.assertEqual((b["tokens_total"], b["turns"]), (100, 2))
+        self.assertEqual((a["tokens_total"], a["turns"], a["cost_usd"]), (260, 5, 1.0))
+        self.assertEqual((b["tokens_total"], b["turns"], b["usage_basis"]), (140, 2, out.CLAUDE_USAGE_BASIS))
+        self.assertEqual([b[k] for k in out.CLAUDE_COUNTERS], [14, 36, 50, 40])
+        self.assertEqual(b["raw"][0]["usage"], resumed["usage"])
+        self.assertEqual(set(b["raw"][0]["modelUsage"]), {"main", "helper"})
         self.assertAlmostEqual(b["cost_usd"], 0.2)
-        file = self.write_log(first + [init, result(2, 0.1)])
-        self.assertIsNone(out.usage(file, offset, "claude", "sid")["cost_usd"])
-        file = self.write_log([init, dict(type="result", session_id="sid")])
-        unknown = out.usage(file, 0, "claude", "sid")
-        self.assertIsNone(unknown["tokens_total"])
-        self.assertIsNone(unknown["turns"])
-        self.assertIsNone(unknown["cost_usd"])
+        second = result(1, 0.7, 1, 1, sid="another-session")
+        file = self.write_log(first + [second])
+        self.assertEqual(out.usage(file, 0, "claude", "sid")["tokens_total"], 240)
+        file = self.write_log(first + [resumed | {"total_cost_usd": 0.1}])
+        u = out.usage(file, offset, "claude", "sid")
+        self.assertIsNone(u["cost_usd"])
+        self.assertEqual(u["tokens_total"], 140)
+        for changed in ({}, {"main": resumed["modelUsage"]["main"]},
+                        result(2, 1.0, 4, 0)["modelUsage"]):
+            file = self.write_log(first + [resumed | {"modelUsage": changed}])
+            u = out.usage(file, offset, "claude", "sid")
+            self.assertFalse(u["complete"])
+            self.assertIsNone(u["tokens_total"])
+            self.assertAlmostEqual(u["cost_usd"], 0.2)
+        # A result may report primary usage alone. Neither that result nor a resume
+        # with that result as its only baseline establishes the all-model delta.
+        main_only = {k: v for k, v in first[1].items() if k != "modelUsage"}
+        file = self.write_log([init, main_only])
+        self.assertIsNone(out.usage(file, 0, "claude", "sid")["tokens_total"])
+        missing_offset = file.stat().st_size
+        file = self.write_log([init, main_only, resumed])
+        self.assertIsNone(out.usage(file, missing_offset, "claude", "sid")["tokens_total"])
+        duplicated = first[1] | {"uuid": "copied"}
+        file = self.write_log([init, duplicated])
+        copied_offset = file.stat().st_size
+        file = self.write_log([init, duplicated, duplicated, resumed])
+        self.assertEqual(out.usage(file, copied_offset, "claude", "sid")["tokens_total"], 140)
 
     def test_codex_cumulative_resume_and_regression(self):
         init = dict(type="thread.started", thread_id="sid")
@@ -748,7 +776,9 @@ sys.exit(agent.main(sys.argv[2:]))
 
     def test_fixture_export(self):
         extra = dict(usage=dict(input_tokens=62, output_tokens=15783, cache_creation_input_tokens=135901,
-                               cache_read_input_tokens=2982021), num_turns=30, total_cost_usd=1.9995202)
+                               cache_read_input_tokens=2982021), num_turns=30, total_cost_usd=1.9995202,
+                     modelUsage={"main": dict(inputTokens=62, outputTokens=15783, cacheCreationInputTokens=135901,
+                                              cacheReadInputTokens=2982021)})
         self.spawn("claude-example", "--task-class", "judgement", "--task-kind", "executor", "--change-class", "code",
                    env=dict(FAKE_FINAL="DONE fixture", FAKE_CLAUDE_RESULT_EXTRA=json.dumps(extra)))
         rows = self.wait("claude-example")

@@ -243,7 +243,7 @@ Added with the CI-wait tool; the core `SKILL.md` carries the short form.
    `await --ok PASSED --label "MR !N" --outcome-task "$TASK_ID" --ci-item "$MR_URL" --on 2=TIMEOUT -- python -m scripts.ci_wait --mr N`
    (an ordinary foreground call that returns at once). Read `task_id` from the executor's
    `<stage>/agents/<role>/meta.json`. The executor can use `$AGENT_TASK_ID`. The item URL identifies the PR/MR,
-   and both flags are specific to CI waits. The hub keeps its single `jwait`.
+   and both flags are specific to CI waits. Omit both when the executor has no `task_id`. The hub keeps one `jwait`.
 2. `await` journals nothing while the command runs and exactly one line `@hub PASSED|DONE|FAILED|TIMEOUT|<--on word> …
    <link>` (PASSED: the pipeline is green, not merged; `--ok MERGED` only for a wait on the merge itself) when it ends; that line is the hub's wake. FAILED/TIMEOUT/CONFLICT are decisions for the hub, not retries.
 3. An executor that waits on CI uses the same `await` (its line is `<tag>-await`, so it reaches the hub's `jwait`). A

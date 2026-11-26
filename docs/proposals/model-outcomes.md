@@ -103,8 +103,10 @@ A start without a matching end remains incomplete; retro is read-only and does n
 ### Usage and attempts
 
 - Save raw reported counters plus `usage_basis`, `usage_scope`, `complete`, and normalized input/output/cache fields.
-  Claude `result.usage` is per invocation in the checked sample; sum distinct results. `total_cost_usd` is cumulative
-  per session: use deltas between results, then sum sessions. Do not sum cumulative `modelUsage` snapshots.
+  Claude `modelUsage` includes the main model and built-in helpers. Delta each model's cumulative counters by session
+  and sum the deltas. `total_cost_usd` is cumulative per session and uses the same session boundaries.
+  Preserve primary-model `result.usage` in raw evidence. A missing or regressing all-model snapshot makes tokens
+  incomplete. Older events with only primary-model counters are ineligible for token comparisons.
 - Codex uses latest cumulative usage per session and delta per run (`bin/engines.py:268-281`;
   `bin/agent-top:452-469`; `bin/retro:504-531`). Never add full resume totals. Missing baseline, counter regression,
   partial log, or changed provider semantics => incomplete/null delta, preserve raw data and show a warning.
@@ -156,7 +158,9 @@ Define first-run green **per artifact's first eligible CI attempt**, not the fir
 GitLab uses the earliest attached push/MR pipeline. GitHub groups the first runs of workflows on the earliest
 eligible item head. The initial head's push can precede item creation and is eligible from the commit timestamp.
 Exclude scheduled/manual/deploy/merge-train runs. A cancellation verified as displaced by a later push is excluded.
-Manual cancellations and cancellations with no evidence of replacement are unknown. Persist ordered history and
+On GitLab, enabled auto-cancel plus the next pipeline on a newer MR head created before the cancellation finished
+also counts as displaced (D-OUTCOMES-005). Record its provenance as `superseded_inferred`. Cancellations without
+either source are unknown. Persist ordered history and
 required checks with their source. Prefer the configured policy when available. Without one, infer blocking
 non-manual jobs on GitLab and PR workflow checks excluding skipped and neutral entries on GitHub (D-OUTCOMES-004).
 If the history or check set cannot be established, the result is unknown. Separate immutable attempt identity
@@ -272,7 +276,7 @@ Model/effort/start/session/runs come from each listed `meta.json`; result values
 Completion sources: respectively `dolya/coordinator/work/journal-2026-11-25.md:99`,
 `dolya-finance-project-digital-twin/coordinator/work/journal-2026-11-26.md:19`,
 `core-d/coordinator/work/journal-2026-11-26.md:9`; verdict also in `core-d/coordinator/work/review-innova-tax-rate-REPORT.md:5`.
-Claude executor usage is **62+18** fresh input across two result.usage blocks, while cost is **0.8150179→0.9421909**
-cumulative. Its 39 unique streamed assistant IDs differ from 41 result turns: the unit must be stored, not guessed.
+The historical primary-model control shows **62+18** fresh input across two result.usage blocks, while cost is
+**0.8150179→0.9421909** cumulative. Normalized task tokens use all-model session deltas. Its 39 unique streamed assistant IDs differ from 41 result turns: the unit must be stored, not guessed.
 Codex result input grows **6,287,572→23,183,891→33,322,927**; use the last cumulative total, not their sum.
 The initial probe's `core-d/innova-tax-rate` resumed again during design; it is deliberately not the finished Codex example.
