@@ -15,8 +15,9 @@ KINDS = ("executor", "review")
 APPLICABILITY = ("required", "not_required", "unknown")
 USAGE_IN_PARENT = ("included", "excluded", "unknown")
 USAGE_BOUNDARIES = ("own_only", "includes_helpers", "unknown")
-TYPES = {"task_started", "run_started", "run_identity", "run_ended", "run_observed_dead",
-         "review_observed", "ci_observed", "artifact_observed", "task_closed"}
+TERMINAL_TYPES = {"run_ended", "run_observed_dead"}
+TYPES = TERMINAL_TYPES | {"task_started", "run_started", "run_identity",
+                          "review_observed", "ci_observed", "artifact_observed", "task_closed"}
 
 
 def now():
@@ -151,6 +152,10 @@ def append(stage_dir, ev):
                 raise ValueError("superseded event must exist in this task and have the same type")
             if ev["type"] != "task_closed" and ev["run_id"] != previous["run_id"]:
                 raise ValueError("correction must retain run identity")
+        elif ev["type"] in TERMINAL_TYPES and any(
+                old["run_id"] == ev["run_id"] and old["type"] in TERMINAL_TYPES for old in events):
+            # The exit wrapper and observer race for the same run, despite different event IDs.
+            return False
         with file.open("a+b") as out:
             if torn:
                 import warnings
@@ -346,7 +351,7 @@ def project_closure(events):
     manual = next((e for e in reversed(events) if e["type"] == "task_closed" and e["source"] == "hub" and e["run_id"] == run_id), None)
     if manual:
         return manual["data"] | dict(source="hub", run_id=run_id, evidence_event_id=manual["event_id"])
-    terminal = next((e for e in reversed(events) if e["type"] in ("run_ended", "run_observed_dead") and e["run_id"] == run_id), None)
+    terminal = next((e for e in reversed(events) if e["type"] in TERMINAL_TYPES and e["run_id"] == run_id), None)
     if terminal is None:
         return None
     data = terminal["data"]

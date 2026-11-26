@@ -46,6 +46,7 @@ from typing import Optional
 import hubcore as hc
 import engines
 import model_catalog
+import task_outcomes as outcomes
 
 SETTING = "AGENT_HUB_REVIEWERS"
 AUTHOR_ENGINE_VAR, AUTHOR_MODEL_VAR = "AGENT_HUB_REVIEW_AUTHOR_ENGINE", "AGENT_HUB_REVIEW_AUTHOR_MODEL"
@@ -494,18 +495,26 @@ def start_line(entry: Entry, stage: str | None = None, author_engine: str | None
     engine = f" --engine {entry.engine}" if entry.explicit_engine or entry.engine == "codex" else ""
     sandbox = " --sandbox workspace-write" if entry.engine == "codex" else ""
     cwd = "<REPO>"
+    target_repo = ""
     if entry.engine == "codex":
         cwd = shlex.quote(str(hc.work_dir(stage))) if stage else "<HUB_WORK>"
+        target_repo = " --target-repo <REPO>"
     launch_model = entry.launch_model or entry.model
     model = f" --model {shlex.quote(launch_model)}" if launch_model else ""
     in_stage = f" --stage {shlex.quote(stage)}" if stage else ""
     reason = ""
     if engine:
         reason = " --reason " + shlex.quote(f"reviewer policy: {author_engine or 'unknown'} author -> {entry.engine} reviewer")
-    taxonomy = " --task-kind review --task-class judgement --change-class " + shlex.quote(change_class or "unknown")
+    recorded_class = "unknown"
+    if change_class is not None:
+        try:
+            recorded_class = outcomes.change_class(change_class)
+        except ValueError:
+            hc.warn(f"reviewer --for {show(change_class)} is not a short identifier; recording change class unknown")
+    taxonomy = " --task-kind review --task-class judgement --change-class " + shlex.quote(recorded_class)
     if target_task_id:
         taxonomy += " --review-target-task-id " + shlex.quote(target_task_id)
-    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd {cwd}{engine}{sandbox}{model}"
+    return (f"agent spawn --role {shlex.quote('review-' + entry.name)} --cwd {cwd}{target_repo}{engine}{sandbox}{model}"
             f"{effort}{in_stage}{reason}{taxonomy} --brief <BRIEF>")
 
 

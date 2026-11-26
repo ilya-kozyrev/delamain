@@ -11,7 +11,7 @@ assert '--engine codex' in s and '--sandbox workspace-write' in s,s
 assert '--model opus' not in s and '--model None' not in s,s
 assert '--model astra' in s,s
 assert r['entries'][0]['resolved_model'] == 'gpt-6.2-astra',r
-assert '--cwd <HUB_WORK>' in s and '<REPO>' not in s,s
+assert '--cwd <HUB_WORK> --target-repo <REPO>' in s,s
 PY
 check $? 0 'Codex reviewer defaults to Astra high workspace-write'
 AGENT_HUB_ENGINE=codex AGENT_HUB_CODEX_DEFAULT_MODEL=sol "$B/hub" reviewer --json > "$AGENT_HUB_HOME/sol-author.json"
@@ -73,6 +73,7 @@ from pathlib import Path
 s=shlex.split(json.load(open(sys.argv[1]))['start'])
 assert s[s.index('--cwd')+1] == str(Path(sys.argv[2])/'stage-a/coordinator/work'),s
 assert '--worktree' not in s,s
+assert s[s.index('--target-repo')+1] == '<REPO>',s
 PY_STAGE
 check $? 0 'Codex reviewer uses the stage work directory under the hub home'
 # Reviewer output permissions are narrower than executor permissions, on spawn and resume.

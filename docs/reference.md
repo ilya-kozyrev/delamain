@@ -328,7 +328,9 @@ conflicting or partly unlabelled reasons remain unknown unless the hub explicitl
 Canonical append-only evidence lives at `<stage>/task-outcomes/<task_id>.jsonl`, independent of archived role dirs.
 `task_started`, per-invocation `run_started`, init `run_identity`, and `run_ended` capture requested/resolved identity,
 log offset, usage and exit evidence. A killed wrapper is reconciled under the agent lock on status/resume as
-`run_observed_dead` (actual end time and code unknown). Event IDs deduplicate retries; conflicting evidence fails.
+`run_observed_dead` (actual end time and code unknown). A successful current result preserves its reported status
+with reason `wrapper_lost`. Terminal timestamps use the exit marker or log modification time as evidence.
+Event IDs deduplicate retries and reject conflicting evidence. The per-task lock ensures a single automatic terminal event per run.
 The writer locks, fsyncs, warns/repairs only a torn tail and rejects complete corrupt lines. Telemetry errors warn
 without changing process/journal semantics. Old meta.json stays readable; no backfill or model-based class inference.
 
@@ -349,7 +351,9 @@ contract spend incomplete for recommendations; PR 2 deduplicates included helper
 `agent outcome ROLE --file evidence.json` (or `agent outcome --task-id UUID --file evidence.json` for archived tasks)
 imports a JSON object with `type`, typed `data`, optional `event_id`, `run_id`, `supersedes` and `reason`. Optional
 `task_id` must match. Supported imports: `review_observed`, `ci_observed`, `artifact_observed`, `task_closed`, or an explicit typed correction; `bin/task_outcomes.py:validate`
-defines their required fields. Hub imports have `source=hub`; manual closure binds to the current run, supersedes a previous explicit
+defines their required fields. A `review_observed` import into a review task matches that task's recorded
+`review_target_task_id`, including null when unlinked. External review imports into an executor task can target that
+executor's UUID. Hub imports have `source=hub`. Manual closure binds to the current run, supersedes a previous explicit
 closure and wins over the automatic projection. Corrections name an existing event ID and a reason. For example:
 
 ```json

@@ -393,9 +393,31 @@ mkdir -p $P/w; printf '# Brief: r\n\nbody\n' > $P/w/b.md; echo '{"AGENT_HUB_ENGI
 line=$(AGENT_HUB_REVIEWERS="$(mklist '{"engine": "codex", "model": "gpt-fixture"}' agent)" rv --author claude --for code --stage web 2>/dev/null | sed -n 's/^start: //p')
 case "$line" in *" --engine codex "*"--reason 'reviewer policy: claude author -> codex reviewer' --task-kind review --task-class judgement --change-class code --brief <BRIEF>") a=0;; *) a=1;; esac
 check $a 0 "a Codex reviewer line for a Claude author carries --reason naming both engines"
-line=${line//<BRIEF>/$P/w/b.md}; mkdir -p $R/web/coordinator/work
+case "$line" in *" --target-repo <REPO> "*) a=0;; *) a=1;; esac
+check $a 0 "Codex reviewer: the hub work cwd has a separate Git target placeholder"
+line=${line//<REPO>/$P/w}; line=${line//<BRIEF>/$P/w/b.md}; mkdir -p $R/web/coordinator/work
 (eval "HUB_STAGE=web CODEX_BIN=$T/fake_codex.py AGENT_HUB_LIMIT_PACE=off AGENT_HUB_REASON_POLICY=refuse $B/$line --dry-run") > $P/pl.out 2> $P/pl.err
 check $? 0 "…and running it with --dry-run (policy refuse, ENGINE=claude) is not refused"
 check "$(grep -c 'differs' $P/pl.err)" 0 "…and running it (policy refuse, ENGINE=claude) says nothing about a differing engine"
+for cls in 'money/masking' 'code,risky' ' code' 'custom.class-2'; do
+    rv --author codex --for "$cls" --stage web > "$P/class.out" 2> "$P/class.err"
+    check $? 0 "reviewer emits an agent line for class '$cls'"
+    if [ "$cls" = 'custom.class-2' ]; then
+        expected=$cls; warnings=0
+    else
+        expected=unknown; warnings=1
+    fi
+    grep -q -- " --change-class $expected " "$P/class.out"
+    check $? 0 "class '$cls' is recorded as $expected"
+    check "$(grep -c 'recording change class unknown' "$P/class.err")" "$warnings" "class '$cls': warning count"
+    line=$(sed -n 's/^start: //p' "$P/class.out")
+    line=${line//<REPO>/$P/w}; line=${line//<BRIEF>/$P/w/b.md}
+    (eval "CLAUDE_BIN=$T/fake_claude.py AGENT_HUB_LIMIT_PACE=off $B/$line --dry-run") > "$P/class-spawn.out" 2>&1
+    check $? 0 "class '$cls': the emitted line can spawn in dry-run mode"
+done
+rv --author codex --stage web > "$P/class.out" 2> "$P/class.err"
+grep -q -- ' --change-class unknown ' "$P/class.out"
+check $? 0 "omitted --for records unknown"
+check "$(grep -c 'recording change class unknown' "$P/class.err")" 0 "omitted --for is silent"
 rm -f $R/config.json
 exit $fail

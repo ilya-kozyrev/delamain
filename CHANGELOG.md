@@ -15,6 +15,9 @@
   usage deltas retain nullable counters and engine-specific turn units (Codex cost stays unknown). Reviewer start
   lines link author tasks and structured `REVIEW_OUTCOME` findings; hub adjudication is optional. CI first-attempt
   evidence and retro model comparisons remain planned for the second implementation PR.
+- Preserve reported completion when a run loses its exit wrapper, and record a single journal EXIT for a resume
+  that fails before init. Codex reviewer launch lines carry the target checkout, and hub corrections can address
+  linked review findings on the reviewer's task.
 
 ## 1.0.28 — 2026-11-22
 

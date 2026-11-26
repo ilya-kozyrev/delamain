@@ -32,7 +32,8 @@ The initial telemetry probe is `~/agent-hub/model-outcomes/coordinator/telemetry
   validated custom class; preserve the existing extensible change-class contract (`docs/reviewers.md:146-147`).
 - Hub assigns all three before launch. Persist existing `--task-class`; add `--task-kind` and `--change-class`.
   New hub templates require explicit difficulty; reviewer start lines emit kind=review and difficulty=judgement,
-  forward `--for` as change class, and link a role author by task UUID. An engine-only author leaves the link null.
+  forward valid `--for` identifiers as change class, and link a role author by task UUID. An engine-only author leaves
+  the link null.
 - Compatibility: omitted difficulty is `unknown` with one warning, not a spawn refusal. Missing change class is
   `unknown`; omitted kind uses the existing review detector with source=`legacy_inference`, otherwise executor.
   New templates always pass kind explicitly; inferred kinds are descriptive only in retro.
@@ -57,7 +58,8 @@ Each event has `schema_version`, `event_id`, `task_id`, `run_id|null`, `type`, `
 `source` (file:line or provider identity), `writer`, and typed `data`. Times are offset-aware ISO 8601.
 A shared `bin/task_outcomes.py` validates/writes under a per-task lock, flushes/fsyncs, and deduplicates event IDs.
 Deterministic IDs identify run start/end and provider observations; identical retries are no-ops, conflicting payloads
-are rejected. Corrections append an explicit `supersedes` event with reason. Readers ignore/report a partial final
+are rejected. The writer admits one automatic terminal event per run under the task lock. Retries use artifact times
+from the exit marker or log. Corrections append an explicit `supersedes` event with reason. Readers ignore/report a partial final
 line; a subsequent writer truncates only that torn tail under lock before appending. Never silently skip corruption.
 
 | Event / writer / moment | Required payload or nullable observations |
@@ -65,7 +67,7 @@ line; a subsequent writer truncates only that torn tail under lock before append
 | `task_started` / spawn, before child launch | Taxonomy + source; stage/role; brief path/hash; canonical repository key; expected review/CI applicability; continuation/target/helper links and usage inclusion/boundary; requested engine/model/effort. |
 | `run_started` / launcher, each invocation | Existing run ID, session ID when known, spawn/resume, engine, requested model, effort, log byte offset. Init appends `run_identity` with actual session/resolved model. |
 | `run_ended` / exit-note, every termination | End time, exit code, CLI result, termination reason, reported status, usage, turns/unit, cost/basis, evidence completeness. |
-| `run_observed_dead` / death observer | Observed-at time, process-death evidence, available partial usage; actual end time/exit code remain null. |
+| `run_observed_dead` / death observer | Evidence timestamp from the log, process-death evidence and available partial usage. Actual end time and exit code remain null. |
 | `review_observed` / exit-note or hub import | Reviewer's task/run, target UUID, artifact/head, review round, verdict, findings counts/IDs and provenance. |
 | `ci_observed` / await completion adapter | Target UUID, canonical repository/item/head, pipeline/suite identity and attempt, history coverage, status and provider times. |
 | `artifact_observed` / hub, even after closure | Target UUID, artifact IDs, review/CI applicability; unknown remains distinct from not_required. |
@@ -73,13 +75,15 @@ line; a subsequent writer truncates only that torn tail under lock before append
 
 Automatic closure is a read-only projection of the current run's terminal evidence, never a second automatic
 `task_closed` write: reported DONE/REVIEWED/MERGED mean success; abnormal EXIT/STOP mean failure, with projected
-`source=auto_status`. `run_observed_dead` also projects failure when recovery/stop provides abnormal terminal evidence;
-actual end time and exit code stay null. BLOCKED/QUESTION and limit exhaustion leave the contract open. A clean process
+`source=auto_status`. `run_observed_dead` preserves reported completion for a successful current result with reason
+`wrapper_lost`, and projects failure when recovery/stop provides abnormal terminal evidence.
+Actual end time and exit code stay null. BLOCKED/QUESTION and limit exhaustion leave the contract open. A clean process
 exit alone does not close an executor; a delivered rejecting review can succeed. Current-run BLOCKED/QUESTION wins
 over a wrapper's fallback REVIEWED. Save journal day/byte position at run start so a same-minute prior DONE cannot
 close the next run. Stop, wrapper exit and recovery share the terminal transition and distinguish LIMIT from failure.
 There is no mandatory per-task hub closing step. `agent outcome ROLE --file FILE` imports typed review, CI, artifact,
-closure or correction events; `--task-id` addresses archived agents and rejects mismatched targets. Only the hub writes
+closure or correction events. Use `--task-id` for archived agents. A review task's imported target matches its
+`task_started.review_target_task_id`, including null. Only the hub writes
 `task_closed` with `source=hub`; it binds to a run and overrides its automatic projection. A resume or continuation
 reopens the contract and retains old evidence. A crash immediately after run_ended cannot lose automatic closure.
 Expected review/CI applicability comes from launch flags filled from the brief/project rule (`required|not_required|unknown`);

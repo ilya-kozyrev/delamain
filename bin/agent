@@ -624,31 +624,40 @@ def prepare_timeout(cwd=None) -> int:
     return int(raw)
 
 
+def read_init(log: Path, offset: int, session_id: str) -> dict | None:
+    try:
+        with log.open("rb") as fh:
+            fh.seek(offset)
+            for raw in fh:
+                try:
+                    ev = json.loads(raw)
+                except ValueError:
+                    continue
+                for event in engines.normalize_event(ev):
+                    if event.get("type") == "system" and event.get("subtype") == "init":
+                        sid = event.get("session_id")
+                        if (sid == session_id if session_id else isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid)):
+                            return event
+    except FileNotFoundError:
+        pass
+    return None
+
+
 def wait_for_init(proc, log: Path, offset: int, session_id: str, stderr: Path, timeout_s: int = 120,
                   engine: str = "claude", exit_file: Path | None = None) -> dict:
     """Block until the run writes its init event for this session and return it; kill the run and fail otherwise."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        try:
-            with open(log, "rb") as fh:
-                fh.seek(offset)
-                for raw in fh:
-                    try:
-                        ev = json.loads(raw)
-                    except ValueError:
-                        continue
-                    if not isinstance(ev, dict):
-                        continue
-                    for event in engines.normalize_event(ev):
-                        if event.get("type") == "system" and event.get("subtype") == "init":
-                            sid = event.get("session_id")
-                            if (sid == session_id if session_id else isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", sid)):
-                                return event
-        except FileNotFoundError:
-            pass
+        init = read_init(log, offset, session_id)
+        if init:
+            return init
         if proc.poll() is not None or (exit_file and exit_file.exists()):
             break
         time.sleep(0.3)
+    # The CLI can write init after the last read and exit before the liveness check.
+    init = read_init(log, offset, session_id)
+    if init:
+        return init
     code = proc.poll()
     if code is None and exit_file and exit_file.exists():
         code = int(exit_file.read_text().strip())
@@ -687,7 +696,7 @@ def reported_status(stage, meta, run, final):
             raw = file.read_bytes()
             if run.get("journal_day") == day.isoformat():
                 raw = raw[run.get("journal_offset", 0):]
-            for line in raw.decode("utf-8").splitlines():
+            for line in raw.decode("utf-8", errors="replace").splitlines():
                 m = hc.JOURNAL_LINE_RE.match(line)
                 if not m or m.group(2) != meta["tag"] or hc.sub_agent_line(m.group(2), m.group(3)):
                     continue
@@ -706,52 +715,69 @@ def capture_end(meta, code=None, observed=False, reason=None):
     run = meta["runs"][-1]
     stage_dir = outcome_stage(meta)
     records, _ = outcomes.read(outcomes.path(stage_dir, meta["task_id"]))
-    existing = next((e for e in records if e["run_id"] == run["id"] and e["type"] in ("run_ended", "run_observed_dead")), None)
-    if existing:
-        has_review = any(e["run_id"] == run["id"] and e["type"] == "review_observed" for e in records)
-        if meta.get("task_kind") != "review" or has_review:
-            return  # status checks need not reparse transcripts of already captured runs
+    existing = any(e["run_id"] == run["id"] and e["type"] in outcomes.TERMINAL_TYPES for e in records)
+    needs_review = meta.get("task_kind") == "review" and not any(
+        e["run_id"] == run["id"] and e["type"] == "review_observed" for e in records)
+    if existing and not needs_review:
+        return  # status checks need not reparse transcripts of already captured runs
     file = Path(meta["dir"]) / "log.jsonl"
     raw, intact = outcomes.log_events(file, run.get("log_offset", 0))
     normalized = [ev for obj in raw for ev in engines.normalize_event(obj)]
-    result = next((ev for ev in reversed(normalized) if ev.get("type") == "result"), {})
-    texts = [block.get("text", "") for ev in normalized if ev.get("type") == "assistant"
+    boundary = max((i for i, ev in enumerate(normalized)
+                    if ev.get("type") == "system" and ev.get("subtype") in ("init", "turn_start")), default=-1)
+    current = normalized[boundary + 1:]
+    result = next((ev for ev in reversed(current) if ev.get("type") == "result"), {})
+    texts = [block.get("text", "") for ev in current if ev.get("type") == "assistant"
              for block in (ev.get("message") or {}).get("content", []) if isinstance(block, dict) and block.get("type") == "text"]
     final = result.get("result") or (texts[-1] if texts else "")
-    if not any(ev.get("type") == "system" and ev.get("subtype") == "init" for ev in normalized):
-        reason = reason or "init_failure"
-    status = reported_status(meta["stage"], meta, run, final)
-    limit = limit_stop(result) is not None
-    clean = code == 0 and result.get("subtype") == "success" and not result.get("is_error")
-    if limit:
-        status = None
-    elif meta.get("stopping"):
-        status = "STOP"
-    elif observed or not clean:
-        if status not in ("BLOCKED", "QUESTION", "STOP"):
-            status = "EXIT"
-    elif status is None and is_review_role(meta):
-        status = "REVIEWED"
-    usage = outcomes.usage(file, run.get("log_offset", 0), run.get("engine", meta.get("engine", "claude")), meta.get("session_id"))
-    if observed:
-        usage["complete"] = False
-        data = dict(observed_at=outcomes.now(), ended_at=None, exit_code=None,
-                    evidence="process gone under agent lock; no exit wrapper evidence", usage=usage, complete=False, reported_status=status,
-                    termination_reason="limit" if limit else "stopped" if meta.get("stopping") else "abnormal_exit")
-        kind = "run_observed_dead"
-    else:
-        data = dict(ended_at=outcomes.now(), exit_code=code, cli_result=result.get("subtype"),
-                    termination_reason=reason or ("limit" if limit else "completed" if clean else "abnormal_exit"),
-                    reported_status=status, usage=usage, complete=intact and bool(result))
-        kind = "run_ended"
-    if existing:
-        status = existing["data"].get("reported_status")
-    else:
+    if not existing:
+        if not any(ev.get("type") == "system" and ev.get("subtype") == "init" for ev in normalized):
+            reason = reason or "init_failure"
+        status = reported_status(meta["stage"], meta, run, final)
+        limit = limit_stop(result) is not None
+        clean = (observed or code == 0) and result.get("subtype") == "success" and not result.get("is_error")
+        if limit:
+            status = None
+        elif meta.get("stopping"):
+            status = "STOP"
+        elif not clean:
+            if status not in ("BLOCKED", "QUESTION", "STOP"):
+                status = "EXIT"
+        elif status is None and is_review_role(meta):
+            status = "REVIEWED"
+        usage = outcomes.usage(file, run.get("log_offset", 0), run.get("engine", meta.get("engine", "claude")), meta.get("session_id"))
+        if observed:
+            usage["complete"] = False
+            data = dict(observed_at=evidence_time(run, file), ended_at=None, exit_code=None,
+                        evidence="process gone; exit wrapper outcome missing", usage=usage, complete=False, reported_status=status,
+                        termination_reason=("limit" if limit else "stopped" if meta.get("stopping") else
+                                            "wrapper_lost" if clean else "abnormal_exit"))
+            kind = "run_observed_dead"
+        else:
+            marker = file.with_name(f"exit-{run['id']}.code")
+            data = dict(ended_at=evidence_time(run, marker, file), exit_code=code, cli_result=result.get("subtype"),
+                        termination_reason=reason or ("limit" if limit else "completed" if clean else "abnormal_exit"),
+                        reported_status=status, usage=usage, complete=intact and bool(result))
+            kind = "run_ended"
         outcomes.emit(stage_dir, meta, run["id"], kind, data)
-    if meta.get("task_kind") == "review" and not any(e["type"] == "review_observed" and e["run_id"] == run["id"] for e in records):
+    if needs_review:
         report = Path(meta["report"])
         text = report.read_text(encoding="utf-8") if report.exists() else ""
         outcomes.emit(stage_dir, meta, run["id"], "review_observed", outcomes.review(meta, run["id"], final, text))
+
+
+def evidence_time(run, *files):
+    """Use the same artifact timestamp on each capture of a terminal event."""
+    for file in files:
+        try:
+            return hc.dt.datetime.fromtimestamp(file.stat().st_mtime, hc.dt.timezone.utc).isoformat()
+        except FileNotFoundError:
+            continue
+    return run["at"]
+
+
+class ReportedResumeFailure(hc.Failure):
+    """The launcher already journaled the resume failure while holding the agent lock."""
 
 
 def launch(meta: dict, prompt: str, resume: bool) -> int:
@@ -818,11 +844,25 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     save_meta(meta["stage"], meta["role"], meta)
     try:
         init = wait_for_init(proc, log, offset, meta["session_id"], d / "stderr.log", init_timeout(meta["cwd"]), engine, exit_file)
-    except hc.Failure:
+    except hc.Failure as exc:
         code = int(exit_file.read_text().strip()) if exit_file.exists() else proc.poll()
         telemetry(capture_end, meta, code, reason="init_failure")
-        meta["pid"], meta["runs"] = before[0], before[1]
-        save_meta(meta["stage"], meta["role"], meta)
+        try:
+            if resume:
+                stage, role = meta["stage"], meta["role"]
+                try:
+                    claimed = claim_exit(stage, meta)
+                except OSError:
+                    claimed = True  # the agent lock still shields the journal write and metadata rollback
+                if claimed:
+                    why = ("its unread message could not be replayed and stays queued"
+                           if os.environ.get(REPLAY_ENV) == "1" else "could not resume")
+                    hc.journal_append(stage, meta["tag"], f"EXIT {role}: {why} — {str(exc)[:200]} — agent status {role}")
+        finally:
+            meta["pid"], meta["runs"] = before
+            save_meta(meta["stage"], meta["role"], meta)
+        if resume:
+            raise ReportedResumeFailure(str(exc)) from None
         raise
     meta["session_id"] = init["session_id"]
     # Codex currently reports only the thread ID at init. Carry the model
@@ -1420,7 +1460,7 @@ def cmd_send(a) -> int:
         try:
             return _send_locked(stage, a, msg)
         except hc.Failure as e:
-            if os.environ.get(REPLAY_ENV) == "1":  # nobody reads this process's output: the hub hears it here
+            if os.environ.get(REPLAY_ENV) == "1" and not isinstance(e, ReportedResumeFailure):
                 hc.journal_append(stage, load_meta(stage, a.role)["tag"],
                                   f"EXIT {a.role}: its unread message could not be replayed and stays queued — "
                                   f"{str(e)[:200]} — agent status {a.role}")
@@ -1762,8 +1802,12 @@ def cmd_outcome(a):
             raise ValueError("task_id mismatch")
         if obj.get("type") not in ("review_observed", "ci_observed", "artifact_observed", "task_closed") and not (obj.get("supersedes") and obj.get("reason")):
             raise ValueError("hub import accepts review, CI, closure or explicit correction evidence")
-        target = obj.get("data", {}).get("target_task_id")
-        if target is not None and target != task_id:
+        target = obj["data"].get("target_task_id")
+        start = next((e["data"] for e in records if e["type"] == "task_started"), {})
+        if obj["type"] == "review_observed" and start.get("task_kind") == "review":
+            if target != start.get("review_target_task_id"):
+                raise ValueError("target_task_id mismatch")
+        elif target is not None and target != task_id:
             raise ValueError("target_task_id mismatch")
         extra = {k: obj[k] for k in ("supersedes", "reason") if k in obj}
         retry = next((e for e in records if e["event_id"] == obj.get("event_id")), None)
