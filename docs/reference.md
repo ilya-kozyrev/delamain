@@ -434,7 +434,9 @@ and a repository key from `task-outcomes.csv`. Each comparison follows original 
 counts pending tasks and handoffs, and needs at least five completed direct contracts per cell, sufficient quality
 coverage and a reduction of at least 20% in median tokens or comparable reported cost. Review counts use the first
 primary report per artifact. First-run CI is per artifact, while first-time-right also includes review rounds.
-The review skill presents eligible trials to the owner.
+The review skill presents eligible trials to the owner. An `artifact_observed` event with IDs can set review and
+CI applicability for those artifacts. Retro gives an aggregate first-run pass only when every applicable artifact
+passes, and an explicitly exempt artifact does not affect that result.
 
 The Markdown covers quantitative cost/turn/context/wake/friction/latency evidence plus A feature flow,
 B stage completion, C autonomy and D idle/brakes. Compare rates for unequal windows; retain denominators,

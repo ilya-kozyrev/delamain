@@ -226,4 +226,13 @@ row = next(r for r in table(dest, "task-outcomes") if r["id"] == tid)
 assert row["first_run_ci"] == "False" and row["reported_findings"] == ""
 assert not metrics["model_outcomes"]["proposals"]
 print("Retro multi-artifact CI: known early failure dominates a green retry, a later head and a missing artifact")
+
+emit(stage, tid, "artifact_observed", dict(target_task_id=tid, artifact_ids=[second_item, third_item],
+    review_applicability="not_required", ci_applicability="not_required"), 5)
+dest, metrics = run("exempt-artifacts", baseline=old)
+row = next(r for r in table(dest, "task-outcomes") if r["id"] == tid)
+assert row["ci_applicability"] == "required" and row["first_run_ci"] == "True"
+assert row["review_applicability"] == "required" and row["reported_findings"] == "1"
+assert len(metrics["model_outcomes"]["proposals"]) == 1
+print("Retro multi-artifact CI: explicit exemptions leave applicable first-run CI and review evidence intact")
 PY

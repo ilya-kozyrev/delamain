@@ -198,7 +198,10 @@ def contract_usage(runs, helpers_complete):
 
 
 def artifact_id(value):
-    url = urlsplit(value)
+    try:
+        url = urlsplit(value)
+    except ValueError:
+        return value
     if url.scheme and url.netloc:
         path = url.path.rstrip("/")
         if url.hostname == "github.com":
@@ -207,16 +210,22 @@ def artifact_id(value):
     return value
 
 
-def ci_quality(artifacts, observations, applicability):
+def observation_artifact(data):
+    value = data.get("artifact_id") or data.get("item")
+    return artifact_id(value) if isinstance(value, str) and value else None
+
+
+def ci_quality(artifacts, observations, applicability, exempt):
     if applicability == "not_required":
         return None
     grouped = defaultdict(list)
     for ev in observations:
         data = ev["data"]
-        if data.get("item"):
-            grouped[artifact_id(data["item"])].append(ev)
+        artifact = observation_artifact(data)
+        if artifact:
+            grouped[artifact].append(ev)
     values = []
-    for artifact in artifacts | grouped.keys():
+    for artifact in (artifacts | grouped.keys()) - exempt:
         observed = grouped[artifact]
         attempts = [ev for ev in observed if ev["data"].get("attempt_id") and ev["data"].get("attempt_created_at")]
         if not attempts:
@@ -231,7 +240,7 @@ def ci_quality(artifacts, observations, applicability):
     return False if False in values else True if values and all(v is True for v in values) else None
 
 
-def review_quality(artifacts, observations, applicability, reviewer=False):
+def review_quality(artifacts, observations, applicability, exempt, reviewer=False):
     if applicability == "not_required" and not reviewer:
         return {}
     grouped = defaultdict(list)
@@ -239,12 +248,15 @@ def review_quality(artifacts, observations, applicability, reviewer=False):
     seen = set()
     for ev in observations:
         data = ev["data"]
-        key = (data["reviewer_task_id"], data["reviewer_run_id"], data["head"], data["round"])
+        artifact = observation_artifact(data)
+        if artifact is None and len(artifacts) == 1:
+            artifact = next(iter(artifacts))
+        key = (data["reviewer_task_id"], data["reviewer_run_id"], data["head"], data["round"], artifact)
         if key in seen:
             continue
         seen.add(key)
-        artifact = data.get("artifact_id") or data.get("item")
-        artifact = artifact_id(artifact) if artifact else next(iter(artifacts)) if len(artifacts) == 1 else None
+        if artifact in exempt:
+            continue
         if not artifact and artifacts:
             # Several declared artifacts need explicit review-to-artifact evidence.
             complete = False
@@ -267,11 +279,46 @@ def review_quality(artifacts, observations, applicability, reviewer=False):
         first = min(reports, key=lambda ev: (ev["data"]["round"] or 1, order(ev)), default=None)
         primary.append(first["data"]["findings"] if first else None)
     known = bool(primary) and all(item is not None for item in primary)
+    rounds = {(artifact, ev["data"]["round"]) for artifact, events in grouped.items()
+              for ev in events if ev["data"]["round"] is not None}
     return dict(reported_findings=sum(sum(item.values()) for item in primary) if known else None,
                 reported_high=sum(item["high"] for item in primary) if known else None,
-                accepted_findings=len(accepted) if observations and complete else None,
-                review_rounds=len({(ev["data"].get("artifact_id"), ev["data"]["round"]) for ev in observations
-                                   if ev["data"]["round"] is not None}) if observations else None)
+                accepted_findings=len(accepted) if grouped and complete else None,
+                review_rounds=len(rounds) if grouped else None)
+
+
+def artifact_scopes(meta, events, closure):
+    scopes = {key: {} for key in ("review_applicability", "ci_applicability")}
+    defaults = {key: meta[key] for key in scopes}
+    artifacts = set()
+    for ev in events:
+        if ev["type"] == "artifact_observed" and ev["data"]["target_task_id"] == ev["task_id"]:
+            per_artifact = True
+        elif ev["type"] == "task_closed" and ev["event_id"] == closure.get("evidence_event_id"):
+            per_artifact = False
+        else:
+            continue
+        data = ev["data"]
+        ids = {artifact_id(a) for a in data["artifact_ids"]}
+        artifacts.update(ids)
+        for key, scope in scopes.items():
+            app = data[key]
+            if app == "unknown":
+                continue
+            if per_artifact and ids:
+                scope.update(dict.fromkeys(ids, app))
+            else:
+                defaults[key] = app
+    return artifacts, defaults, scopes
+
+
+def applicable_artifacts(artifacts, observed, default, overrides):
+    values = {a: overrides.get(a, default) for a in artifacts | observed}
+    exempt = {a for a, value in values.items() if value == "not_required"}
+    statuses = set(values.values()) or {default}
+    applicability = ("required" if "required" in statuses else
+                     "not_required" if statuses == {"not_required"} else "unknown")
+    return artifacts - exempt, applicability, exempt
 
 
 class Evidence:
@@ -371,19 +418,17 @@ class Evidence:
             [order(starts[task])] + [order(ev) for ev in by_task[task] if ev["type"] == "run_started"]))
         closure = outcomes.project_closure(by_task[latest_task]) or {}
         evs = sorted((ev for events in by_task.values() for ev in events), key=order)
-        artifacts = set()
-        app = {k: meta[k] for k in ("review_applicability", "ci_applicability")}
-        for ev in evs:
-            if ev["type"] == "artifact_observed" and ev["data"]["target_task_id"] != ev["task_id"]:
-                continue
-            if ev["type"] == "artifact_observed" or (ev["type"] == "task_closed" and ev["event_id"] == closure.get("evidence_event_id")):
-                data = ev["data"]
-                artifacts.update(artifact_id(a) for a in data["artifact_ids"])
-                app.update({k: data[k] for k in app if data[k] != "unknown"})
+        artifacts, defaults, scopes = artifact_scopes(meta, evs, closure)
         reviewer = meta["task_kind"] == "review"
         matched_ci = [ev for ev in evs if ev["type"] == "ci_observed" and ev["data"]["target_task_id"] == ev["task_id"]]
         linked = ([ev for ev in evs if ev["type"] == "review_observed"] if reviewer else
                   active([ev for task in by_task for ev in self.reviews[task]], cutoff))
+        observed_ci = {observation_artifact(ev["data"]) for ev in matched_ci} - {None}
+        observed_reviews = {observation_artifact(ev["data"]) for ev in linked} - {None}
+        review_artifacts, review_app, review_exempt = applicable_artifacts(
+            artifacts, observed_reviews, defaults["review_applicability"], scopes["review_applicability"])
+        ci_artifacts, ci_app, ci_exempt = applicable_artifacts(
+            artifacts, observed_ci, defaults["ci_applicability"], scopes["ci_applicability"])
         runs = contract_runs(by_task)
         first = next((r["identity"] for r in runs if r["task_id"] == root), identity(meta))
         identities = {tuple(r["identity"]) for r in runs} | {tuple(identity(starts[t]["data"])) for t in by_task
@@ -404,7 +449,7 @@ class Evidence:
                    resume_count=max(0, len(runs) - 1) if runs else None,
                    fix_rounds=sum(r["reason"] in ("review_fix", "ci_fix") for r in runs)
                    if any(r["reason"] in ("review_fix", "ci_fix") for r in runs) else None,
-                   first_run_ci=ci_quality(artifacts, matched_ci, app["ci_applicability"]),
+                   first_run_ci=ci_quality(ci_artifacts, matched_ci, ci_app, ci_exempt),
                    source=json.dumps(sorted({source for task in by_task for source in self.sources[task]})),
                    event_ids=json.dumps(sorted({ev["event_id"] for ev in evs + linked})),
                    artifact_ids=json.dumps(sorted(artifacts)), contributors=json.dumps(sorted(by_task)),
@@ -412,8 +457,9 @@ class Evidence:
                                              for run in runs + helper_runs]),
                    ambiguous=any(task in self.ambiguous for task in by_task)
                    or len({starts[task]["data"]["repository_key"] for task in by_task}) != 1)
-        row.update(app, **contract_usage(runs + helper_runs, helpers_complete),
-                   **review_quality(artifacts, linked, app["review_applicability"], reviewer))
+        row.update(review_applicability=review_app, ci_applicability=ci_app,
+                   **contract_usage(runs + helper_runs, helpers_complete),
+                   **review_quality(review_artifacts, linked, review_app, review_exempt, reviewer))
         return row
 
 
