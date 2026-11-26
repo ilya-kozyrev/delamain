@@ -20,8 +20,10 @@ review policy.
 Omit `agent spawn --engine` unless you deviate from the configured engine, then pass `--reason`. Without that flag,
 `AGENT_HUB_ENGINE` supplies the engine; if it is unset the launcher detects a Codex host through `CODEX_THREAD_ID` and falls
 back to Claude in an ordinary terminal. Native subagents run in their host; mixed teams use detached executors.
-Codex uses its configured model when `--model` is omitted; pass an actual available model id or an explicit
-`AGENT_HUB_CODEX_MODEL_MAP` alias. Claude aliases stay Claude-only. Read `docs/codex.md` for installation,
+Pass `--model luna|terra|sol|astra` to resolve the latest listed model in that family at launch. For ordinary
+implementation set `AGENT_HUB_CODEX_DEFAULT_MODEL=sol`; if both the flag and setting are absent, the CLI chooses.
+Custom `AGENT_HUB_CODEX_MODEL_MAP` aliases can target a family or a full ID. A full ID stays pinned and warns if the
+catalog lists a later version. Read `docs/codex.md` for the catalog, deliberate pins, installation,
 hook trust, full access, and native worker setup. Full access keeps the lock hooks active.
 
   Before the first detached Codex launch for a selected CLI/model in a stage, check that CLI's `--version` and

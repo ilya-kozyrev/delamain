@@ -33,6 +33,7 @@ from typing import Optional
 
 import engines
 import hubcore as hc
+import model_catalog
 
 ENGINES = ("claude", "codex")
 ENGINE_NAME = {"claude": "Claude", "codex": "Codex"}
@@ -356,6 +357,9 @@ def assess(engine: str, window: str, samples: list, now: float) -> Pace:
 
 def classify(model: str) -> str:
     m = (model or "").lower()
+    family = model_catalog.codex_family(m)
+    if family:
+        return {"luna": "mechanical", "terra": "bounded", "sol": "bounded", "astra": "judgement"}[family]
     if any(k in m for k in ("haiku", "luna", "mini", "nano")):
         return "mechanical"
     if any(k in m for k in ("opus", "fable", "astra")):

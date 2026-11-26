@@ -24,6 +24,7 @@ See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints
 
 ## Tools
 MCP servers needed? (none by default) <A browser check, docs lookup, a GitLab/DB server: name it, and launch with `--mcp inherit` or `--mcp FILE`.>
+Codex model if required: <`luna`, `terra`, `sol` or `astra`, with effort and any reason for deviating from stage policy>.
 Sub-agents (Claude): the footer allows read-only digests and quick bounded pieces in a worktree; <name any piece you
 expect to go to one, or "none">.
 

@@ -11,6 +11,9 @@ Say why for each rule: the next hub keeps a rule it understands. -->
   never found a blocker.
 
 ## Adds
+- **Codex models.** Set `AGENT_HUB_CODEX_DEFAULT_MODEL` to `sol` for implementation. Use `luna` for mechanical
+  checks, `terra` for bounded work and `astra` for judgement when the reviewer policy selects Codex. *Why:* the
+  selected CLI's catalog supplies the newest listed version of each family.
 - **Customer data never leaves the staging database.** Agents query it read-only; an export goes to the owner as
   `ask add`. *Why:* a contract clause.
 - **Deploys only from the `deploy-window` lock holder**, and only between 10:00 and 16:00 on weekdays. *Why:* support

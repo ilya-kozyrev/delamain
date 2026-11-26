@@ -352,12 +352,7 @@ def hub_effort(data: dict) -> Optional[str]:
         return None
 
 
-def codex_context(session_id=None, transcript=None) -> dict:
-    """Persisted settings of the exact caller; hook payload identity need not be in its process env."""
-    current = hc.session_id()
-    sid = session_id if session_id is not None else current
-    if not sid or (current and current != sid):
-        return {}
+def _codex_rollout_context(sid, transcript=None):
     if transcript is not None:
         head = codex_rollouts.Index()._head(Path(transcript))
         if not head or head[0] != sid:
@@ -375,22 +370,41 @@ def codex_context(session_id=None, transcript=None) -> dict:
                 return dict(context, _rollout_found=True)
         except OSError:
             pass
+    return {}
+
+
+def codex_context(session_id=None, transcript=None) -> dict:
+    """Persisted settings of the exact caller, plus its matching detached launch request."""
+    current = hc.session_id()
+    sid = session_id if session_id is not None else current
+    if not sid or (current and current != sid):
+        return {}
+    observed = _codex_rollout_context(sid, transcript)
+    if transcript is not None and not observed:
+        return {}
     # A detached coordinator knows its launch policy even before a rollout is discoverable.
     role = os.environ.get("AGENT_ROLE")
     stage = os.environ.get("HUB_STAGE")
     if role and stage and hc.STAGE_RE.fullmatch(role):
         try:
             meta = json.loads((hc.root() / hc.check_stage(stage) / "agents" / role / "meta.json").read_text())
-            if meta.get("engine") == "codex" and meta.get("session_id") == sid:
-                return {"model": meta.get("model"), "effort": meta.get("effort"), "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
-                        "approval_policy": meta.get("approval_policy")}
+            if isinstance(meta, dict) and meta.get("engine") == "codex" and meta.get("session_id") == sid:
+                context = observed or {"model": meta.get("model"), "effort": meta.get("effort"),
+                                       "sandbox_policy": meta.get("sandbox_policy") or {"type": meta.get("sandbox")},
+                                       "approval_policy": meta.get("approval_policy")}
+                request = meta.get("requested_model")
+                if request and (not observed.get("model") or
+                                observed["model"] in (meta.get("model"), meta.get("resolved_model"))):
+                    context["requested_model"] = request
+                return context
         except (OSError, ValueError, hc.Failure):
             pass
-    return {}
+    return observed
 
 
 def codex_model(given: Optional[str], context: dict, cwd: Path) -> Optional[str]:
-    return (given or configured_model() or context.get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL")
+    return (given or configured_model() or context.get("requested_model") or context.get("model")
+            or os.environ.get("AGENT_HUB_CODEX_MODEL")
             or None)
 
 
@@ -849,7 +863,7 @@ class CodexSuccessor(Successor):
         self.sandbox_policy = sandbox_policy or {"type": mode}
         self.effort = effort
         self.codex = engines.codex_bin(cwd)
-        self.cli_model = engines.model_map(cwd).get(model, model) if model else None
+        self.cli_model = engines.resolve_codex_model(model, self.cwd) if model else None
 
     def brief_text(self):
         skill = hc.BIN.parent / "skills" / "hub" / "SKILL.md"
@@ -1310,7 +1324,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
     if engine == "codex":
         context = codex_context()
         if retry.get("engine") == "codex":
-            context = dict(context, model=retry.get("model"), effort=retry.get("effort"),
+            context = dict(context, model=retry.get("model"), requested_model=None, effort=retry.get("effort"),
                            sandbox_policy=retry.get("sandbox_policy") or {"type": retry.get("mode")},
                            approval_policy=retry.get("approval_policy", "never"))
         try:
@@ -1421,7 +1435,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if engine == "codex" and context.get("approval_policy") not in (None, "never"):
             s.notes.append(f"inherited sandbox {mode}; approval policy {context['approval_policy']} becomes never "
                            "for the unattended successor (denied tools fail without broadening permissions)")
-    except hc.Failure as e:
+    except (hc.Failure, hc.UsageError) as e:
         if not dry_run:
             _release(stage, succ, k, reservation["at"])
             hc.journal_append(stage, tag, f"BLOCKED auto-handoff: no successor started ({e}) — waiting for the owner; "
@@ -1591,6 +1605,7 @@ def desktop_project_root(stage: str, cwd: Path) -> Path:
 
 def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False,
                     owner_asked=False):
+    cli_model = engines.resolve_codex_model(model, cwd) if model else None
     root = desktop_project_root(stage, cwd)
     predecessor_cwd = str(cwd.resolve())
     authority_sources = desktop_authority_sources(stage, {'predecessor_cwd': predecessor_cwd})
@@ -1652,8 +1667,8 @@ Owner questions use `ask`; consult the register, not copied decisions.
 {marker_text(k, limit)}
 '''
         args = {'title': hc.hub_title(stage, succ), 'prompt': prompt}
-        if model:
-            args['model'] = engines.model_map(cwd).get(model, model)
+        if cli_model:
+            args['model'] = cli_model
         if effort:
             args['thinking'] = effort
         pend = {'n': succ, 'kind': 'desktop', 'surface': 'desktop', 'engine': 'codex', 'phase': 'prepared',
@@ -1720,7 +1735,7 @@ def retry_desktop(stage, request, model, effort, mode, cwd, dry_run=False, *, ex
             raise hc.Failure('prepared request brief lacks its settings record; no settings changed')
         args['prompt'] = args['prompt'].replace(old_line, new_line, 1)
         if 'model' in changes:
-            args['model'] = engines.model_map(cwd).get(requested['model'], requested['model'])
+            args['model'] = engines.resolve_codex_model(requested['model'], cwd)
         if 'effort' in changes:
             args['thinking'] = requested['effort']
         pend = dict(pend, requested=requested, create_args=args)

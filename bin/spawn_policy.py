@@ -17,6 +17,7 @@ import re
 from typing import Optional
 
 import hubcore as hc
+import model_catalog
 
 DEFAULT_EFFORT = "high"
 DEFAULT_RESUME_MAX_CTX = 250_000
@@ -28,6 +29,15 @@ def pattern_matches(key: str, names: list) -> bool:
     """A setting key against model names: a glob as is, a plain word anywhere in the name; case-insensitive."""
     pat = key if any(ch in key for ch in "*?[") else f"*{key}*"
     return any(fnmatch.fnmatchcase(n.lower(), pat.lower()) for n in names if n)
+
+
+def reason_model_matches(key: str, names: list, codex_model: Optional[str]) -> bool:
+    if codex_model:
+        if key.lower() in model_catalog.FAMILIES:
+            return key.lower() == model_catalog.codex_family(codex_model)
+        if key.lower().startswith("gpt-") and not any(ch in key for ch in "*?["):
+            return key.lower() == codex_model.lower()
+    return pattern_matches(key, names)
 
 
 def _object(name: str, cwd) -> dict:
@@ -53,7 +63,8 @@ def clean_reason(reason: Optional[str]) -> str:
 
 
 def check_reason(names: list, effort: Optional[str], default: str, allowed: tuple, reason: str, cwd=None,
-                 model_unknown: bool = False, engine: Optional[str] = None, configured: Optional[str] = None) -> Optional[str]:
+                 model_unknown: bool = False, engine: Optional[str] = None, configured: Optional[str] = None,
+                 codex_model: Optional[str] = None) -> Optional[str]:
     """A warning line for a spawn above the default without a reason (None: fine); a UsageError when the policy is
     `refuse`. Above the default: an effort ranked higher than the model's default, a model of AGENT_HUB_REASON_MODELS,
     or an explicit `engine` other than the `configured` one (engines.configured: the owner's AGENT_HUB_ENGINE; none: nothing to deviate from)."""
@@ -79,7 +90,7 @@ def check_reason(names: list, effort: Optional[str], default: str, allowed: tupl
     if effort and default in allowed and effort in allowed and allowed.index(effort) > allowed.index(default):
         above.append(f"effort {effort} is above the default {default}")
     if isinstance(models, list) and not model_unknown:
-        hit = [m for m in models if isinstance(m, str) and pattern_matches(m, names)]
+        hit = [m for m in models if isinstance(m, str) and reason_model_matches(m, names, codex_model)]
         if hit:
             above.append(f"model {names[0]} is above the default (AGENT_HUB_REASON_MODELS: {hit[0]})")
     if not above:

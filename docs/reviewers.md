@@ -76,8 +76,8 @@ reviewer: agent (agent opus/high)
 start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>
 
 $ AGENT_HUB_ENGINE=codex hub reviewer --for code --stage web
-reviewer: agent (agent gpt-6-astra/high)
-start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --engine codex --sandbox workspace-write --model gpt-6-astra --effort high --stage web --reason 'reviewer policy: claude author -> codex reviewer' --brief <BRIEF>
+reviewer: agent (agent <latest-listed-astra-id>/high)
+start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --engine codex --sandbox workspace-write --model astra --effort high --stage web --reason 'reviewer policy: codex author -> codex reviewer' --brief <BRIEF>
 ```
 
 For a Claude `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief
@@ -133,8 +133,10 @@ entry in or out by the author's engine — "a Claude reviewer only for a Codex a
 guessing the host. The variables are also the place for the rule above ("a different model from the author").
 
 **The built-in default** (no valid list) follows the author as well: for a Codex author it is a Claude reviewer
-(`opus`), for a Claude author a Codex reviewer (`gpt-6-astra`, read-only) when the `codex` CLI is installed (`CODEX_BIN`),
-otherwise Claude as before. Without `--author` it stays the host engine's.
+(`opus`), for a Claude author a Codex reviewer when the CLI is installed (`CODEX_BIN`) and the configured model is
+usable. A family such as the default `astra` must be listed in the catalog. A full ID can be used without a catalog.
+If the availability check fails, the built-in default uses Claude and prints the reason. Without `--author` the
+host engine supplies the initial choice, with the same availability checks for Codex.
 
 **A check should be forgiving about missing limit data.** Limits choose the engine for a launch; they rule an engine out
 only when it is practically exhausted. A check that sees no observation, or one too old to trust, should report the
@@ -189,8 +191,10 @@ different from the model your executors write with, or list a reviewer skill tha
 For Sol-authored work, prefer Claude Opus/Fable at high when its quota permits, then Codex Astra at high. Do not
 substitute an older Sol merely to change the model id. Reviewer engines are independent of the implementation
 engine. Put limited reviewers first with a trusted `check`, followed by the fallback; the built-in Codex agent
-reviewer uses `gpt-6-astra` rather than inheriting a Sol implementation default. `AGENT_HUB_REVIEW_MODEL` and explicit
-entries still override that default. Check actual CLI model availability before launching the printed command.
+reviewer defaults to `astra`. `AGENT_HUB_REVIEW_MODEL` and explicit entries can supply a family or a full ID. The
+reviewer output shows the resolved ID and the start command keeps the family so spawn can read the current catalog.
+An unresolved family makes the entry unavailable. A stale full ID stays usable and prints the same warning as spawn.
+See [Codex model selection](codex.md#spawn-message-and-resume).
 
 ## The brief
 
