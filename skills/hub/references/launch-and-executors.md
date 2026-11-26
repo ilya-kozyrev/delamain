@@ -127,7 +127,7 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   pushed, merged) and `agent worktrees --prune --dry-run` shows the finished ones, which `--prune` then removes (never
   one with unpushed or uncommitted work, or in use).
 - Model and effort: choose per agent. Claude supports `opus|sonnet|haiku|fable` aliases and optional
-  `AGENT_HUB_MODEL_MAP` pins. Codex supports available model ids and optional `AGENT_HUB_CODEX_MODEL_MAP` aliases;
+  `AGENT_HUB_MODEL_MAP` pins. Codex supports `luna|terra|sol|astra`, full IDs and custom `AGENT_HUB_CODEX_MODEL_MAP` aliases;
   omit the model to use `AGENT_HUB_CODEX_DEFAULT_MODEL` or the CLI configuration. Choose effort supported by that model. Every Claude alias takes `--effort`, `haiku` included (Haiku 5.5 from Claude
   Code 2.1.296 has the setting; Haiku 4.5 ignores the flag).
 

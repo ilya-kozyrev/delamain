@@ -3,6 +3,7 @@
 <!-- Self-contained brief for a reviewer — an `agent` reviewer (`hub reviewer` prints its `agent spawn` line) or a
 reviewer skill; docs/reviewers.md has the contract. The reviewer has not seen the conversation: everything it needs
 is here. Fill every <…>; delete the "Round N" section for a first review.
+When policy selects Codex for judgement, use the `astra` family at high effort.
 The hub writes this brief and launches the reviewer, never the author of the change: an author's brief steers the
 reviewer to what the author already checked. For money, masking and permissions narrow "Look hardest at" to that
 risk and leave style out. -->

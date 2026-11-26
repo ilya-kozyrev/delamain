@@ -77,8 +77,9 @@ check "$(jf '[d["chosen"], "--engine claude" in d["start"], "--sandbox" in d["st
 CODEX_THREAD_ID=probe $B/hub reviewer --author codex/gpt-6.1-sol --json 2>/dev/null > $P/d2.json
 check "$(jf '"--engine claude" in d["start"]' < $P/d2.json)" True "built-in default, Codex author, Codex host -> still Claude"
 mkdir -p $P/bin; printf '#!/bin/sh\nexit 0\n' > $P/bin/codex; chmod +x $P/bin/codex
+cp "$T/fixtures/codex-model-catalog.json" "$CODEX_HOME/models_cache.json"
 CODEX_BIN=$P/bin/codex $B/hub reviewer --author claude/opus --json 2>/dev/null > $P/d3.json
-check "$(jf '"--engine codex --sandbox workspace-write --model gpt-6-astra" in d["start"]' < $P/d3.json)" True "built-in default, Claude author, codex installed -> a Codex reviewer"
+check "$(jf '"--engine codex --sandbox workspace-write --model astra" in d["start"]' < $P/d3.json)" True "built-in default, Claude author, codex installed -> a Codex reviewer"
 CODEX_BIN=$P/bin/missing $B/hub reviewer --author claude/opus --json 2>/dev/null > $P/d4.json
 check "$(jf '["--engine claude" in d["start"], "codex" in d["start"]]' < $P/d4.json)" "[True, False]" "negative: Claude author, no codex CLI -> the Claude default stays (named)"
 CODEX_THREAD_ID=probe CODEX_BIN=$P/bin/missing $B/hub reviewer --author claude/opus --json 2>/dev/null > $P/d4b.json

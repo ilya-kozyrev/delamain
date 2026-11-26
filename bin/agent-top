@@ -90,6 +90,7 @@ from typing import NamedTuple
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
+import model_catalog  # noqa: E402
 import codex_rollouts  # noqa: E402
 import codex_limits  # noqa: E402
 import desktop_idle  # noqa: E402
@@ -1170,13 +1171,14 @@ class Collector:
                   if isinstance(u, dict) and ls.inbox_touch < num(u.get("log_offset"))]
         act = ls.action() if alive else None
         role = meta.get("role") or (m.group("role") if m else d.name)
+        model_id = model_catalog.recorded_model(meta, ls.model)
         return {
             "kind": "headless", "parent": None,
             "engine": meta.get("engine") or ls.engine,
             "stage": stage, "role": role, "dir_name": d.name, "tag": meta.get("tag") or role,
             "title": meta.get("title") or "", "model": meta.get("model") or "", "effort": meta.get("effort"),
-            "model_id": meta.get("resolved_model") or ls.model,
-            "ctx_window": ls.ctx_window(meta.get("resolved_model") or ls.model or meta.get("model")),
+            "model_id": model_id,
+            "ctx_window": ls.ctx_window(model_id),
             "state": state, "group": {"live": 0, "dead": 1, "error": 1, "done": 2}[state],
             "quiet": bool(alive and age is not None and age > self.stale_s),
             "alive": alive, "pid": meta.get("pid"), "session_id": meta.get("session_id"),

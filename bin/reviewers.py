@@ -46,6 +46,7 @@ from typing import Optional
 
 import hubcore as hc
 import engines
+import model_catalog
 
 SETTING = "AGENT_HUB_REVIEWERS"
 AUTHOR_ENGINE_VAR, AUTHOR_MODEL_VAR = "AGENT_HUB_REVIEW_AUTHOR_ENGINE", "AGENT_HUB_REVIEW_AUTHOR_MODEL"
@@ -70,14 +71,16 @@ def show(value, limit: int = SHOWN) -> str:
 class Entry:
     """One valid reviewer entry. model/effort are filled in for kind agent (settings supply the defaults)."""
 
-    def __init__(self, index: int, raw: dict):
+    def __init__(self, index: int, raw: dict, cwd=None):
         self.index = index
         self.name = raw["name"]
         self.kind = raw["kind"]
         self.skill = raw.get("skill")
         self.model = raw.get("model")
+        self.launch_model = None
+        self.resolved_model = None
         self.effort = raw.get("effort")
-        self.engine = raw.get("engine") or engines.selected()
+        self.engine = raw.get("engine") or engines.selected(cwd=cwd)
         self.explicit_engine = "engine" in raw
         self.check = raw.get("check")
         self.until = raw.get("until")
@@ -108,8 +111,30 @@ class Verdict:
 class Loaded:
     """The parsed list: valid entries in order, the problems found, and which layer the list came from."""
 
-    def __init__(self, entries: list, problems: list, origin: str):
+    def __init__(self, entries: list, problems: list, origin: str, cwd=None):
         self.entries, self.problems, self.origin = entries, problems, origin
+        self.cwd = cwd
+        self.catalog = None
+        self.aliases = engines.model_map(cwd) if self.codex_entries() else {}
+
+    def codex_entries(self):
+        return [entry for entry in self.entries if entry.kind == "agent" and entry.engine == "codex"]
+
+    def codex_models(self):
+        return [model_catalog.map_model(entry.model, self.aliases) for entry in self.codex_entries()]
+
+    def model_warnings(self):
+        if not self.codex_entries():
+            return []
+        self.catalog = model_catalog.Catalog()
+        return self.catalog.pin_warnings(self.codex_models(), self.cwd)
+
+    def resolve_model(self, entry):
+        if entry.kind == "agent" and entry.engine == "codex":
+            if self.catalog is None:
+                self.catalog = model_catalog.Catalog()
+            entry.launch_model = model_catalog.map_model(entry.model, self.aliases)
+            entry.resolved_model = self.catalog.resolve(entry.launch_model)
 
 
 class Author:
@@ -169,12 +194,12 @@ def _review_defaults(cwd=None, engine="claude") -> tuple:
     """(model, effort) of an `agent` reviewer that names none: AGENT_HUB_REVIEW_MODEL / _EFFORT, else opus / high."""
     # Review is judgement work. Do not inherit a Sol implementation default or
     # the standalone CLI's ordinary-work model for a Codex reviewer.
-    default_model = DEFAULT_MODEL if engine == "claude" else "gpt-6-astra"
+    default_model = DEFAULT_MODEL if engine == "claude" else "astra"
     model = (hc.setting("AGENT_HUB_REVIEW_MODEL", cwd=cwd) or default_model or "").strip() or None
     effort = (hc.setting("AGENT_HUB_REVIEW_EFFORT", cwd=cwd) or DEFAULT_EFFORT).strip()
     problem = (hc.model_problem(model, cwd) if engine == "claude" else engines.model_problem(model, cwd)) if model else None
     if problem:
-        hc.warn(f"AGENT_HUB_REVIEW_MODEL={show(model)}: {problem}; using {DEFAULT_MODEL}")
+        hc.warn(f"AGENT_HUB_REVIEW_MODEL={show(model)}: {problem}; using {default_model}")
         model = default_model
     efforts = hc.EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
     if effort not in efforts:
@@ -268,7 +293,7 @@ def load(cwd=None, author: Optional[Author] = None) -> Loaded:
                 problems.append(f"{SETTING} entry {i}{f' ({label})' if label else ''}: {e}; skipped")
                 continue
             seen.add(clean["name"])
-            entries.append(Entry(i, clean))
+            entries.append(Entry(i, clean, cwd))
         if not entries:
             problems.append(f"{SETTING}: no valid entry; using the built-in default (one `agent` reviewer)")
     if not entries:
@@ -277,12 +302,12 @@ def load(cwd=None, author: Optional[Author] = None) -> Loaded:
             raw_default["engine"] = "claude"
         elif author and author.engine == "claude":  # Codex when its CLI is there, else Claude — named, never the host's
             raw_default["engine"] = "codex" if shutil.which(hc.setting("CODEX_BIN", cwd=cwd) or "codex") else "claude"
-        entries, origin = [Entry(1, raw_default)], "default"
+        entries, origin = [Entry(1, raw_default, cwd)], "default"
     for e in entries:
         if e.kind == "agent":
             model, effort = _review_defaults(cwd, e.engine)
             e.model, e.effort = e.model or model, e.effort or effort
-    return Loaded(entries, problems, origin)
+    return Loaded(entries, problems, origin, cwd)
 
 
 # ---------------------------------------------------------------- availability
@@ -351,7 +376,7 @@ def _short(text: str) -> str:
     return text if len(text) <= OUTPUT_CHARS else text[:OUTPUT_CHARS - 1] + "…"
 
 
-def judge(entry: Entry, change_class: Optional[str], origin: str, author: Optional[Author] = None,
+def judge(entry: Entry, change_class: Optional[str], loaded: Loaded, author: Optional[Author] = None,
           second: bool = False) -> Verdict:
     """Whether the entry can review a change of this class now. The cheap tests come first; the `check` command
     runs only for an entry that passed them. An entry that serves second opinions only is judged just when `second`
@@ -362,8 +387,13 @@ def judge(entry: Entry, change_class: Optional[str], origin: str, author: Option
         return Verdict(entry, False, f"until {entry.until} has passed")
     if change_class and entry.classes and change_class.strip().lower() not in {c.strip().lower() for c in entry.classes}:
         return Verdict(entry, False, f"not for class {show(change_class)} (it serves {', '.join(entry.classes)})")
+    try:
+        loaded.resolve_model(entry)
+    except hc.UsageError as e:
+        hc.warn(f"reviewer {entry.name}: {e}")
+        return Verdict(entry, False, str(e))
     if entry.check:
-        if origin == "project":
+        if loaded.origin == "project":
             hc.warn(f"{SETTING} entry {entry.index} ({entry.name}): `check` in a repository's config is never run "
                      "(a cloned repository must not run commands through the hub); skipped — set the list in the "
                      "environment or in the hub home's config.json")
@@ -386,7 +416,7 @@ def walk(loaded: Loaded, change_class: Optional[str], every: bool = False, autho
     them with `every`. chosen is the first available verdict, or None."""
     verdicts, chosen = [], None
     for entry in loaded.entries:
-        v = judge(entry, change_class, loaded.origin, author)
+        v = judge(entry, change_class, loaded, author)
         verdicts.append(v)
         if v.available and chosen is None:
             chosen = v
@@ -410,7 +440,7 @@ def walk_second(loaded: Loaded, change_class: Optional[str], every: bool = False
             continue
         v = judged.get(entry.name)
         if v is None:
-            v = judged[entry.name] = judge(entry, change_class, loaded.origin, author, second=True)
+            v = judged[entry.name] = judge(entry, change_class, loaded, author, second=True)
         if v.available and chosen is None:
             chosen = v
             if not every:
@@ -433,7 +463,8 @@ def start_line(entry: Entry, stage: str | None = None, author_engine: str | None
     cwd = "<REPO>"
     if entry.engine == "codex":
         cwd = shlex.quote(str(hc.work_dir(stage))) if stage else "<HUB_WORK>"
-    model = f" --model {shlex.quote(entry.model)}" if entry.model else ""
+    launch_model = entry.launch_model or entry.model
+    model = f" --model {shlex.quote(launch_model)}" if launch_model else ""
     in_stage = f" --stage {shlex.quote(stage)}" if stage else ""
     reason = ""
     if engine:
@@ -443,7 +474,10 @@ def start_line(entry: Entry, stage: str | None = None, author_engine: str | None
 
 
 def describe(entry: Entry) -> str:
-    return f"skill {entry.skill}" if entry.kind == "skill" else f"agent {entry.model}/{entry.effort}"
+    if entry.kind == "skill":
+        return f"skill {entry.skill}"
+    model = entry.resolved_model or entry.model
+    return f"agent {model}/{entry.effort}"
 
 
 def entry_json(v: Verdict) -> dict:
@@ -451,4 +485,6 @@ def entry_json(v: Verdict) -> dict:
     if not v.ran:
         out.pop("check", None)
     out.update({"available": v.available, "why": v.why})
+    if v.entry.resolved_model and v.entry.resolved_model != v.entry.model:
+        out["resolved_model"] = v.entry.resolved_model
     return out

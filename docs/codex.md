@@ -164,20 +164,26 @@ not shown as zero, and separate `limit_id` buckets remain separate in the header
 ## Spawn, message and resume
 
 ```sh
-agent spawn --engine codex --role builder --cwd /absolute/path/to/project \
+agent spawn --engine codex --model sol --role builder --cwd /absolute/path/to/project \
   --brief /absolute/path/to/brief.md --worktree
 agent status builder
 agent send builder "Continue with the next item in the brief"
 agent stop builder
 ```
 
-For Codex, leaving out `--model` uses `AGENT_HUB_CODEX_DEFAULT_MODEL` if configured, otherwise the CLI's configured
-model. Pass an available model id when you need a pin; `AGENT_HUB_CODEX_MODEL_MAP` provides explicit aliases.
+Set `AGENT_HUB_CODEX_DEFAULT_MODEL` to `sol` for ordinary implementation. Leaving out both the flag and the setting
+delegates model selection to the CLI. Pass `luna`, `terra`, `sol` or `astra` to use the latest listed version in that
+family from `$CODEX_HOME/models_cache.json` (by default `~/.codex/models_cache.json`). Version is compared numerically,
+with lower catalog priority winning ties. A missing or unreadable cache, or an unlisted family, blocks the launch.
+`AGENT_HUB_CODEX_MODEL_MAP` can map custom aliases to families or full IDs. Built-in families keep their meaning.
 All four Codex families may be launched, chosen by task class as on Claude: Luna ↔ Haiku for mechanical work with a
 checkable answer, Terra ↔ Sonnet for bounded work from a finished design, Sol ↔ Opus as the implementation
 workhorse, Astra ↔ Fable for short judgement-dense work.
 The plugin does not silently translate Claude model aliases into GPT ids. `CODEX_BIN` chooses the executable.
 Choose an effort supported by the selected model with `--effort`.
+Pass a full ID to run a specific version. A newer listed version triggers `STALE MODEL` even on a dry run. To
+acknowledge a deliberate pin, list the ID in the hub-wide `AGENT_HUB_MODEL_PINS` JSON list. Start and takeover digests
+also flag stale IDs in hub rules and configuration and catalogs older than seven days.
 
 Before a stage's first detached launch for a CLI/model, check the selected CLI with `codex --version` and
 `codex debug models` (substitute `CODEX_BIN` when configured). The desktop app and standalone CLI can have different
@@ -186,8 +192,9 @@ or the owner's explicit choice.
 An unavailable Sol version calls for a CLI compatibility check or an available Sol peer, with the fallback reported;
 Astra needs a task-based judgement reason. A model startup error alone does not justify that model class change.
 
-Codex launches with `codex exec --json`; its `thread.started` event supplies the actual thread id saved in
-`meta.json`. A message to a finished worker uses `codex exec resume` with that id. A message to a running worker
+Codex launches with `codex exec --json`. The launch records `requested_model` and `resolved_model` in `meta.json`
+when a model is supplied. The `thread.started` event supplies the actual thread ID. A message to a finished worker
+uses `codex exec resume` with that ID and the launch's resolved model. A message to a running worker
 is appended to its inbox, which the brief tells it to read after each major step. No Claude cross-session API is
 needed. See [non-interactive Codex](https://learn.chatgpt.com/docs/non-interactive-mode).
 

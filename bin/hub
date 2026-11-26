@@ -256,6 +256,7 @@ import grill_session  # noqa: E402
 import hubhome  # noqa: E402
 import provenance  # noqa: E402
 import reviewers  # noqa: E402
+import model_catalog  # noqa: E402
 import session_effort  # noqa: E402
 import subagents  # noqa: E402
 
@@ -1169,8 +1170,27 @@ def pace_digest(stage: str) -> str:
         return f"Limit pace: unavailable ({type(e).__name__})"
 
 
+def model_warnings(stage: str, cwd=None):
+    catalog = model_catalog.Catalog()
+    models = [hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd), hc.setting("AGENT_HUB_SUCCESSOR_MODEL", cwd=cwd)]
+    try:
+        models.extend(engines.model_map(cwd).values())
+        # Inspect configured entries without running quota or availability checks.
+        models.extend(reviewers.load(cwd).codex_models())
+    except hc.UsageError as e:
+        yield str(e)
+    for directory in hc.config_dirs(stage, cwd):
+        try:
+            models.extend(model_catalog.mentioned_pins((directory / "hub-rules.md").read_text(encoding="utf-8")))
+        except (OSError, UnicodeError):
+            continue
+    yield from catalog.pin_warnings(models, cwd)
+    if warning := catalog.age_warning():
+        yield warning
+
+
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
-           goal: str = "") -> str:
+           goal: str = "", cwd=None) -> str:
     tag = f"hub-{n}"
     # the first jwait replays everything since the predecessor wrote the handoff
     since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
@@ -1182,6 +1202,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         (f"Goal of stage {stage}: {goal}" if goal else "", 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
+        ("\n".join(model_warnings(stage, cwd)), 900, ""),
         (hub_notes_line(stage), 300, ""),
         (lessons_digest_line(stage), 560 + len(str(lessons_path(stage)).encode("utf-8")), ""),  # 560 bytes of text, then the path
         (watchdog_digest(stage), 400, "watchdog status"),
@@ -1869,7 +1890,7 @@ def _cmd_takeover(a) -> int:
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
-    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal))
+    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal, getattr(a, "project", None)))
     return 0
 
 
@@ -2259,6 +2280,8 @@ def cmd_reviewer(a) -> int:
     loaded = reviewers.load(author=author)
     for problem in loaded.problems:
         hc.warn(problem)
+    for warning in loaded.model_warnings():
+        print(warning, file=sys.stderr)
     primary = None
     if a.second:  # the primary is what the plain walk would choose; `chosen` is the second opinion
         verdicts, primary, chosen = reviewers.walk_second(loaded, a.for_class, every=a.all, author=author)

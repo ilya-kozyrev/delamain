@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import hubcore as hc
+import model_catalog
 
 # App-only transport/attribution markers must never leak into detached CLI workers.
 CODEX_APP_ENV = ("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_APP_TOOLS_PIPE_PATH")
@@ -65,7 +66,7 @@ def model_map(cwd=None):
                                            for k, v in data.items()):
             raise ValueError
     except (ValueError, TypeError):
-        raise hc.UsageError("AGENT_HUB_CODEX_MODEL_MAP must map safe aliases to model IDs") from None
+        raise hc.UsageError("AGENT_HUB_CODEX_MODEL_MAP must map safe aliases to model IDs or families") from None
     return data
 
 
@@ -75,6 +76,14 @@ def model_problem(model, cwd=None):
     if model in hc.MODEL_ALIASES and model not in model_map(cwd):
         return f"{model!r} is a Claude alias; configure AGENT_HUB_CODEX_MODEL_MAP or pass a Codex model ID"
     return None
+
+
+def resolve_codex_model(model, cwd=None):
+    target = model_catalog.map_model(model, model_map(cwd))
+    catalog = model_catalog.Catalog()
+    for warning in catalog.pin_warnings([target], cwd):
+        print(warning, file=sys.stderr)
+    return catalog.resolve(target)
 
 
 def permission_policy(mode=None, sandbox=None, cwd=None):

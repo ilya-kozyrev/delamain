@@ -849,7 +849,7 @@ class CodexSuccessor(Successor):
         self.sandbox_policy = sandbox_policy or {"type": mode}
         self.effort = effort
         self.codex = engines.codex_bin(cwd)
-        self.cli_model = engines.model_map(cwd).get(model, model) if model else None
+        self.cli_model = engines.resolve_codex_model(model, self.cwd) if model else None
 
     def brief_text(self):
         skill = hc.BIN.parent / "skills" / "hub" / "SKILL.md"
@@ -1421,7 +1421,7 @@ def succeed(stage: str, n: int, handoff: Path, model: Optional[str], mode: Optio
         if engine == "codex" and context.get("approval_policy") not in (None, "never"):
             s.notes.append(f"inherited sandbox {mode}; approval policy {context['approval_policy']} becomes never "
                            "for the unattended successor (denied tools fail without broadening permissions)")
-    except hc.Failure as e:
+    except (hc.Failure, hc.UsageError) as e:
         if not dry_run:
             _release(stage, succ, k, reservation["at"])
             hc.journal_append(stage, tag, f"BLOCKED auto-handoff: no successor started ({e}) — waiting for the owner; "
@@ -1591,6 +1591,7 @@ def desktop_project_root(stage: str, cwd: Path) -> Path:
 
 def prepare_desktop(stage, n, succ, handoff, cwd, model, effort, policy, approval, branch, dry_run, desktop_worktree=False,
                     owner_asked=False):
+    cli_model = engines.resolve_codex_model(model, cwd) if model else None
     root = desktop_project_root(stage, cwd)
     predecessor_cwd = str(cwd.resolve())
     authority_sources = desktop_authority_sources(stage, {'predecessor_cwd': predecessor_cwd})
@@ -1652,8 +1653,8 @@ Owner questions use `ask`; consult the register, not copied decisions.
 {marker_text(k, limit)}
 '''
         args = {'title': hc.hub_title(stage, succ), 'prompt': prompt}
-        if model:
-            args['model'] = engines.model_map(cwd).get(model, model)
+        if cli_model:
+            args['model'] = cli_model
         if effort:
             args['thinking'] = effort
         pend = {'n': succ, 'kind': 'desktop', 'surface': 'desktop', 'engine': 'codex', 'phase': 'prepared',
@@ -1720,7 +1721,7 @@ def retry_desktop(stage, request, model, effort, mode, cwd, dry_run=False, *, ex
             raise hc.Failure('prepared request brief lacks its settings record; no settings changed')
         args['prompt'] = args['prompt'].replace(old_line, new_line, 1)
         if 'model' in changes:
-            args['model'] = engines.model_map(cwd).get(requested['model'], requested['model'])
+            args['model'] = engines.resolve_codex_model(requested['model'], cwd)
         if 'effort' in changes:
             args['thinking'] = requested['effort']
         pend = dict(pend, requested=requested, create_args=args)

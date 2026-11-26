@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Codex model families follow the CLI catalog.** Use `luna`, `terra`, `sol` or `astra` in spawns,
+  defaults, aliases and reviewers to pick the newest listed version of that family. Spawn records the requested
+  alias and resolved ID. Full IDs stay pinned and warn when a newer version is listed, unless acknowledged in
+  `AGENT_HUB_MODEL_PINS`. Start and takeover digests also warn about stale pins and catalogs older than seven days.
+
 ## 1.0.28 — 2026-11-22
 
 - **Reproducible hub retrospectives.** `retro plan` prepares a window and bounded reader/lessons/efficiency/

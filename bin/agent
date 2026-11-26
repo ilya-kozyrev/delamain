@@ -141,6 +141,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import hubcore as hc  # noqa: E402
 import engines  # noqa: E402
+import model_catalog  # noqa: E402
 import spawn_hold  # noqa: E402
 import spawn_policy  # noqa: E402
 import limit_pace  # noqa: E402
@@ -686,6 +687,8 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
     else:
         env.update({"PLUGIN_ROOT": str(hc.BIN.parent), "CLAUDE_PLUGIN_ROOT": str(hc.BIN.parent),
                     "AGENT_HUB_CODEX_MODEL": meta.get("model") or "", "AGENT_HUB_CODEX_EFFORT": meta.get("effort") or ""})
+        if env.get("CODEX_HOME"):
+            env["CODEX_HOME"] = str(model_catalog.codex_home())
     # The prompt is the run's stdin, never argv: `ps` shows every command line, so a hub's `pkill -f "<words of the
     # brief>"` would otherwise kill the agents whose briefs hold the words (N2-01).
     # One file per run, created exclusively and never rewritten: a run reads exactly the prompt it was started with.
@@ -735,13 +738,14 @@ def claude_argv(meta: dict, resume: bool) -> list:
 
 def model_name(meta: dict) -> str:
     """The model of an agent: the id its run reported, else the one requested (`sonnet`, or a pinned id)."""
-    return meta.get("resolved_model") or meta["model"] or "CLI default"
+    return model_catalog.recorded_model(meta) or "CLI default"
 
 
 def model_text(meta: dict) -> str:
     """model_name, plus what was asked for when the CLI resolved it to something else (an alias)."""
-    got = meta.get("resolved_model")
-    return f"{got} (asked for {meta['model']})" if got and got != meta["model"] else model_name(meta)
+    got = model_name(meta)
+    asked = meta.get("requested_model", meta.get("model"))
+    return f"{got} (asked for {asked})" if asked and got != asked else got
 
 
 def journal(stage: str, fallback_tag: str, text: str) -> str:
@@ -756,7 +760,7 @@ def pace_advice(stage: str, engine: str, model_names: list, effort: str, task_cl
     Returns a note for the journal start line when the launch goes ahead over the hard-stop case, else ""."""
     if limit_pace.mode() == "off":
         return ""
-    adv = limit_pace.advise(engine, " ".join(model_names), effort, stage, limit_pace.read_all(), task_class, reason,
+    adv = limit_pace.advise(engine, model_names[-1], effort, stage, limit_pace.read_all(), task_class, reason,
                             limit_pace.stage_lock(stage, cwd))
     if adv.lines:
         print("limit pace — before this launch:\n" + "\n".join("  " + ln for ln in adv.lines))
@@ -786,11 +790,14 @@ def cmd_spawn(a) -> int:
     if engine == "claude" and not a.model:
         raise hc.UsageError("--model is required for Claude")
     given_model = a.model or (hc.setting("AGENT_HUB_CODEX_DEFAULT_MODEL", cwd=cwd) if engine == "codex" else None)
-    mmap = model_map(cwd) if engine == "claude" else engines.model_map(cwd)
     problem = (hc.model_problem(given_model, cwd) if engine == "claude" else engines.model_problem(given_model, cwd)) if given_model else None
     if problem:
         raise hc.UsageError(f"--model: {problem}")
-    given, a.model = given_model, mmap.get(given_model, given_model)
+    given = given_model
+    if engine == "claude":
+        a.model = model_map(cwd).get(given, given)
+    elif given:
+        a.model = engines.resolve_codex_model(given, cwd)
     allowed_efforts = EFFORTS if engine == "claude" else engines.CODEX_EFFORTS
     model_names = [n for n in dict.fromkeys([given or "CLI default", a.model or "CLI default"])]
     default_effort = spawn_policy.default_effort(model_names, allowed_efforts, cwd)
@@ -800,7 +807,8 @@ def cmd_spawn(a) -> int:
     reason = spawn_policy.clean_reason(a.reason)
     above_default = spawn_policy.check_reason(model_names, effort, default_effort, allowed_efforts, reason, cwd,
                                               model_unknown=engine == "codex" and not a.model,
-                                              engine=a.engine, configured=engines.configured(cwd))
+                                              engine=a.engine, configured=engines.configured(cwd),
+                                              codex_model=a.model if engine == "codex" else None)
     if above_default:
         hc.warn(above_default)
     # AGENT_HUB_EFFORT_RULES: the model x effort policy shared with the delegation hook (bin/subagent_rules.py)
@@ -865,7 +873,8 @@ def cmd_spawn(a) -> int:
     if held:
         hc.warn(held)
     if a.dry_run:
-        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}) in {cwd}"
+        request = f", asked for {given}" if engine == "codex" and given != a.model else ""
+        print(f"dry run: {a.role} would start on {engine} ({a.model or 'CLI default'}/{effort}{request}) in {cwd}"
               f"{', MCP ' + mcp_text(mcp) if mcp and mcp != MCP_DEFAULT else ''}; nothing was started or written")
         return 0
     d = agent_dir(stage, a.role)
@@ -904,6 +913,9 @@ def cmd_spawn(a) -> int:
     if reason:
         meta["reason"] = reason
     if engine == "codex":
+        meta["requested_model"] = given
+        if a.model:
+            meta["resolved_model"] = a.model
         if sandbox == "read-only" and is_review_role(meta):
             hc.warn("Codex read-only reviewer cannot write its report or journal; "
                     "use workspace-write with --cwd in the hub home")
@@ -943,9 +955,9 @@ def cmd_spawn(a) -> int:
         if meta.get("process_token"):
             data["roles"][a.role]["process_token"] = meta["process_token"]
         hc.roles_save(stage, data)
-    got = meta.get("resolved_model")
+    asked = meta.get("requested_model", a.model)
     line = journal(stage, tag, f"started headless agent {a.role} ({model_name(meta)}{'/' + effort if effort else ''}"
-                               f"{', asked for ' + a.model if got and a.model and got != a.model else ''}), "
+                               f"{', asked for ' + asked if asked and model_name(meta) != asked else ''}), "
                                f"session {meta['session_id']}, pid {pid}, brief {brief}"
                                + (f", worktree {wt['path']} ({wt['branch']}){slot_text(wt)}" if wt else "")
                                + (f", MCP {mcp_text(mcp)}" if mcp and mcp != MCP_DEFAULT else "")
@@ -1620,7 +1632,8 @@ def main(argv: list) -> int:
                    "another engine needs --reason")
     s.add_argument("--sandbox", choices=engines.SANDBOXES, help="Codex sandbox; approval prompts remain disabled")
     s.add_argument("--sandbox-policy", help="Codex rollout sandbox JSON; preserve supported roots/network/temp restrictions")
-    s.add_argument("--model", help="opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
+    s.add_argument("--model", help="Codex: luna | terra | sol | astra (latest listed catalog model) or a model ID. "
+                   "Claude: opus | sonnet | haiku | fable (passed to the CLI, which resolves them to its "
                    "latest models; $AGENT_HUB_MODEL_MAP pins them to ids instead) or a full id claude-…")
     s.add_argument("--effort", choices=tuple(dict.fromkeys(EFFORTS + engines.CODEX_EFFORTS)), help="default: $AGENT_HUB_EFFORT_DEFAULTS for the model, else $AGENT_HUB_DEFAULT_EFFORT, else high")
     s.add_argument("--permission-mode", help=f"default: $AGENT_HUB_PERMISSION_MODE or {DEFAULT_PERMISSION_MODE}")
