@@ -183,7 +183,7 @@ The plugin does not silently translate Claude model aliases into GPT ids. `CODEX
 Choose an effort supported by the selected model with `--effort`.
 Pass a full ID to run a specific version. A newer listed version triggers `STALE MODEL` even on a dry run. To
 acknowledge a deliberate pin, list the ID in the hub-wide `AGENT_HUB_MODEL_PINS` JSON list. Start and takeover digests
-also flag stale IDs in hub rules, model policy settings and the current Desktop hub, and catalogs older than seven
+also flag stale IDs in hub rules, model policy settings and the current Codex hub, and catalogs older than seven
 days. Resuming an agent reports a stale recorded ID on stderr and in the journal while retaining the thread's version.
 
 Before a stage's first detached launch for a CLI/model, check the selected CLI with `codex --version` and

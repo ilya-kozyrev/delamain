@@ -1173,7 +1173,7 @@ def pace_digest(stage: str) -> str:
 def model_warnings(stage: str, cwd=None, session=None):
     catalog = model_catalog.Catalog()
     models = []
-    if session and engines.codex_desktop() and session == hc.session_id():
+    if session and session == hc.session_id() and hc.host_engine() == "codex":
         models.append(autopilot.codex_context(session).get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL"))
     models.extend(hc.setting(key, cwd=cwd) for key in ("AGENT_HUB_CODEX_DEFAULT_MODEL", "AGENT_HUB_SUCCESSOR_MODEL"))
     reason_models = hc.setting_json("AGENT_HUB_REASON_MODELS", [], cwd=cwd)

@@ -113,6 +113,17 @@ grep -Fq 'has no listed model for family' "$err"; check $? 0 'fallback distingui
 check $? 0 'installed CLI and listed Astra choose Codex'
 grep -Fq 'agent gpt-6.2-astra/high' "$out"; check $? 0 'the built-in Codex reviewer resolves the latest Astra'
 grep -Fq 'using Claude' "$err"; check $? 1 'available Astra gives no fallback warning'
+AGENT_HUB_REVIEW_MODEL=gpt-6.2-astra CODEX_HOME="$P/no-catalog" \
+    "$B/hub" reviewer --author claude/opus >"$out" 2>"$err"
+check $? 0 'the built-in reviewer accepts a configured full ID without a catalog'
+grep -Fq -- '--engine codex --sandbox workspace-write --model gpt-6.2-astra' "$out"
+check $? 0 'the reviewer launches the full ID instead of probing the default family'
+grep -Fq 'using Claude' "$err"; check $? 1 'the configured full ID does not cause a fallback'
+AGENT_HUB_REVIEW_MODEL=review AGENT_HUB_CODEX_MODEL_MAP='review=luna' \
+    "$B/hub" reviewer --author claude/opus >"$out" 2>"$err"
+check $? 0 'an unavailable mapped family falls back even when Astra is listed'
+grep -Fq -- '--engine claude' "$out"; check $? 0 'the unavailable mapped reviewer selects Claude'
+grep -Fq "has no listed model for family 'luna'" "$err"; check $? 0 'fallback names the family selected by the map'
 
 printf 'Use `gpt-6.1-sol` for routine work. Use codex/gpt-6-astra. Example: gpt-6.1-sol-preview.\n' > "$AGENT_HUB_HOME/$HUB_STAGE/hub-rules.md"
 python3 - "$CODEX_HOME/models_cache.json" <<'PY'
@@ -161,6 +172,23 @@ desktop_takeover gpt-6.1-sol; check $? 0 'a Desktop takeover reads the current m
 grep -Fxq "$stale" "$out"; check $? 0 'the Desktop digest warns about its own stale model'
 desktop_takeover gpt-6.10-sol
 grep -Fq 'STALE MODEL' "$out"; check $? 1 'a current Desktop model does not warn'
+
+rm "$CODEX_HOME/sessions/rollout-desktop.jsonl"
+hub_agent="$AGENT_HUB_HOME/$HUB_STAGE/agents/hub-2"
+mkdir -p "$hub_agent"
+agent_takeover() {
+    AGENT_ROLE=hub-2 AGENT_HUB_ENGINE=codex AGENT_SESSION_ID="$sid" \
+        "$B/hub" takeover --dry-run --stage "$HUB_STAGE" --session self >"$out" 2>"$err"
+}
+printf '{"engine":"codex","session_id":"%s","model":"gpt-6.1-sol"}\n' "$sid" > "$hub_agent/meta.json"
+agent_takeover; check $? 0 'a headless Codex hub can take over with legacy metadata'
+grep -Fxq "$stale" "$out"; check $? 0 'a headless hub digest warns about its own stale legacy model'
+printf '{"engine":"codex","session_id":"%s","model":"gpt-6.10-sol","requested_model":"sol"}\n' "$sid" > "$hub_agent/meta.json"
+agent_takeover; check $? 0 'a headless Codex hub can take over with a current model'
+grep -Fq 'STALE MODEL' "$out"; check $? 1 'a current headless model does not warn'
+rm "$hub_agent/meta.json"
+AGENT_HUB_CODEX_MODEL=gpt-6.1-sol agent_takeover
+grep -Fxq "$stale" "$out"; check $? 0 'a headless digest can use the current launcher model when metadata is missing'
 
 wait_catalog() {
     for attempt in $(seq 1 30); do

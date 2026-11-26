@@ -123,7 +123,7 @@ class Loaded:
                 self.map_problem = str(e)
                 self.problems.append(self.map_problem)
         for entry in self.entries:
-            if entry.kind == "agent":
+            if entry.kind == "agent" and (not entry.model or not entry.effort):
                 model, effort = _review_defaults(cwd, entry.engine, self.aliases)
                 entry.model, entry.effort = entry.model or model, entry.effort or effort
 
@@ -318,12 +318,14 @@ def load(cwd=None, author: Optional[Author] = None) -> Loaded:
         if prefer_codex:
             try:
                 engines.codex_bin(cwd)
-                model_catalog.Catalog().resolve(DEFAULT_CODEX_MODEL)
+                aliases = engines.model_map(cwd)
+                model, effort = _review_defaults(cwd, "codex", aliases)
+                model_catalog.Catalog().resolve(model_catalog.map_model(model, aliases))
             except (hc.Failure, hc.UsageError) as e:
                 problems.append(f"built-in Codex reviewer unavailable: {e}; using Claude")
                 raw_default["engine"] = "claude"
             else:
-                raw_default["engine"] = "codex"
+                raw_default.update(engine="codex", model=model, effort=effort)
         elif author:
             raw_default["engine"] = "claude"
         entries, origin = [Entry(1, raw_default, cwd)], "default"
