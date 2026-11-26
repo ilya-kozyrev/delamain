@@ -240,14 +240,16 @@ These are the defaults of the plugin's author, each paid for by an incident or a
 Added with the CI-wait tool; the core `SKILL.md` carries the short form.
 
 1. A CI, merge or lock wait is never a background Bash of the hub itself: run it as
-   `await --ok PASSED --label "MR !N" --on 2=TIMEOUT -- python -m scripts.ci_wait --mr N` (an ordinary foreground
-   call; it returns at once). The hub keeps its single `jwait`.
+   `await --ok PASSED --label "MR !N" --outcome-task "$TASK_ID" --ci-item "$MR_URL" --on 2=TIMEOUT -- python -m scripts.ci_wait --mr N`
+   (an ordinary foreground call that returns at once). Read `task_id` from the executor's
+   `<stage>/agents/<role>/meta.json`. The executor can use `$AGENT_TASK_ID`. The item URL identifies the PR/MR,
+   and both flags are specific to CI waits. The hub keeps its single `jwait`.
 2. `await` journals nothing while the command runs and exactly one line `@hub PASSED|DONE|FAILED|TIMEOUT|<--on word> …
    <link>` (PASSED: the pipeline is green, not merged; `--ok MERGED` only for a wait on the merge itself) when it ends; that line is the hub's wake. FAILED/TIMEOUT/CONFLICT are decisions for the hub, not retries.
 3. An executor that waits on CI uses the same `await` (its line is `<tag>-await`, so it reaches the hub's `jwait`). A
    headless one adds `--wait`, which prints the line and exits 0 only when the command itself succeeded, 3 otherwise
    (FAILED/TIMEOUT/…): trust that exit code or the word, not "it returned". On GitHub the command is
-   `gh-ci-wait N --require 'NAME' …` (never `gh pr checks --watch`: it exits 0 on a cancelled check; see *Waiting for CI* in `docs/launch-modes.md`).
+   `await --wait --ok PASSED --outcome-task "$AGENT_TASK_ID" --ci-item "$PR_URL" -- gh-ci-wait N --require 'NAME'` (never `gh pr checks --watch`: it exits 0 on a cancelled check; see *Waiting for CI* in `docs/launch-modes.md`).
 4. `kill <supervisor pid>` (printed by `await`) stops a wait and journals `CANCELLED <label>` without `@hub`: no wake;
    a missing line after the deadline means the supervisor was SIGKILLed — read the log path from the start message.
 5. An alarm that must fire even if the hub dies: `await --at HH:MM|ISO --label "merge window"` (no COMMAND; the time is

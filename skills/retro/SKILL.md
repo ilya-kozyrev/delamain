@@ -27,7 +27,9 @@ its workers write only the chosen output directory. Installed resources live bes
 
    If the owner-approved incumbent assignments are available, pass `--incumbents FILE` on the first measurement.
    Use the CSV headers and resolved identities documented in the command reference. Read the original-assignment
-   follow-up, handoffs, pending counts, coverage and sensitivity in `model-assignments.csv`. The proposal gate
+   follow-up, handoffs, pending counts, coverage and sensitivity in `model-assignments.csv`. A candidate needs
+   a handoff share no higher than the incumbent's and the 20% resource saving in both medians and the
+   full-cohort mean. Observed tokens remain descriptive when the accounting boundary is unknown. The proposal gate
    uses first primary reported findings, with optional accepted findings displayed separately.
 4. **Read and interpret in parallel.** Launch each generated `reader-NN.md` on Haiku high for mechanical
    evidence extraction; launch `brief-lessons.md` and `brief-classify.md` on Sonnet high or Opus medium for

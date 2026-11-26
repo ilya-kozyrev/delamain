@@ -1077,7 +1077,8 @@ def cmd_spawn(a) -> int:
                 review_primary=not a.secondary_review, review_artifact=a.review_artifact,
                 repository_key=outcomes.repository_key(Path(a.target_repo).expanduser().resolve() if a.target_repo else cwd),
                 review_applicability=a.review_applicability, ci_applicability=a.ci_applicability,
-                parent_task_id=a.parent_task_id, usage_in_parent=a.usage_in_parent, usage_boundary=a.usage_boundary,
+                parent_task_id=a.parent_task_id, usage_in_parent=a.usage_in_parent,
+                usage_boundary=a.usage_boundary or ("includes_helpers" if engine == "claude" else "own_only"),
                 assignment_source={"task_class": "explicit" if a.task_class else "missing",
                                    "task_kind": "explicit" if a.task_kind else "legacy_inference",
                                    "change_class": "explicit" if a.change_class != "unknown" else "missing"})
@@ -1921,7 +1922,7 @@ def main(argv: list) -> int:
     s.add_argument("--ci-applicability", choices=outcomes.APPLICABILITY, default="unknown")
     s.add_argument("--parent-task-id", type=outcomes.task_uuid, help="contract this separately measured helper contributes to")
     s.add_argument("--usage-in-parent", choices=outcomes.USAGE_IN_PARENT, default="unknown", help="whether helper usage is included in parent counters")
-    s.add_argument("--usage-boundary", choices=outcomes.USAGE_BOUNDARIES, default="unknown", help="scope of provider counters relative to helpers")
+    s.add_argument("--usage-boundary", choices=outcomes.USAGE_BOUNDARIES, help="scope of provider counters relative to helpers (default: includes_helpers for Claude, own_only for Codex)")
     s.add_argument("--dry-run", action="store_true",
                    help="run every check and print the limit-pace advice, then stop: nothing is started or written")
     s.add_argument("--ignore-hold", action="store_true",

@@ -41,9 +41,9 @@ def id_for(name, domain="fixture"):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{domain}/{name}"))
 
 def start(stage, name, model="old", day=0, parent=None, continuation=None, engine="claude",
-          task_kind="executor", target=None, usage_boundary="own_only", usage_in_parent="unknown"):
+          task_kind="executor", target=None, usage_boundary="own_only", usage_in_parent="unknown", task_class="bounded"):
     tid = id_for(name, stage.name)
-    emit(stage, tid, "task_started", dict(task_class="bounded", task_kind=task_kind, change_class="code",
+    emit(stage, tid, "task_started", dict(task_class=task_class, task_kind=task_kind, change_class="code",
         assignment_source=dict(task_class="explicit", task_kind="explicit", change_class="explicit"),
         stage=stage.name, role=name, brief_path="fixture.md", brief_sha256="hash", continuation_of=continuation,
         review_target_task_id=target, engine=engine, requested_model=model, effort="high", repository_key="/fixture/.git",
@@ -209,6 +209,8 @@ for label, kwargs in (
     if label == "uninitialized-assignment":
         assigned = next(r for r in metrics["model_outcomes"]["assigned"] if r["model"] == "requested:new")
         assert assigned["full"]["pending"] == 1 and assigned["unresolved_in_stratum"] == 1
+        assert metrics["model_outcomes"]["blocking_unresolved_identity"] == 1
+        assert "unresolved_execution_identity" not in metrics["model_outcomes"]["exclusions"]
 print("Retro negative: four samples, missing CI, mixed handoff, open or unresolved assignments, worse quality and small savings give no trial")
 
 stage, ids = cohort("artifacts")
@@ -235,4 +237,73 @@ assert row["ci_applicability"] == "required" and row["first_run_ci"] == "True"
 assert row["review_applicability"] == "required" and row["reported_findings"] == "1"
 assert len(metrics["model_outcomes"]["proposals"]) == 1
 print("Retro multi-artifact CI: explicit exemptions leave applicable first-run CI and review evidence intact")
+
+# The reviewer repro had a qualifying median and direct sample despite four costly repairs.
+for label, old_handoffs, old_fix, new_fix, expected in (
+    ("f12-reviewer-repro", 0, 0, 200, 0),
+    ("f12-matched-handoffs-worse-mean", 4, 20, 200, 0),
+    ("f12-matched-handoffs-better-mean", 4, 100, 20, 1),
+):
+    stage = reset(label)
+    for model, n, transfers, repair_tokens in (
+        ("old", 5 if not old_handoffs else 10, old_handoffs, old_fix), ("new", 10, 4, new_fix)
+    ):
+        for i in range(n):
+            tid = start(stage, f"{model}-{i}", model)
+            launch(stage, tid, model, .1, tokens=100 if model == "old" else 75,
+                   cost=.7 if label == "f12-reviewer-repro" and model == "new" else 1)
+            review(stage, tid)
+            ci(stage, tid)
+            if i < transfers:
+                repair_model = "old" if model == "new" else "new"
+                repair = start(stage, f"{model}-{i}-repair", repair_model, day=.5, continuation=tid)
+                launch(stage, repair, repair_model, .5, tokens=repair_tokens,
+                       cost=3 if label == "f12-reviewer-repro" else 1)
+    _, metrics = run(label, baseline=old)
+    info = metrics["model_outcomes"]
+    assigned = {row["model"]: row for row in info["assigned"]}
+    assert assigned["new"]["full"]["handoffs"] == 4 and assigned["new"]["direct"]["n"] == 6
+    assert assigned["new"]["full"]["median_tokens"] == 75, assigned
+    assert len(info["proposals"]) == expected, (label, info)
+    if label == "f12-reviewer-repro":
+        assert assigned["new"]["full"]["mean_tokens"] == 155
+print("H2: excessive handoffs blocked; matched handoffs pass only when full mean clears the threshold")
+
+stage = reset("observed-boundary")
+unknown = start(stage, "unknown-boundary", "sonnet", task_class="unknown", usage_boundary="unknown")
+launch(stage, unknown, "sonnet", .1, tokens=321)
+known = start(stage, "known-boundary", "sonnet", task_class="unknown")
+launch(stage, known, "sonnet", .1, tokens=123)
+put(stage / "agents/legacy/meta.json", dict(role="legacy", started_at=time(1), engine="claude",
+                                            model="sonnet", resolved_model="sonnet", effort="high"))
+dest, metrics = run("observed-boundary", baseline=old)
+cells = {r["cohort"]:r for r in metrics["model_outcomes"]["cells"]}
+assert cells["completion"]["n"] == 2 and cells["legacy_started"]["n"] == 1
+assert cells["completion"]["median_tokens"] == 222 and cells["completion"]["boundary_unknown"] == 1
+assert cells["legacy_started"]["median_tokens"] is None and cells["legacy_started"]["boundary_unknown"] == 0
+row = next(r for r in table(dest, "task-outcomes") if r["id"] == unknown)
+assert not row["tokens"] and row["observed_tokens"] == "321"
+measure = (dest / "measure.md").read_text()
+typed_line = next(line for line in measure.splitlines() if line.startswith("| completion | unknown"))
+legacy_line = next(line for line in measure.splitlines() if line.startswith("| legacy_started | unknown"))
+assert "closure 1/1" in legacy_line and "cost_usd 1/1" in legacy_line
+assert "tokens 0/" not in typed_line and "closure 0/" not in typed_line and "222 | 1/2" in typed_line
+print("M1/L4/L5: legacy and typed cells split, observed tokens retained, boundary and missing counts shown")
+
+# Late proof of supersession retires a previous pending attempt.
+stage = reset("superseded-attempt")
+tid = start(stage, "assigned")
+launch(stage, tid, "old", .1)
+item = "https://github.com/example/project/pull/2"
+emit(stage, tid, "ci_observed", dict(target_task_id=tid, repository="example/project", item=item, head="old",
+     status="unknown", history_coverage="complete", attempt_id="old", attempt_created_at=time(.5)), 1)
+ci(stage, tid, day=2, attempt="new", created=1.5, artifact=item)
+dest, _ = run("pending-attempt", baseline=old)
+assert not next(r for r in table(dest, "task-outcomes") if r["id"] == tid)["first_run_ci"]
+emit(stage, tid, "ci_observed", dict(target_task_id=tid, repository="example/project", item=item, head="new",
+     status="success", history_coverage="complete", attempt_id="new", attempt_created_at=time(1.5),
+     superseded_attempts=["old"]), 3)
+dest, _ = run("replaced-attempt", baseline=old)
+assert next(r for r in table(dest, "task-outcomes") if r["id"] == tid)["first_run_ci"] == "True"
+
 PY

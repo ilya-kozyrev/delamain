@@ -18,6 +18,7 @@ SCHEMA = 1
 FOLLOWUP = dt.timedelta(days=7)
 DEFINITION = {
     "completion": "unique root task; latest closure in [since, until); lifetime usage at cutoff",
+    "descriptive_tokens": "observed tokens by completion or legacy cohort; unknown usage boundary reported separately",
     "assignment": "root assignment in [since, until); evidence through assignment + 7 days",
     "visibility": "recorded_at <= cutoff",
     "tokens": "input including cache plus output",
@@ -25,7 +26,7 @@ DEFINITION = {
     "review": "first primary report per artifact; reported counts",
     "ci": "first eligible CI attempt per applicable artifact",
 }
-DIMENSIONS = ("task_class", "task_kind", "change_class", "engine", "model", "effort")
+DIMENSIONS = ("cohort", "task_class", "task_kind", "change_class", "engine", "model", "effort")
 INCUMBENT_FIELDS = ("repository_key", "task_class", "change_class", "engine", "model", "effort")
 
 
@@ -227,7 +228,10 @@ def ci_quality(artifacts, observations, applicability, exempt):
     values = []
     for artifact in (artifacts | grouped.keys()) - exempt:
         observed = grouped[artifact]
-        attempts = [ev for ev in observed if ev["data"].get("attempt_id") and ev["data"].get("attempt_created_at")]
+        failed = {ev["data"].get("attempt_id") for ev in observed if ev["data"].get("first_run_green") is False}
+        superseded = {attempt for ev in observed for attempt in ev["data"].get("superseded_attempts", [])} - failed
+        attempts = [ev for ev in observed if ev["data"].get("attempt_id") and ev["data"].get("attempt_created_at")
+                    and ev["data"]["attempt_id"] not in superseded]
         if not attempts:
             values.append(None)
             continue
@@ -463,12 +467,15 @@ class Evidence:
         return row
 
 
-def cell(rows):
+def cell(rows, descriptive=False):
     def known(field):
         return [r[field] for r in rows if r.get(field) is not None]
 
     n = len(rows)
     closed, tokens, usd = (known(k) for k in ("closure", "tokens", "cost_usd"))
+    if descriptive:
+        tokens = [r.get("observed_tokens", r.get("tokens")) for r in rows
+                  if r.get("observed_tokens", r.get("tokens")) is not None]
     findings, accepted, ci = (known(k) for k in ("reported_findings", "accepted_findings", "first_run_ci"))
     turns = defaultdict(list)
     for row in rows:
@@ -478,14 +485,16 @@ def cell(rows):
     ci_na = sum(r["ci_applicability"] == "not_required" for r in rows)
     keys = ("turns", "tokens", "cost_usd", "reported_findings", "accepted_findings", "first_run_ci")
     missing = {k: n - len(known(k)) for k in keys}
-    missing.update(closure=n - len(closed))
+    missing.update(closure=n - len(closed), tokens=n - len(tokens))
     missing["reported_findings"] -= review_na
     missing["accepted_findings"] -= review_na
     missing["first_run_ci"] -= ci_na
     return dict(n=n, success=closed.count("success"), closed=len(closed), cancelled=closed.count("cancelled"),
                 pending=n - len(closed), median_turns={unit: median(vals) for unit, vals in sorted(turns.items())},
-                median_tokens=median(tokens) if tokens else None,
+                median_tokens=median(tokens) if tokens else None, mean_tokens=mean(tokens) if tokens else None,
+                boundary_unknown=sum(r.get("usage_boundary_complete") is False for r in rows),
                 known_cost=len(usd), median_reported_usd=median(usd) if usd else None,
+                mean_reported_usd=mean(usd) if usd else None,
                 total_reported_usd=sum(usd) if usd else None, review_observed=len(findings),
                 review_applicable=n - review_na, review_na=review_na,
                 mean_reported_findings=mean(findings) if findings else None,
@@ -524,7 +533,8 @@ def comparable(a, b):
                 return False
     a_mix = {k: Fraction(v, a["n"]) for k, v in a["applicability"].items()}
     b_mix = {k: Fraction(v, b["n"]) for k, v in b["applicability"].items()}
-    if a_mix != b_mix or b["success_bounds"][0] < a["success_bounds"][1]:
+    if (a_mix != b_mix or b["success_bounds"][0] < a["success_bounds"][1]
+            or Fraction(b["handoffs"], b["n"]) > Fraction(a["handoffs"], a["n"])):
         return False
     if a["review_applicable"] and (
             Fraction(a["review_observed"], a["review_applicable"]) != Fraction(b["review_observed"], b["review_applicable"])
@@ -590,7 +600,6 @@ def trials(evidence, chains, since, until, incumbents):
             # An unidentifiable assignment could be an unsuccessful candidate or incumbent.
             # Keep it visible and block comparisons in this stratum.
             incomplete_strata[stratum] += 1
-            excluded["unresolved_execution_identity"] += 1
         key = stratum + model
         groups[key].append(row)
     proposals, assignments = [], []
@@ -617,15 +626,19 @@ def trials(evidence, chains, since, until, incumbents):
             continue
         direct_gate, direct_tokens, direct_cost = crosses_gate(a["direct"], b["direct"])
         full_gate, tokens, cost = crosses_gate(a["full"], b["full"])
-        # A hand-off-adjusted cohort must also clear the gate on the same resource.
-        coherent = any(x is not None and y is not None and max(x, y) <= -0.20
-                       for x, y in ((direct_tokens, tokens), (direct_cost, cost)))
+        full_mean_tokens = relative(a["full"]["mean_tokens"], b["full"]["mean_tokens"])
+        full_mean_cost = relative(a["full"]["mean_reported_usd"], b["full"]["mean_reported_usd"]) if (
+            a["full"]["cost_comparable"] and b["full"]["cost_comparable"]) else None
+        # Both medians and the full-cohort mean must clear the threshold on the same resource.
+        coherent = any(all(delta is not None and delta <= -0.20 for delta in deltas)
+                       for deltas in ((direct_tokens, tokens, full_mean_tokens), (direct_cost, cost, full_mean_cost)))
         if direct_gate and full_gate and coherent:
             b["trial_status"] = "eligible owner trial"
             proposals.append(dict(incumbent=a["id"], candidate=b["id"], token_change=tokens, cost_change=cost,
                                   direct_token_change=direct_tokens, direct_cost_change=direct_cost,
+                                  full_mean_token_change=full_mean_tokens, full_mean_cost_change=full_mean_cost,
                                   conflict=tokens is not None and cost is not None and tokens * cost < 0))
-    return assignments, proposals, dict(excluded)
+    return assignments, proposals, dict(excluded), sum(incomplete_strata.values())
 
 
 def completion_rows(evidence, chains, since, until, cutoff):
@@ -670,6 +683,8 @@ def proposal_text(proposal, indexed, window):
         f"reported findings/task {findings}, accepted findings/task {pair('mean_accepted_findings')}, first CI {ci}. "
         f"Review coverage {counts('review_observed', 'review_applicable')}, CI coverage {counts('ci_known', 'ci_applicable')}, "
         f"completion {counts('closed', 'n')}, handoffs {counts('handoffs', 'n')}. "
+        f"Full-cohort mean deltas {delta(proposal['full_mean_token_change'])} tokens and "
+        f"{delta(proposal['full_mean_cost_change'])} reported Claude USD. "
         f"Success bounds with unknown outcomes {x['success_bounds']} / {y['success_bounds']}. "
         f"Mixed samples excluded from direct cells {a['excluded_mixed']} / {b['excluded_mixed']}. "
         f"Assignment period {window['since']} → {window['until']}, with seven days of follow-up per task.{choice} "
@@ -680,21 +695,23 @@ def proposal_text(proposal, indexed, window):
     )
 
 
-def render(rows, assignments, proposals, excluded, warnings, window, table, incumbent_source):
-    headers = ["class", "kind", "change", "engine", "model", "effort", "n", "success/known", "median turns (unit)",
-               "median tokens", "reported Claude USD total/median", "reviewed/applicable",
+def render(rows, assignments, proposals, excluded, blocking_unresolved, warnings, window, table, incumbent_source):
+    headers = ["cohort", "class", "kind", "change", "engine", "model", "effort", "n", "success/known", "median turns (unit)",
+               "median observed tokens", "boundary unknown/incomplete", "reported Claude USD total/median", "reviewed/applicable",
                "reported findings/task", "accepted findings/task", "first CI passed/known", "missing"]
     lines = []
     for r in rows:
         turns = ", ".join(f"{show(v)} ({u})" for u, v in r["median_turns"].items()) or "unknown"
+        applicable_na = {"reported_findings": r["review_na"], "accepted_findings": r["review_na"], "first_run_ci": r["ci_na"]}
         lines.append([r[k] for k in DIMENSIONS] + [
             r["n"], rate(r["success"], r["closed"]), turns, show(r["median_tokens"]),
+            rate(r["boundary_unknown"], r["n"]),
             f"{show(r['total_reported_usd'])} / {show(r['median_reported_usd'])}",
             rate(r["review_observed"], r["review_applicable"], bool(r["review_na"])),
             quality_mean(r["mean_reported_findings"], r["review_applicable"]),
             quality_mean(r["mean_accepted_findings"], r["review_applicable"]),
             rate(r["ci_passed"], r["ci_known"], bool(r["ci_na"]) and not r["ci_applicable"]),
-            ", ".join(f"{k}={v}" for k, v in r["missing"].items())])
+            ", ".join(f"{k} {v}/{r['n'] - applicable_na.get(k, 0)}" for k, v in r["missing"].items() if v) or "none"])
     sections = [
         "## Task outcomes by class × model",
         "Latest closure in the window, with lifetime usage at the cutoff. Historical unknown-class rows use start dates. "
@@ -705,7 +722,8 @@ def render(rows, assignments, proposals, excluded, warnings, window, table, incu
         "## Model trial evidence",
         "Seven days of follow-up per initial assignment. Recent assignments without seven days of follow-up are excluded. "
         "Mixed contracts retain their full spend and outcomes in the original-assignment cohort.",
-        f"Incumbent source {incumbent_source or 'unavailable'}. Exclusions {json.dumps(excluded, sort_keys=True)}.",
+        f"Incumbent source {incumbent_source or 'unavailable'}. Exclusions {json.dumps(excluded, sort_keys=True)}. "
+        f"Blocking unresolved assignments retained in cohort {blocking_unresolved}.",
         table(["row", "repository", "class", "change", "assignment", "n", "closed", "pending", "cancelled",
                "handoffs", "mixed", "success bounds", "review coverage", "CI coverage", "trial"],
               [[r["id"], r["repository_key"], r["task_class"], r["change_class"],
@@ -734,7 +752,7 @@ def measure(audit, out, baseline, load_json, write_json, csv_write, table, incum
     for row in observations:
         if row["cohort"] != "assignment_only":
             cohorts[tuple(row[k] for k in DIMENSIONS)].append(row)
-    cells = [dict(zip(DIMENSIONS, key)) | dict(id=key_id("cell", key)) | cell(rows)
+    cells = [dict(zip(DIMENSIONS, key)) | dict(id=key_id("cell", key)) | cell(rows, descriptive=True)
              for key, rows in sorted(cohorts.items())]
     # Freeze the explicit routing evidence independently of task observations.
     choice_file = out / "outcome-incumbents.json"
@@ -746,9 +764,9 @@ def measure(audit, out, baseline, load_json, write_json, csv_write, table, incum
     elif incumbents_path and str(incumbents_path) != choice["source"]:
         raise ValueError("incumbent inputs already frozen; choose a new --out")
     incumbent = {tuple(k): tuple(v) for k, v in choice["rows"]}
-    assignments, proposals, excluded = trials(evidence, chains, audit.since, audit.until, incumbent)
+    assignments, proposals, excluded, blocking_unresolved = trials(evidence, chains, audit.since, audit.until, incumbent)
     info = dict(definitions=DEFINITION, cells=cells, assigned=assignments, proposals=proposals,
-                exclusions=excluded, incumbent_source=choice["source"], inputs="outcome-inputs.json",
+                exclusions=excluded, blocking_unresolved_identity=blocking_unresolved, incumbent_source=choice["source"], inputs="outcome-inputs.json",
                 warnings=evidence.warnings)
     if (baseline.get("outcome_schema_version") == SCHEMA
             and baseline.get("model_outcomes", {}).get("definitions") == DEFINITION
@@ -770,4 +788,4 @@ def measure(audit, out, baseline, load_json, write_json, csv_write, table, incum
     for k, v in (("completion_count", sum(r["cohort"] == "completion" for r in observations)),
                  ("legacy_count", len(frozen["legacy"])), ("trial_count", len(proposals))):
         audit.metric(f"model_outcomes.{k}", v, "task-outcomes.csv; model-assignments.csv", total=False)
-    return info, render(cells, assignments, proposals, excluded, evidence.warnings, audit.win, table, choice["source"])
+    return info, render(cells, assignments, proposals, excluded, blocking_unresolved, evidence.warnings, audit.win, table, choice["source"])

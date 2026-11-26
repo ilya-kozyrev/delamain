@@ -374,7 +374,11 @@ await --ok PASSED --outcome-task "$TASK_ID" --ci-item https://github.com/owner/r
 ```
 
 Both binding flags are required together. GitHub uses the first required-check attempts on the earliest eligible PR
-head; GitLab uses the earliest attached push/MR pipeline and blocking jobs, including retried jobs. The binding
+head; GitLab uses the earliest attached push/MR pipeline and blocking jobs, including retried jobs. An eligible push
+on the initial revision can precede item creation. Without a configured requirement, GitLab uses blocking non-manual
+jobs and GitHub uses PR workflow checks, excluding skipped and neutral entries. Evidence labels the set
+`policy` or `inferred`. A provider-confirmed superseded cancellation is skipped. Manual or unverified cancellations
+leave the first outcome unknown. The binding
 uses authenticated `gh` for github.com and `glab` for GitLab merge request URLs. Evidence records the required
 set visible to those credentials and distinguishes pending attempts, failures and gaps. API permissions, incomplete
 or ambiguous histories, and unsupported check sources can leave the result unknown. The wait command, journal
@@ -432,7 +436,8 @@ For owner trial suggestions, pass `--incumbents FILE` on first measurement with 
 stratum. The CSV headers are `repository_key,task_class,change_class,engine,model,effort`. Use execution model IDs
 and a repository key from `task-outcomes.csv`. Each comparison follows original assignments for seven days,
 counts pending tasks and handoffs, and needs at least five completed direct contracts per cell, sufficient quality
-coverage and a reduction of at least 20% in median tokens or comparable reported cost. Review counts use the first
+coverage and a reduction of at least 20% in the direct median, full-cohort median and full-cohort mean
+for the same resource. The candidate's original-assignment handoff share must not rise. Review counts use the first
 primary report per artifact. First-run CI is per artifact, while first-time-right also includes review rounds.
 The review skill presents eligible trials to the owner. An `artifact_observed` event with IDs can set review and
 CI applicability for those artifacts. Retro gives an aggregate first-run pass only when every applicable artifact

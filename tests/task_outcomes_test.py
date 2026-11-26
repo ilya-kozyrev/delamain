@@ -338,6 +338,7 @@ class Lifecycle(unittest.TestCase):
         rows = self.wait("explicit")
         meta = self.meta("explicit")
         self.assertEqual(meta["task_class"], "bounded")
+        self.assertEqual(rows[0]["data"]["usage_boundary"], "includes_helpers")
         self.assertCountEqual([e["type"] for e in rows], ["task_started", "run_started", "run_identity", "run_ended"])
         closure = out.project_closure(rows)
         self.assertEqual(closure["source"], "auto_status")
@@ -677,7 +678,9 @@ class Lifecycle(unittest.TestCase):
         self.wait("helper")
         data = self.rows("helper")[0]["data"]
         self.assertEqual((data["parent_task_id"], data["usage_in_parent"], data["usage_boundary"]), (parent, "excluded", "own_only"))
-        self.assertEqual(self.rows("status-done")[0]["data"]["usage_boundary"], "unknown")
+        self.assertEqual(self.rows("status-done")[0]["data"]["usage_boundary"], "includes_helpers")
+        self.spawn("unknown-boundary", "--usage-boundary", "unknown")
+        self.assertEqual(self.wait("unknown-boundary")[0]["data"]["usage_boundary"], "unknown")
         self.command("spawn", "--role", "bad-helper", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
                      "--model", "haiku", "--usage-in-parent", "maybe", ok=False)
 
@@ -765,6 +768,7 @@ sys.exit(agent.main(sys.argv[2:]))
                      "--engine", "codex", "--model", "gpt-6.1-sol", "--effort", "medium", "--task-class", "bounded",
                      env=dict(FAKE_CODEX_FINAL="DONE fixture"))
         rows = self.wait("codex")
+        self.assertEqual(rows[0]["data"]["usage_boundary"], "own_only")
         run = next(e for e in rows if e["type"] == "run_ended")
         self.assertEqual(run["data"]["usage"]["tokens_total"], 130)
         self.assertEqual(run["data"]["usage"]["turns"], 1)

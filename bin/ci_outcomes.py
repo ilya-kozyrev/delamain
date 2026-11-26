@@ -89,7 +89,7 @@ def result(checks):
         status == "success" for status in checks) else None
 
 
-def github_required(api, repo, branch, protected):
+def github_required(api, repo, branch, branch_info):
     rules = api.pages(f"{repo}/rules/branches/{branch}")
     required = set()
     for rule in rules:
@@ -98,14 +98,13 @@ def github_required(api, repo, branch, protected):
                             for check in rule["parameters"]["required_status_checks"])
         elif rule["type"] in {"workflows", "required_workflows"}:
             raise CoverageError("required workflow rules cannot be mapped to attempt jobs")
-    if protected:
-        # The protection object requires permission. Its omission cannot establish the set.
-        protection = api.get(f"{repo}/branches/{branch}/protection")
+    if branch_info["protected"]:
+        protection = branch_info.get("protection")
+        if protection is None:
+            raise CoverageError("GitHub branch protection could not be verified")
         classic = protection.get("required_status_checks") or {}
         mapped = {check["context"]: check.get("app_id") for check in classic.get("checks", [])}
         required.update((context, mapped.get(context)) for context in set(classic.get("contexts", [])) | mapped.keys())
-    if not required:
-        raise CoverageError("required GitHub checks unavailable")
     return sorted(required, key=lambda check: (check[0], str(check[1])))
 
 
@@ -129,52 +128,66 @@ def github(api, project, number, data):
         raise CoverageError("fork push history cannot be reconciled with the GitHub PR")
     branch = quote(base, safe="")
     branch_info = api.get(f"{repo}/branches/{branch}")
-    required = github_required(api, repo, branch, branch_info["protected"])
+    required = github_required(api, repo, branch, branch_info)
+    data["required_checks_source"] = "policy" if required else "inferred"
     data["required_checks"] = [{"name": name, "app_id": app} for name, app in required]
-    # Full branch history from PR creation includes previous heads. Direct PR associations
-    # also cover synthetic merge SHAs where GitHub exposes them.
-    query = f"branch={quote(head['ref'], safe='')}&created={quote('>=' + pull['created_at'], safe='')}"
+    initial = commits[0]
+    initial_at = min(created, timestamp(initial["commit"]["committer"]["date"]))
+    query = f"branch={quote(head['ref'], safe='')}&created={quote('>=' + initial_at.isoformat(), safe='')}"
     runs = api.pages(f"{repo}/actions/runs?{query}", "workflow_runs", cap=1000)
+    pr_events = {"pull_request", "pull_request_target", "pull_request_review"}
     eligible = []
     for run in runs:
-        if run["event"] not in ("pull_request", "pull_request_target", "push") or timestamp(run["created_at"]) < created:
+        sha, at, event = run["head_sha"], timestamp(run["created_at"]), run["event"]
+        if event not in pr_events | {"push"} or at < initial_at:
             continue
         prs = run["pull_requests"]
-        linked = [pr for pr in prs if pr["number"] == int(number)]
-        if linked:
-            sha = linked[0]["head"]["sha"]
-        elif run["head_sha"] in heads and run["event"] == "push" and not prs:
-            sha = run["head_sha"]
-        elif run["head_sha"] in heads and not prs:
-            raise CoverageError("GitHub workflow has no verifiable PR association")
-        else:
+        linked = any(pr["number"] == int(number) for pr in prs)
+        branch_match = (run.get("head_branch") == head["ref"]
+                        and (run.get("head_repository") or {}).get("full_name", project).lower() == project)
+        if not linked and (prs or not branch_match or sha not in heads):
             continue
         if sha not in heads:
             raise CoverageError("GitHub workflow refers to an unverified historical head")
-        eligible.append((timestamp(run["created_at"]), run["id"], sha, run))
+        if at < created and (event != "push" or sha != initial["sha"]):
+            continue
+        eligible.append((at, run["id"], sha, run))
     eligible.sort()
+    if not required:
+        pr_workflows = {run["workflow_id"] for _, _, _, run in eligible if run["event"] in pr_events}
+        eligible = [row for row in eligible if row[3]["workflow_id"] in pr_workflows]
     data["history"] = [
         dict(id=rid, head=sha, suite=run["check_suite_id"], latest_attempt=run["run_attempt"], created_at=run["created_at"])
         for _, rid, sha, run in eligible
     ]
-    if not eligible:
+    while eligible:
+        _, _, first_head, first_run = eligible[0]
+        workflows = {}
+        for _, _, sha, run in eligible:
+            if sha == first_head:
+                workflows.setdefault(run["workflow_id"], run)
+        first_runs = list(workflows.values())
+        jobs = github_jobs(api, repo, first_runs)
+        data.update(first_head=first_head, attempt_id=f"github:{first_head}:1", attempt_created_at=first_run["created_at"],
+                    jobs=jobs)
+        if not github_replaced(api, repo, first_runs, jobs, eligible):
+            break
+        data["superseded_attempts"].append(data["attempt_id"])
+        eligible = [row for row in eligible if row[2] != first_head]
+    else:
         raise CoverageError("no eligible GitHub workflow history")
-    _, _, first_head, first_run = eligible[0]
-    data.update(first_head=first_head, attempt_id=f"github:{first_head}:1", attempt_created_at=first_run["created_at"])
-    data["jobs"] = []
-    for created_at, rid, sha, run in eligible:
-        if sha != first_head:
-            continue
-        jobs = api.pages(f"{repo}/actions/runs/{rid}/attempts/1/jobs", "jobs")
+    if any(run.get("conclusion") == "cancelled" and run["run_attempt"] == 1 for run in first_runs):
+        return None
+    checks = api.pages(f"{repo}/commits/{first_head}/check-runs?filter=all", "check_runs")
+    if not required:
+        suites = {(c["check_suite"]["id"], c["name"]) for c in checks}
         for job in jobs:
-            data["jobs"].append(dict(id=job["id"], name=job["name"], status=job.get("conclusion"),
-                                     run_id=rid, suite=run["check_suite_id"], attempt=1))
-        if run["run_attempt"] > 1 and (not jobs or any(job["status"] != "completed" for job in jobs)):
-            raise CoverageError("GitHub attempt 1 jobs missing after a retry")
-    checks = []
-    # Verify the job provenance against exact checks and application identities.
-    for sha in sorted({run["head_sha"] for _, _, head_sha, run in eligible if head_sha == first_head}):
-        checks.extend(api.pages(f"{repo}/commits/{sha}/check-runs?filter=all", "check_runs"))
+            if (job["suite"], job["name"]) not in suites:
+                raise CoverageError("GitHub workflow job has no matching check run")
+            if job["status"] not in ("skipped", "neutral"):
+                job["required"] = True
+                data["required_checks"].append(dict(name=job["name"], suite=job["suite"]))
+        return result([j["status"] for j in jobs if j.get("required")])
     for name, app in required:
         matches = [c for c in checks if c["name"] == name and (app in (None, -1) or c["app"]["id"] == app)]
         suites = {j["suite"] for j in data["jobs"] if j["name"] == name}
@@ -186,10 +199,56 @@ def github(api, project, number, data):
             raise CoverageError("ambiguous required GitHub job on first head")
         first_jobs[0]["required"] = True
     # A classic commit status with the required name is also a merge requirement.
-    for sha in sorted({run["head_sha"] for _, _, head_sha, run in eligible if head_sha == first_head}):
-        if any(s["context"] in {name for name, _ in required} for s in api.pages(f"{repo}/commits/{sha}/statuses")):
-            raise CoverageError("required GitHub commit status has no attempt history")
+    if any(s["context"] in {name for name, _ in required}
+           for s in api.pages(f"{repo}/commits/{first_head}/statuses")):
+        raise CoverageError("required GitHub commit status has no attempt history")
     return result([j["status"] for j in data["jobs"] if j.get("required")])
+
+
+def github_jobs(api, repo, runs):
+    evidence = []
+    for run in runs:
+        rid = run["id"]
+        jobs = api.pages(f"{repo}/actions/runs/{rid}/attempts/1/jobs", "jobs")
+        if run["run_attempt"] > 1 and (not jobs or any(job["status"] != "completed" for job in jobs)):
+            raise CoverageError("GitHub attempt 1 jobs missing after a retry")
+        for job in jobs:
+            check_id = job.get("check_run_url", "").rsplit("/", 1)[-1]
+            evidence.append(dict(id=job["id"], name=job["name"], status=job.get("conclusion"),
+                                 run_id=rid, suite=run["check_suite_id"], attempt=1,
+                                 check_id=int(check_id) if check_id.isdecimal() else job["id"]))
+    return evidence
+
+
+def github_replaced(api, repo, runs, jobs, history):
+    canceled = [run for run in runs if run["run_attempt"] == 1 and run.get("conclusion") == "cancelled"]
+    if not canceled or any(job["status"] in FAILURE for job in jobs):
+        return False
+    for run in canceled:
+        later_revision = any(other.get("workflow_id") == run.get("workflow_id") and sha != run["head_sha"]
+                             and created > timestamp(run["created_at"]) for created, _, sha, other in history)
+        if not later_revision:
+            return False
+        evidence = [j for j in jobs if j["run_id"] == run["id"] and j["status"] == "cancelled"]
+        try:
+            proven = any(annotation.get("message", "").startswith("Canceling since a higher priority waiting request")
+                         for job in evidence
+                         for annotation in api.pages(f"{repo}/check-runs/{job['check_id']}/annotations"))
+        except (CoverageError, OSError, subprocess.TimeoutExpired):
+            proven = False
+        if not proven:
+            return False
+    return True
+
+
+def gitlab_replacement(detail, candidates):
+    # Some GitLab versions expose the replacing pipeline through the canceled status tooltip.
+    replaced_by = detail.get("auto_canceled_by_id")
+    if replaced_by is None:
+        tooltip = (detail.get("detailed_status") or {}).get("tooltip") or ""
+        match = re.search(r"auto[- ]canceled (?:by|because of) (?:pipeline )?#(\d+)", tooltip, re.IGNORECASE)
+        replaced_by = int(match[1]) if match else None
+    return next((p for p in candidates if p["id"] == replaced_by and p["sha"] != detail["sha"]), None)
 
 
 def gitlab(api, project, number, data):
@@ -199,39 +258,53 @@ def gitlab(api, project, number, data):
     created = timestamp(mr["created_at"])
     data["head"], data["item_created_at"] = mr["sha"], mr["created_at"]
     config = api.get(repo)
-    if config.get("only_allow_merge_if_pipeline_succeeds") is not True:
-        raise CoverageError("required GitLab pipeline policy unavailable")
+    policy = config.get("only_allow_merge_if_pipeline_succeeds")
+    if type(policy) is not bool:
+        raise CoverageError("GitLab pipeline policy could not be verified")
+    data["required_checks_source"] = "policy" if policy else "inferred"
     if mr["source_project_id"] != mr["target_project_id"]:
         raise CoverageError("fork push history cannot be reconciled with the GitLab MR")
     versions = api.pages(f"{item}/versions")
     heads = {version["head_commit_sha"] for version in versions}
     if mr["sha"] not in heads:
         raise CoverageError("incomplete GitLab MR diff history")
+    initial = min(versions, key=lambda version: version["id"])["head_commit_sha"]
+    commit = api.get(f"{repo}/repository/commits/{quote(initial, safe='')}")
+    initial_at = min(created, timestamp(commit["committed_date"]))
     attached = api.pages(f"{item}/pipelines")
+    attached_ids = {p["id"] for p in attached}
     ref = quote(mr["source_branch"], safe="")
-    pushes = api.pages(f"{repo}/pipelines?ref={ref}&source=push&created_after={quote(mr['created_at'], safe='')}")
+    # GitLab's created_after is exclusive.
+    after = quote((initial_at - dt.timedelta(seconds=1)).isoformat(), safe="")
+    pushes = api.pages(f"{repo}/pipelines?ref={ref}&source=push&created_after={after}")
     refs = {mr["source_branch"], f"refs/merge-requests/{number}/head", f"refs/merge-requests/{number}/merge"}
     eligible = []
-    for pid, row in {p["id"]: p for p in attached + pushes}.items():
-        pipe = api.get(f"{repo}/pipelines/{pid}")
-        if pipe["sha"] != row["sha"]:
-            raise CoverageError("GitLab pipeline changed during collection")
-        if timestamp(pipe["created_at"]) < created or pipe["ref"] not in refs:
+    for row in {p["id"]: p for p in pushes + attached}.values():
+        if row["ref"] not in refs or timestamp(row["created_at"]) < initial_at:
             continue
-        if pipe["source"] == "push" and pipe["sha"] in heads:
-            eligible.append(pipe)
-        elif pipe["source"] == "merge_request_event" and row in attached:
-            eligible.append(pipe)
+        if timestamp(row["created_at"]) < created and (row["source"] != "push" or row["sha"] != initial):
+            continue
+        if (row["source"] == "push" and row["sha"] in heads
+                or row["source"] == "merge_request_event" and row["id"] in attached_ids):
+            eligible.append(row)
     eligible.sort(key=lambda pipe: (timestamp(pipe["created_at"]), pipe["id"]))
     data["history"] = [
-        dict(id=p["id"], head=p["sha"], source=p["source"], ref=p["ref"], created_at=p["created_at"])
+        dict(id=p["id"], head=p["sha"], source=p["source"], ref=p["ref"], created_at=p["created_at"], status=p["status"])
         for p in eligible
     ]
-    if not eligible:
+    for index, row in enumerate(eligible):
+        endpoint = f"{repo}/pipelines/{row['id']}"
+        first = api.get(endpoint)
+        if any(first[k] != row[k] for k in ("sha", "ref", "status")):
+            raise CoverageError("GitLab pipeline changed during collection")
+        data.update(first_head=first["sha"], attempt_id=f"gitlab:{first['id']}:1", attempt_created_at=first["created_at"])
+        if first["status"] != "canceled":
+            break
+        if not gitlab_replacement(first, eligible[index + 1:]):
+            return None
+        data["superseded_attempts"].append(data["attempt_id"])
+    else:
         raise CoverageError("no eligible GitLab pipeline history")
-    first = eligible[0]
-    endpoint = f"{repo}/pipelines/{first['id']}"
-    data.update(first_head=first["sha"], attempt_id=f"gitlab:{first['id']}:1", attempt_created_at=first["created_at"])
     if api.pages(f"{endpoint}/bridges"):
         raise CoverageError("required GitLab bridge jobs cannot be verified")
     jobs = api.pages(f"{endpoint}/jobs?include_retried=true")
@@ -249,11 +322,11 @@ def gitlab(api, project, number, data):
         raise CoverageError("GitLab retried jobs do not reconcile with the current pipeline")
     if any(job["allow_failure"] != first_jobs[job_key(job)]["allow_failure"] for job in data["jobs"]):
         raise CoverageError("GitLab blocking job set changed on retry")
-    required = [j for j in first_jobs.values() if not j["allow_failure"]]
+    required = [j for j in first_jobs.values() if not j["allow_failure"] and (policy or j["status"] != "manual")]
     data["required_checks"] = [{"name": j["name"], "stage": j["stage"]} for j in required]
     statuses = [j["status"] for j in required]
     value = result(statuses)
-    if value is True and (first["status"] != "success" or not required):
+    if value is True and (first["status"] != "success" and (policy or first["status"] != "manual")):
         raise CoverageError("GitLab pipeline state does not establish first-attempt success")
     return value
 
@@ -266,7 +339,8 @@ def observe(stage, task_id, url):
     unverified_item = "unverified:" + hashlib.sha256(url.encode()).hexdigest()
     data = dict(target_task_id=task_id, provider=None, repository=None, item=unverified_item, head=None, status="unknown",
                 first_run_green=None, history_coverage="incomplete", coverage_reason=None, attempt_id=None,
-                attempt_created_at=None, first_head=None, item_created_at=None, history=[], required_checks=[], jobs=[])
+                attempt_created_at=None, first_head=None, item_created_at=None, history=[], required_checks=[],
+                required_checks_source=None, superseded_attempts=[], jobs=[])
     try:
         provider, host, project, number = binding(url)
         repository = f"https://{host}/{project}"

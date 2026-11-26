@@ -231,25 +231,27 @@ def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int
     except OSError as e:
         print(f"await: could not write the journal: {e}", file=sys.stderr)
         return 1
+    if not DETACHED:
+        try:
+            print(text, flush=True)
+        except OSError:
+            pass
     if getattr(args, "outcome_task", None) and word != "CANCELLED":
+        # Keep the known wait verdict. Caught signals reset on exec, so the provider CLI
+        # does not inherit the supervisor's temporary SIG_IGN.
+        set_signals(lambda *_: None)
         try:
             import ci_outcomes
             data = ci_outcomes.observe(hc.root() / stage, args.outcome_task, args.ci_item)
             with log.open("a", encoding="utf-8") as fh:
                 print(f"CI evidence: {data['status']} ({data['coverage_reason'] or data['attempt_id']})", file=fh)
-        except (OSError, ValueError, TypeError, KeyError) as exc:
+        except Exception as exc:
             try:
                 with log.open("a", encoding="utf-8") as fh:
-                    print(f"CI evidence could not be recorded: {exc}", file=fh)
+                    print(f"CI evidence could not be recorded: {type(exc).__name__}", file=fh)
             except OSError:
                 pass
-    if not DETACHED:  # the caller waited for the verdict: it gets the line and an exit code that says which verdict
-        try:
-            print(text, flush=True)
-        except OSError:
-            pass
-        return 0 if ok else 3
-    return 0
+    return 0 if DETACHED or ok else 3
 
 
 SLEEP_UNTIL = ("import sys, time\n"

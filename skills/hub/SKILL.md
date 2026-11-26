@@ -81,11 +81,10 @@ A stopped `jwait` loses no lines once its caller has run before: the next one de
   `await --at 20:23 --label L` (`references/launch-and-executors.md`).
 - Sources and filters combine in one command.
 
-A CI, merge or lock wait is never a background Bash of the hub itself: run `await --ok PASSED --label "MR !N" --on
-2=TIMEOUT -- <the repo's wait command>` (`bin/await`, a foreground call that returns at once; no `await` on PATH: an executor waits). Silent while it runs, it
-journals one line `@hub PASSED|DONE|FAILED|TIMEOUT|<--on word> … <link>` when it ends: that is the wake, and
-FAILED/TIMEOUT/CONFLICT are decisions, not retries; a superseded wait you `kill` journals CANCELLED, no wake. An
-executor that waits on CI uses the same `await`.
+Run CI waits with `await --ok PASSED --outcome-task "$TASK_ID" --ci-item "$ITEM_URL" -- <wait command>`.
+Use the executor's `task_id` from its `meta.json` (`$AGENT_TASK_ID` in its session). The hub calls `bin/await`
+in the foreground, keeps one `jwait`, and gets one journal verdict on completion. A headless executor adds
+`--wait`. Merge and lock waits use `await` too. A cancelled waiter journals without waking the hub.
 
 A message starting `[agent-hub watchdog]` or `[delamain watchdog]` means the watchdog woke you: run the digest `jwait`
 with its `--since HH:MM`, handle what it shows, follow its NEXT WAIT. Going quiet on purpose: `watchdog quiet`

@@ -153,16 +153,19 @@ The child wait command and its exit remain unchanged; unsupported provider, perm
 pagination or unverifiable history gives CI=null and coverage reason. Generic PASSED/FAILED is never CI evidence.
 
 Define first-run green **per artifact's first eligible CI attempt**, not the first wait, latest head, or last retry:
-GitLab uses earliest push/MR pipeline attached to that item from its creation; GitHub uses the first required-check
-suite on the earliest item head with eligible runs (group workflows on that head; retain run IDs and attempts).
-Exclude scheduled/manual/deploy/merge-train runs. Persist ordered history identities and the required-check set;
-if no trustworthy required-check set/history is available, the result is unknown. Separate immutable attempt identity
+GitLab uses the earliest attached push/MR pipeline. GitHub groups the first runs of workflows on the earliest
+eligible item head. The initial head's push can precede item creation and is eligible from the commit timestamp.
+Exclude scheduled/manual/deploy/merge-train runs. A cancellation verified as displaced by a later push is excluded.
+Manual cancellations and cancellations with no evidence of replacement are unknown. Persist ordered history and
+required checks with their source. Prefer the configured policy when available. Without one, infer blocking
+non-manual jobs on GitLab and PR workflow checks excluding skipped and neutral entries on GitHub (D-OUTCOMES-004).
+If the history or check set cannot be established, the result is unknown. Separate immutable attempt identity
 from observation version/state identity: identical state retries are idempotent independent of observation time/writer;
 pending→success appends a new state version and reduces to one attempt, not a conflict or two samples. Failed required job/check makes
 first-run=false permanently, even if rerun in the same pipeline becomes green. True requires all required checks
 succeed on attempt 1 and complete history; skipped/neutral/cancelled/missing check or lost retry history is unknown.
 Record the earliest attempt when first observed, and retain it across later heads and observations. A late waiter
-must verify history back to item creation, not assume its first observation was first. Multiple linked artifacts:
+must verify history back to the initial commit, not assume its first observation was first. Multiple linked artifacts:
 task true only if every applicable artifact is true, false if any is false, otherwise null. No CI required is N/A.
 This deliberately differs from existing first-time-right, which also includes review rounds; show both definitions.
 
@@ -192,9 +195,9 @@ A candidate is a **suggested owner-approved trial**, not a causal claim or a con
    cohort with equal follow-up time alongside completed samples, including BLOCKED/QUESTION/open outcomes. Compare
    completion share and demonstrate that unknown/open outcomes cannot reverse the apparent advantage. Report handoff
    share by original assignment; mixed continuation chains remain one contract with full spend and final outcome in
-   the original-assignment row. A higher handoff share cannot pass the comparability gate by discarding transferred
-   contracts: show the advantage on the full original-assignment cohort including mixed spend/outcomes, or report
-   insufficient comparable evidence. Excluding mixed tasks from direct cells cannot hide initial failures.
+   the original-assignment row. The candidate's handoff share must be no higher than the incumbent's. Show the
+   advantage on the full original-assignment cohort including mixed spend/outcomes. Excluding mixed tasks from
+   direct cells cannot hide initial failures.
 2. Each comparison needs known closure and complete tokens for every task, at least 80% known applicable review/CI
    outcomes, and at least five observed values per applicable quality metric in each cell. Report excluded counts.
 3. Candidate success share and first-run CI share must not be lower; reported high-severity findings must not rise;
@@ -202,8 +205,8 @@ A candidate is a **suggested owner-approved trial**, not a causal claim or a con
    at matched review coverage; rechecks of the same finding are not new defects. Accepted/adjudicated counts stay separate
    and optional, never a requirement for this gate. If review/CI is explicitly N/A for the whole stratum, omit that gate
    and name the limitation; missing evidence cannot masquerade as N/A. Do not compare different applicability mixes.
-4. Require at least **20% lower median tokens**, or at least **20% lower median reported cost** when both cells are
-   fully priced on the same basis. Never compare Claude dollars with Codex null. Turns alone cannot trigger a change. Direction is from the current assignment to a candidate, not both pair orders.
+4. Require at least **20% savings on the same resource** across the direct median, full-cohort median and
+   full-cohort mean. Compare tokens or reported cost when both cells are fully priced on the same basis. Never compare Claude dollars with Codex null. Turns alone cannot trigger a change. Direction is from the current assignment to a candidate, not both pair orders.
    When measured tokens and same-basis cost conflict, present one owner choice with both deltas instead of two opposite
    recommendations. Include original-assignment handoff/completion shares and unknown-outcome sensitivity.
 5. Below these gates print “insufficient evidence (n/coverage)” with descriptive numbers. Reviewer cells remain
