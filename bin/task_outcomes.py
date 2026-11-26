@@ -251,7 +251,7 @@ def usage(file, offset, engine, session_id=None):
         if offset:
             if previous_sid == current_sid:
                 baseline = previous[-1].get("usage") if previous else None
-            elif not current_sid or not any(e.get("type") == "thread.started" for e in events):
+            elif previous_sid is None or not current_sid or not any(e.get("type") == "thread.started" for e in events):
                 baseline = None
         if offset and previous_sid == current_sid and not previous:
             baseline = None

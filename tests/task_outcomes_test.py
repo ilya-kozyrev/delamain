@@ -124,6 +124,11 @@ class Outcomes(unittest.TestCase):
             u = out.usage(file, run_offset, "codex", "sid")
             self.assertFalse(u["complete"])
             self.assertIsNone(u["tokens_total"])
+        prefix = [turn, result(100)]  # intact JSONL with a lost session identity is not a zero baseline
+        file = self.write_log(prefix)
+        missing_identity_offset = file.stat().st_size
+        file = self.write_log(prefix + [init, turn, result(150)])
+        self.assertIsNone(out.usage(file, missing_identity_offset, "codex", "sid")["tokens_total"])
         file = self.write_log([init, result(100)])
         self.assertIsNone(out.usage(file, 0, "codex", "sid")["turns"])
         self.assertIsNone(out.usage(file, 0, "codex", "sid")["tokens_total"])
