@@ -228,7 +228,7 @@ print('PASS retry flags update prepared settings/brief/create args; dispatch/unc
 
 # Native launch requests need the concrete ID, while the reservation keeps the requested family.
 home,stage,handoff=setup('family-catalog')
-catalog=pathlib.Path(os.environ['CODEX_HOME'])/'models_cache.json'
+catalog=pathlib.Path(env['CODEX_HOME'])/'models_cache.json'
 catalog.write_text(json.dumps({'models': [
     {'slug':'gpt-6-astra','visibility':'list'},
     {'slug':'gpt-6.2-astra','visibility':'list'},
@@ -236,12 +236,12 @@ catalog.write_text(json.dumps({'models': [
 prepare(handoff,'--model','astra')
 p=state(stage)['pending']
 assert p['requested']['model']=='astra' and p['create_args']['model']=='gpt-6.2-astra'
-os.environ['AGENT_HUB_CODEX_MODEL_MAP']='review=astra'
+env['AGENT_HUB_CODEX_MODEL_MAP']='review=astra'
 prepare(handoff,'--again','--model','review')
 updated=state(stage)['pending']
 assert updated['request_id']==p['request_id'] and updated['requested']['model']=='review'
 assert updated['create_args']['model']=='gpt-6.2-astra'
-os.environ.pop('AGENT_HUB_CODEX_MODEL_MAP')
+env.pop('AGENT_HUB_CODEX_MODEL_MAP')
 catalog.unlink()
 print('PASS native successor and prepared retry resolve family aliases to a concrete model')
 

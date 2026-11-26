@@ -1184,9 +1184,9 @@ def model_warnings(stage: str, cwd=None):
             models.extend(model_catalog.mentioned_pins((directory / "hub-rules.md").read_text(encoding="utf-8")))
         except (OSError, UnicodeError):
             continue
-    yield from catalog.pin_warnings(models, cwd)
     if warning := catalog.age_warning():
         yield warning
+    yield from catalog.pin_warnings(models, cwd)
 
 
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),

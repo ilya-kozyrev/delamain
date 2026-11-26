@@ -713,6 +713,10 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
         save_meta(meta["stage"], meta["role"], meta)
         raise
     meta["session_id"] = init["session_id"]
+    # Codex currently reports only the thread ID at init. Carry the model
+    # passed to the CLI alongside it for consumers of the run identity.
+    if engine == "codex" and not init.get("model"):
+        init["model"] = meta.get("model")
     model = init.get("model")
     if isinstance(model, str) and hc.MODEL_VALUE_RE.fullmatch(model):
         meta["resolved_model"] = model
