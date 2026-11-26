@@ -213,7 +213,7 @@ def github_jobs(api, repo, runs):
         if run["run_attempt"] > 1 and (not jobs or any(job["status"] != "completed" for job in jobs)):
             raise CoverageError("GitHub attempt 1 jobs missing after a retry")
         for job in jobs:
-            check_id = job.get("check_run_url", "").rsplit("/", 1)[-1]
+            check_id = (job.get("check_run_url") or "").rsplit("/", 1)[-1]
             evidence.append(dict(id=job["id"], name=job["name"], status=job.get("conclusion"),
                                  run_id=rid, suite=run["check_suite_id"], attempt=1,
                                  check_id=int(check_id) if check_id.isdecimal() else job["id"]))

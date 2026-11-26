@@ -153,6 +153,12 @@ post_merge = ci_outcomes.observe(stage, new_task(), gh_url)
 assert post_merge["first_run_green"] is False and post_merge["first_head"] == "old", post_merge
 assert post_merge["required_checks_source"] == "inferred" and [j["name"] for j in post_merge["required_checks"]] == ["build"]
 
+unrelated_pr = run(1, 11, "old", early) | {"pull_requests": [{"number": 99, "head": {"sha": "new"}}]}
+unrelated_branch = run(2, 12, "old", early, linked=False) | {"head_branch": "other"}
+fixture(inferred | {page(runs_endpoint): list_field("workflow_runs", [unrelated_pr, unrelated_branch])})
+unrelated = ci_outcomes.observe(stage, new_task(), gh_url)
+assert unrelated["first_run_green"] is None and unrelated["history"] == [], unrelated
+
 # M3: pre-item initial push counts if it ran a workflow used by the PR. A different pre-item SHA does not.
 pre = inferred | {page(runs_endpoint): list_field("workflow_runs", [
     run(1, 11, "old", pre_item, event="push", linked=False), run(3, 13, "new", later),
@@ -291,6 +297,8 @@ for command, expected_rc, verdict in (("true", 0, "PASSED"), ("false", 3, "FAILE
     invoked = []
     def broken(*_):
         invoked.append(stdout.getvalue())
+        probe = "import signal; assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL"
+        assert subprocess.run([sys.executable, "-c", probe], capture_output=True).returncode == 0
         raise RuntimeError("telemetry control")
     ci_outcomes.observe = broken
     log = fake / f"await-{command}.log"

@@ -41,9 +41,10 @@ def id_for(name, domain="fixture"):
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{domain}/{name}"))
 
 def start(stage, name, model="old", day=0, parent=None, continuation=None, engine="claude",
-          task_kind="executor", target=None, usage_boundary="own_only", usage_in_parent="unknown", task_class="bounded"):
+          task_kind="executor", target=None, usage_boundary="own_only", usage_in_parent="unknown", task_class="bounded",
+          change_class="code"):
     tid = id_for(name, stage.name)
-    emit(stage, tid, "task_started", dict(task_class=task_class, task_kind=task_kind, change_class="code",
+    emit(stage, tid, "task_started", dict(task_class=task_class, task_kind=task_kind, change_class=change_class,
         assignment_source=dict(task_class="explicit", task_kind="explicit", change_class="explicit"),
         stage=stage.name, role=name, brief_path="fixture.md", brief_sha256="hash", continuation_of=continuation,
         review_target_task_id=target, engine=engine, requested_model=model, effort="high", repository_key="/fixture/.git",
@@ -270,9 +271,9 @@ for label, old_handoffs, old_fix, new_fix, expected in (
 print("H2: excessive handoffs blocked; matched handoffs pass only when full mean clears the threshold")
 
 stage = reset("observed-boundary")
-unknown = start(stage, "unknown-boundary", "sonnet", task_class="unknown", usage_boundary="unknown")
+unknown = start(stage, "unknown-boundary", "sonnet", task_class="unknown", change_class="unknown", usage_boundary="unknown")
 launch(stage, unknown, "sonnet", .1, tokens=321)
-known = start(stage, "known-boundary", "sonnet", task_class="unknown")
+known = start(stage, "known-boundary", "sonnet", task_class="unknown", change_class="unknown")
 launch(stage, known, "sonnet", .1, tokens=123)
 put(stage / "agents/legacy/meta.json", dict(role="legacy", started_at=time(1), engine="claude",
                                             model="sonnet", resolved_model="sonnet", effort="high"))
