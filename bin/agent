@@ -754,7 +754,7 @@ def capture_end(meta, code=None, observed=False, reason=None):
         text = report.read_text(encoding="utf-8") if report.exists() else ""
         outcomes.emit(stage_dir, meta, run["id"], "review_observed", outcomes.review(meta, run["id"], final, text))
     if not any(e["type"] == "task_closed" and e["run_id"] == run["id"] for e in records):
-        outcomes.close(stage_dir, meta, run["id"], status, str(file))
+        outcomes.close(stage_dir, meta, run["id"], status, str(outcomes.path(stage_dir, meta["task_id"])))
 
 
 def launch(meta: dict, prompt: str, resume: bool) -> int:
