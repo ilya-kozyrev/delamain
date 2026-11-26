@@ -122,6 +122,8 @@ check "$(exits d8)" 0 "a result written just before the exit is re-read after th
 # is skipped, the status line is still printed, and a listing goes on past the agent
 spawn aro; PA=$(pid_of aro); spawn bok
 kill -KILL -- -$PA; wait_gone $PA
+# Spawn also takes AgentLock: remove its released file so this case tests failed lock creation.
+rm -f $R/stage-a/agents/aro/.agent.lock
 chmod 555 $R/stage-a/agents/aro
 if touch $R/stage-a/agents/aro/.probe 2>/dev/null; then
     rm -f $R/stage-a/agents/aro/.probe; echo "PASS (running as a user that can write to a 555 directory: the read-only case cannot be made, skipped)"
