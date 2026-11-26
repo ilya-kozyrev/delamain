@@ -1,6 +1,6 @@
 # Per-task model outcomes
 
-Status: capture implementation in PR 1; CI history and retro are deferred to PR 2. No automatic routing or policy changes.
+Status: capture shipped in Delamain 1.0.29. CI history and retro are the second implementation PR.
 Business result: every delegated task has independently assigned difficulty, execution identity and observed outcomes;
 retro compares these records and offers evidence to the owner, who alone decides model changes.
 Source references below use repository revision `072559c15279842afce4a3eb222fd8cca2e90ff1`.
@@ -103,8 +103,10 @@ A start without a matching end remains incomplete; retro is read-only and does n
 ### Usage and attempts
 
 - Save raw reported counters plus `usage_basis`, `usage_scope`, `complete`, and normalized input/output/cache fields.
-  Claude `result.usage` is per invocation in the checked sample; sum distinct results. `total_cost_usd` is cumulative
-  per session: use deltas between results, then sum sessions. Do not sum cumulative `modelUsage` snapshots.
+  Claude `modelUsage` includes the main model and built-in helpers. Delta each model's cumulative counters by session
+  and sum the deltas. `total_cost_usd` is cumulative per session and uses the same session boundaries.
+  Preserve primary-model `result.usage` in raw evidence. A missing or regressing all-model snapshot makes tokens
+  incomplete. Older events with only primary-model counters are ineligible for token comparisons.
 - Codex uses latest cumulative usage per session and delta per run (`bin/engines.py:268-281`;
   `bin/agent-top:452-469`; `bin/retro:504-531`). Never add full resume totals. Missing baseline, counter regression,
   partial log, or changed provider semantics => incomplete/null delta, preserve raw data and show a warning.
@@ -153,16 +155,21 @@ The child wait command and its exit remain unchanged; unsupported provider, perm
 pagination or unverifiable history gives CI=null and coverage reason. Generic PASSED/FAILED is never CI evidence.
 
 Define first-run green **per artifact's first eligible CI attempt**, not the first wait, latest head, or last retry:
-GitLab uses earliest push/MR pipeline attached to that item from its creation; GitHub uses the first required-check
-suite on the earliest item head with eligible runs (group workflows on that head; retain run IDs and attempts).
-Exclude scheduled/manual/deploy/merge-train runs. Persist ordered history identities and the required-check set;
-if no trustworthy required-check set/history is available, the result is unknown. Separate immutable attempt identity
+GitLab uses the earliest attached push/MR pipeline. GitHub groups the first runs of workflows on the earliest
+eligible item head. The initial head's push can precede item creation and is eligible from the commit timestamp.
+Exclude scheduled/manual/deploy/merge-train runs. A cancellation verified as displaced by a later push is excluded.
+On GitLab, enabled auto-cancel plus the next pipeline on a newer MR head created before the cancellation finished
+also counts as displaced (D-OUTCOMES-005). Record its provenance as `superseded_inferred`. Cancellations without
+either source are unknown. Persist ordered history and
+required checks with their source. Prefer the configured policy when available. Without one, infer blocking
+non-manual jobs on GitLab and PR workflow checks excluding skipped and neutral entries on GitHub (D-OUTCOMES-004).
+If the history or check set cannot be established, the result is unknown. Separate immutable attempt identity
 from observation version/state identity: identical state retries are idempotent independent of observation time/writer;
 pending→success appends a new state version and reduces to one attempt, not a conflict or two samples. Failed required job/check makes
 first-run=false permanently, even if rerun in the same pipeline becomes green. True requires all required checks
 succeed on attempt 1 and complete history; skipped/neutral/cancelled/missing check or lost retry history is unknown.
 Record the earliest attempt when first observed, and retain it across later heads and observations. A late waiter
-must verify history back to item creation, not assume its first observation was first. Multiple linked artifacts:
+must verify history back to the initial commit, not assume its first observation was first. Multiple linked artifacts:
 task true only if every applicable artifact is true, false if any is false, otherwise null. No CI required is N/A.
 This deliberately differs from existing first-time-right, which also includes review rounds; show both definitions.
 
@@ -192,9 +199,9 @@ A candidate is a **suggested owner-approved trial**, not a causal claim or a con
    cohort with equal follow-up time alongside completed samples, including BLOCKED/QUESTION/open outcomes. Compare
    completion share and demonstrate that unknown/open outcomes cannot reverse the apparent advantage. Report handoff
    share by original assignment; mixed continuation chains remain one contract with full spend and final outcome in
-   the original-assignment row. A higher handoff share cannot pass the comparability gate by discarding transferred
-   contracts: show the advantage on the full original-assignment cohort including mixed spend/outcomes, or report
-   insufficient comparable evidence. Excluding mixed tasks from direct cells cannot hide initial failures.
+   the original-assignment row. The candidate's handoff share must be no higher than the incumbent's. Show the
+   advantage on the full original-assignment cohort including mixed spend/outcomes. Excluding mixed tasks from
+   direct cells cannot hide initial failures.
 2. Each comparison needs known closure and complete tokens for every task, at least 80% known applicable review/CI
    outcomes, and at least five observed values per applicable quality metric in each cell. Report excluded counts.
 3. Candidate success share and first-run CI share must not be lower; reported high-severity findings must not rise;
@@ -202,8 +209,8 @@ A candidate is a **suggested owner-approved trial**, not a causal claim or a con
    at matched review coverage; rechecks of the same finding are not new defects. Accepted/adjudicated counts stay separate
    and optional, never a requirement for this gate. If review/CI is explicitly N/A for the whole stratum, omit that gate
    and name the limitation; missing evidence cannot masquerade as N/A. Do not compare different applicability mixes.
-4. Require at least **20% lower median tokens**, or at least **20% lower median reported cost** when both cells are
-   fully priced on the same basis. Never compare Claude dollars with Codex null. Turns alone cannot trigger a change. Direction is from the current assignment to a candidate, not both pair orders.
+4. Require at least **20% savings on the same resource** across the direct median, full-cohort median and
+   full-cohort mean. Compare tokens or reported cost when both cells are fully priced on the same basis. Never compare Claude dollars with Codex null. Turns alone cannot trigger a change. Direction is from the current assignment to a candidate, not both pair orders.
    When measured tokens and same-basis cost conflict, present one owner choice with both deltas instead of two opposite
    recommendations. Include original-assignment handoff/completion shares and unknown-outcome sensitivity.
 5. Below these gates print “insufficient evidence (n/coverage)” with descriptive numbers. Reviewer cells remain
@@ -224,7 +231,7 @@ Both engines use the same schema with explicit counter bases. Core is macOS/Linu
 not a new native writer (`docs/agents/README.md:27-30`; `docs/windows-workflow.md:3-15,116-122`). Use Python pathlib,
 UTF-8, existing POSIX locking conventions inside WSL; do not introduce platform-specific path parsing.
 
-Two implementation PRs (this PR implements §1; CI history and retro remain §2):
+Two implementation PRs:
 1. **Capture and lifecycle:** `bin/task_outcomes.py`, `bin/agent`, `bin/reviewers.py`, `bin/limit_pace.py` help separation;
    `templates/brief-executor-template.md`, `templates/brief-review.md`, hub launch/completion references,
    `docs/reference.md`, `docs/reviewers.md`, CHANGELOG. Add `tests/t_task_outcomes.sh` and agent/reviewer regressions.
@@ -269,7 +276,7 @@ Model/effort/start/session/runs come from each listed `meta.json`; result values
 Completion sources: respectively `dolya/coordinator/work/journal-2026-11-25.md:99`,
 `dolya-finance-project-digital-twin/coordinator/work/journal-2026-11-26.md:19`,
 `core-d/coordinator/work/journal-2026-11-26.md:9`; verdict also in `core-d/coordinator/work/review-innova-tax-rate-REPORT.md:5`.
-Claude executor usage is **62+18** fresh input across two result.usage blocks, while cost is **0.8150179→0.9421909**
-cumulative. Its 39 unique streamed assistant IDs differ from 41 result turns: the unit must be stored, not guessed.
+The historical primary-model control shows **62+18** fresh input across two result.usage blocks, while cost is
+**0.8150179→0.9421909** cumulative. Normalized task tokens use all-model session deltas. Its 39 unique streamed assistant IDs differ from 41 result turns: the unit must be stored, not guessed.
 Codex result input grows **6,287,572→23,183,891→33,322,927**; use the last cumulative total, not their sum.
 The initial probe's `core-d/innova-tax-rate` resumed again during design; it is deliberately not the finished Codex example.

@@ -180,7 +180,10 @@ entry is available; a second entry is then still returned if one is). Exit 1 mea
 An entry with `"second": true` is skipped by a plain `hub reviewer`, so listing a costly reviewer that way keeps it out of
 the default choice. The second opinion is optional and the hub's own call: no class requires it, and at most one is added.
 Start it beside the primary review (an `agent` entry with its own role, a skill with its own run), and verify its findings
-against the code like the primary's.
+against the code like the primary's. The agent start line marks second opinions with `--secondary-review`;
+when importing a skill review with `agent outcome`, include `"primary": false` in its data for a second opinion.
+For a task with several artifacts, pass `--review-artifact ID` or import the same ID in `data.artifact_id` so
+retro can identify the first primary report for each artifact.
 
 ## The reviewer is a different model from the author
 

@@ -108,6 +108,18 @@ def validate(ev):
             validate_findings(data)
             if not isinstance(data["head"], str) or not data["head"] or type(data["round"]) is not int or data["round"] < 1 or data["verdict"] not in ("approve", "fixes", "reject"):
                 raise ValueError("reported findings require verified head, round and verdict")
+    if ev["type"] == "ci_observed":
+        if data["target_task_id"] != ev["task_id"]:
+            raise ValueError("CI evidence target must match its task")
+        value = data.get("first_run_green")
+        if value is not None:
+            if (type(value) is not bool or data["history_coverage"] != "complete"
+                    or not data.get("required_checks") or not data.get("history")
+                    or not all(isinstance(data.get(k), str) and data[k]
+                               for k in ("attempt_id", "attempt_created_at", "first_head"))):
+                raise ValueError("first CI result requires complete identified attempt evidence")
+            if dt.datetime.fromisoformat(data["attempt_created_at"].replace("Z", "+00:00")).utcoffset() is None:
+                raise ValueError("CI attempt timestamp must have a UTC offset")
     if "supersedes" in ev and (not isinstance(ev["supersedes"], str) or not ev.get("reason")):
         raise ValueError("a correction requires supersedes and reason")
     json.dumps(ev, allow_nan=False)
@@ -143,6 +155,8 @@ def append(stage_dir, ev):
             if old["event_id"] == ev["event_id"]:
                 # A retry's observation timestamps may differ; evidence must not.
                 ignored = {"occurred_at", "recorded_at"}
+                if ev["type"] == "ci_observed":
+                    ignored.add("writer")
                 if {k: v for k, v in old.items() if k not in ignored} != {k: v for k, v in ev.items() if k not in ignored}:
                     raise ValueError(f"conflicting event id {ev['event_id']}")
                 return False
@@ -211,40 +225,93 @@ def count(value):
     return value if type(value) is int and value >= 0 else None
 
 
-def usage(file, offset, engine, session_id=None):
-    events, intact = log_events(file, offset)
+CLAUDE_COUNTERS = {
+    "input_tokens": "inputTokens",
+    "cache_read_tokens": "cacheReadInputTokens",
+    "cache_creation_tokens": "cacheCreationInputTokens",
+    "output_tokens": "outputTokens",
+}
+CLAUDE_USAGE_BASIS = "claude_session_model_usage_delta"
+CLAUDE_LEGACY_USAGE_BASIS = "claude_result_per_invocation"
+
+
+def claude_model_counters(result):
+    models = result.get("modelUsage")
+    if not isinstance(models, dict) or not models:
+        return None
+    counters = {}
+    for model, usage in models.items():
+        if not isinstance(usage, dict):
+            return None
+        for field, key in CLAUDE_COUNTERS.items():
+            value = count(usage.get(key))
+            if value is None:
+                return None
+            counters[model, field] = value
+    return counters
+
+
+def claude_results(events, seen):
+    for ev in events:
+        if ev.get("type") != "result":
+            continue
+        result_id = ev.get("uuid")
+        if result_id and result_id in seen:
+            continue
+        if result_id:
+            seen.add(result_id)
+        yield ev
+
+
+def claude_usage(events, before, session_id, result, intact):
+    token_baseline, cost_baseline, seen = {}, {}, set()
+    known_sessions = {ev.get("session_id") or session_id for ev in before
+                      if ev.get("type") == "system" and ev.get("subtype") == "init"}
+    for ev in claude_results(before, seen):
+        sid = ev.get("session_id") or session_id
+        token_baseline[sid] = claude_model_counters(ev)
+        cost_baseline[sid] = ev.get("total_cost_usd")
+    results = list(claude_results(events, seen))
+    result["raw"] = [{k: e.get(k) for k in ("usage", "modelUsage", "num_turns", "total_cost_usd", "session_id")} for e in results]
+    turns = [count(e.get("num_turns")) for e in results]
+    result["turns"] = sum(turns) if turns and all(v is not None for v in turns) else None
+    token_totals = dict.fromkeys(CLAUDE_COUNTERS, 0)
+    token_complete = intact and bool(results)
+    costs = []
+    for ev in results:
+        sid = ev.get("session_id") or session_id
+        previous = token_baseline.get(sid, None if sid in known_sessions else {})
+        current = claude_model_counters(ev)
+        if previous is None or current is None or any(current.get(k, -1) < v for k, v in previous.items()):
+            token_complete = False
+        else:
+            for key, value in current.items():
+                token_totals[key[1]] += value - previous.get(key, 0)
+        token_baseline[sid] = current
+        previous_cost = cost_baseline.get(sid, None if sid in known_sessions else 0)
+        current_cost = ev.get("total_cost_usd")
+        valid = lambda v: type(v) in (float, int) and math.isfinite(v) and v >= 0
+        costs.append(current_cost - previous_cost if valid(current_cost) and valid(previous_cost)
+                     and current_cost >= previous_cost else None)
+        cost_baseline[sid] = current_cost
+    if token_complete:
+        result.update(token_totals)
+    if intact and costs and all(v is not None for v in costs):
+        result["cost_usd"] = sum(costs)
+    return [result[k] for k in CLAUDE_COUNTERS]
+
+
+def usage(file, offset, engine, session_id=None, end=None):
+    events, intact = log_events(file, offset, end=end)
     before, prior_intact = log_events(file, end=offset)
-    result = dict(usage_basis="claude_result_per_invocation" if engine == "claude" else "codex_session_cumulative_delta",
+    result = dict(usage_basis=CLAUDE_USAGE_BASIS if engine == "claude" else "codex_session_cumulative_delta",
                   usage_scope="run", complete=False, raw=[], input_tokens=None, output_tokens=None,
                   cache_read_tokens=None, cache_creation_tokens=None, reasoning_output_tokens=None,
                   tokens_total=None, turns=None, turn_unit="claude_result_turns" if engine == "claude" else "codex_turn_started",
                   cost_usd=None, cost_basis="reported_claude_usd_delta" if engine == "claude" else "unavailable",
                   diagnostics=[])
     if engine == "claude":
-        results = list({e.get("uuid", str(i)): e for i, e in enumerate(events) if e.get("type") == "result"}.values())
-        result["raw"] = [{k: e.get(k) for k in ("usage", "num_turns", "total_cost_usd", "session_id")} for e in results]
-        for field, key in (("input_tokens", "input_tokens"), ("output_tokens", "output_tokens"),
-                           ("cache_read_tokens", "cache_read_input_tokens"), ("cache_creation_tokens", "cache_creation_input_tokens")):
-            values = [count((e.get("usage") or {}).get(key)) for e in results]
-            result[field] = sum(values) if values and all(x is not None for x in values) else None
-        turns = [count(e.get("num_turns")) for e in results]
-        result["turns"] = sum(turns) if turns and all(x is not None for x in turns) else None
-        # Price snapshots are cumulative by session; a resume needs the previous result's baseline.
-        costs, baseline = [], {}
-        for e in before:
-            if e.get("type") == "result":
-                baseline[e.get("session_id") or session_id] = e.get("total_cost_usd")
-        known_sessions = {e.get("session_id") or session_id for e in before if e.get("type") == "system" and e.get("subtype") == "init"}
-        for e in results:
-            sid = e.get("session_id") or session_id
-            previous = baseline.get(sid, None if sid in known_sessions else 0)
-            current = e.get("total_cost_usd")
-            valid = lambda x: type(x) in (float, int) and math.isfinite(x) and x >= 0
-            costs.append(current - previous if valid(current) and valid(previous) and current >= previous else None)
-            baseline[sid] = current
-        if intact and prior_intact and costs and all(x is not None for x in costs):
-            result["cost_usd"] = sum(costs)
-        fields = [result[k] for k in ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")]
+        fields = claude_usage(events, before, session_id, result, intact and prior_intact)
     else:
         results = [e for e in events if e.get("type") == "turn.completed"]
         result["raw"] = [e.get("usage") for e in results]
@@ -300,7 +367,8 @@ def validate_findings(data):
 def review(meta, run_id, final, report):
     data = dict(reviewer_task_id=meta["task_id"], reviewer_run_id=run_id,
                 target_task_id=meta.get("review_target_task_id"), head=None, round=None, verdict=None,
-                findings=None, finding_ids=None, diagnostics=[], adjudication=None, provenance="reported_not_adjudicated")
+                findings=None, finding_ids=None, diagnostics=[], adjudication=None, provenance="reported_not_adjudicated",
+                primary=meta.get("review_primary", True), artifact_id=meta.get("review_artifact"))
     copies = []
     try:
         for text in (final, report):

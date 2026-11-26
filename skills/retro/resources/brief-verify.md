@@ -9,7 +9,9 @@ high effort, different model from the measurement code author. Follow the hub's 
 
 1. Inspect the measurement implementation and saved inputs. Check half-open timestamps/timezone, window
    duration/per-day denominator, baseline selection, duplicate transcripts, stage/agent/MR joins, source
-   coverage, missing-cost handling, percentile method and review/CI completeness. No forge network calls.
+   coverage, missing-cost handling, percentile method and review/CI completeness. Check frozen task event
+   visibility, root ID deduplication and pickup of original-assignment handoffs. Reproduce any proposed model
+   trial from its source rows, equal observation windows, reported findings and first-run CI. No forge network calls.
 2. Check every material report finding against its actual source and applicable historical rule. Recalculate
    key A–D scorecard and cost/latency numbers from raw rows. Null is unknown; journal merge counts are lower
    bounds without complete exports. Check classification ids, supported taxonomy and evidence acceptance.

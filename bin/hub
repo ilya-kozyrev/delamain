@@ -2301,7 +2301,7 @@ def cmd_reviewer(a) -> int:
     source = {"env": "the environment", "project": "the repository's .agent-hub/config.json",
               "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
     start = reviewers.start_line(chosen.entry, a.stage, author.engine if author else host,
-                                 a.for_class, author.task_id if author else None) if chosen else None
+                                 a.for_class, author.task_id if author else None, secondary=a.second) if chosen else None
     if a.json:
         print(json.dumps({"class": a.for_class[:reviewers.SHOWN] if a.for_class else None, "source": loaded.origin,
                           "author": author.as_dict() if author else None, "assumed_author_engine": None if author else host,
