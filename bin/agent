@@ -708,10 +708,8 @@ def capture_end(meta, code=None, observed=False, reason=None):
     records, _ = outcomes.read(outcomes.path(stage_dir, meta["task_id"]))
     existing = next((e for e in records if e["run_id"] == run["id"] and e["type"] in ("run_ended", "run_observed_dead")), None)
     if existing:
-        needs_close = existing["data"].get("reported_status") in ("DONE", "REVIEWED", "MERGED", "EXIT", "STOP")
-        has_close = any(e["run_id"] == run["id"] and e["type"] == "task_closed" for e in records)
         has_review = any(e["run_id"] == run["id"] and e["type"] == "review_observed" for e in records)
-        if (not needs_close or has_close) and (meta.get("task_kind") != "review" or has_review):
+        if meta.get("task_kind") != "review" or has_review:
             return  # status checks need not reparse transcripts of already captured runs
     file = Path(meta["dir"]) / "log.jsonl"
     raw, intact = outcomes.log_events(file, run.get("log_offset", 0))
@@ -738,7 +736,8 @@ def capture_end(meta, code=None, observed=False, reason=None):
     if observed:
         usage["complete"] = False
         data = dict(observed_at=outcomes.now(), ended_at=None, exit_code=None,
-                    evidence="process gone under agent lock; no exit wrapper evidence", usage=usage, complete=False, reported_status=status)
+                    evidence="process gone under agent lock; no exit wrapper evidence", usage=usage, complete=False, reported_status=status,
+                    termination_reason="limit" if limit else "stopped" if meta.get("stopping") else "abnormal_exit")
         kind = "run_observed_dead"
     else:
         data = dict(ended_at=outcomes.now(), exit_code=code, cli_result=result.get("subtype"),
@@ -753,8 +752,6 @@ def capture_end(meta, code=None, observed=False, reason=None):
         report = Path(meta["report"])
         text = report.read_text(encoding="utf-8") if report.exists() else ""
         outcomes.emit(stage_dir, meta, run["id"], "review_observed", outcomes.review(meta, run["id"], final, text))
-    if not any(e["type"] == "task_closed" and e["run_id"] == run["id"] for e in records):
-        outcomes.close(stage_dir, meta, run["id"], status, str(outcomes.path(stage_dir, meta["task_id"])))
 
 
 def launch(meta: dict, prompt: str, resume: bool) -> int:
@@ -803,7 +800,7 @@ def launch(meta: dict, prompt: str, resume: bool) -> int:
            "engine": engine, "requested_model": meta.get("requested_model", meta.get("model")), "effort": meta.get("effort"),
            "log_offset": offset, "resume_reason": meta.pop("next_resume_reason", None)}
     telemetry(outcomes.emit, outcome_stage(meta), meta, run_id, "run_started",
-              {k: run[k] for k in ("kind", "engine", "requested_model", "effort", "log_offset", "resume_reason")} |
+              {k: run[k] for k in ("kind", "engine", "requested_model", "effort", "log_offset", "resume_reason", "journal_day", "journal_offset")} |
               {"session_id": meta.get("session_id")})
     try:
         with open(log, "ab") as out, open(d / "stderr.log", "ab") as err, open(stdin_file, "rb") as inp:
@@ -1037,6 +1034,9 @@ def cmd_spawn(a) -> int:
                 task_kind=a.task_kind or ("review" if is_review_role(meta) else "executor"),
                 change_class=a.change_class, continuation_of=a.continuation_of,
                 review_target_task_id=a.review_target_task_id, review_head=a.review_head,
+                repository_key=outcomes.repository_key(Path(a.target_repo).expanduser().resolve() if a.target_repo else cwd),
+                review_applicability=a.review_applicability, ci_applicability=a.ci_applicability,
+                parent_task_id=a.parent_task_id, usage_in_parent=a.usage_in_parent, usage_boundary=a.usage_boundary,
                 assignment_source={"task_class": "explicit" if a.task_class else "missing",
                                    "task_kind": "explicit" if a.task_kind else "legacy_inference",
                                    "change_class": "explicit" if a.change_class != "unknown" else "missing"})
@@ -1722,7 +1722,9 @@ def note_exit(a) -> int:
     last = quote_line(info.get("last_block") or info["last_text"])
     if clean:
         # the outcome (a VERDICT or a status word) may stand in the last answer while the journal has none of its own
-        word = "REVIEWED" if is_review_role(meta) else "ENDED"
+        current_run = runs[-1] if runs else None
+        explicit = reported_status(stage, meta, current_run, info.get("last_block") or info["last_text"]) if current_run else None
+        word = explicit if explicit in ("BLOCKED", "QUESTION") else "REVIEWED" if is_review_role(meta) else "ENDED"
         why = "finished, outcome in its last answer" if OUTCOME_RE.search(last) else "finished, no status word in the journal"
     else:
         reset = limit_stop(r)
@@ -1750,7 +1752,7 @@ def cmd_outcome(a):
         obj = json.loads(Path(a.file).read_text(encoding="utf-8"))
         if obj.get("task_id", task_id) != task_id:
             raise ValueError("task_id mismatch")
-        if obj.get("type") not in ("review_observed", "ci_observed", "task_closed") and not (obj.get("supersedes") and obj.get("reason")):
+        if obj.get("type") not in ("review_observed", "ci_observed", "artifact_observed", "task_closed") and not (obj.get("supersedes") and obj.get("reason")):
             raise ValueError("hub import accepts review, CI, closure or explicit correction evidence")
         target = obj.get("data", {}).get("target_task_id")
         if target is not None and target != task_id:
@@ -1763,7 +1765,8 @@ def cmd_outcome(a):
             previous = next((e for e in reversed(records) if e["type"] == "task_closed"), None)
             if previous:
                 extra = {"supersedes": previous["event_id"], "reason": obj.get("reason", "hub override")}
-        ev = outcomes.event(task_id, obj.get("run_id"), obj["type"], obj["data"], "hub",
+        latest_run = next((e["run_id"] for e in reversed(records) if e["type"] == "run_started"), None)
+        ev = outcomes.event(task_id, obj.get("run_id", latest_run), obj["type"], obj["data"], "hub",
                             event_id=obj.get("event_id"), **extra)
         outcomes.append(hc.root() / stage, ev)
     except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -1855,6 +1858,12 @@ def main(argv: list) -> int:
     s.add_argument("--continuation-of", type=outcomes.task_uuid, help="original task UUID for reassignment")
     s.add_argument("--review-target-task-id", type=outcomes.task_uuid, help="reviewed author's task UUID")
     s.add_argument("--review-head", help="expected artifact head for REVIEW_OUTCOME validation")
+    s.add_argument("--target-repo", help="target repository checkout when cwd is a hub/report directory")
+    s.add_argument("--review-applicability", choices=outcomes.APPLICABILITY, default="unknown")
+    s.add_argument("--ci-applicability", choices=outcomes.APPLICABILITY, default="unknown")
+    s.add_argument("--parent-task-id", type=outcomes.task_uuid, help="contract this separately measured helper contributes to")
+    s.add_argument("--usage-in-parent", choices=outcomes.USAGE_IN_PARENT, default="unknown", help="whether helper usage is included in parent counters")
+    s.add_argument("--usage-boundary", choices=outcomes.USAGE_BOUNDARIES, default="unknown", help="scope of provider counters relative to helpers")
     s.add_argument("--dry-run", action="store_true",
                    help="run every check and print the limit-pace advice, then stop: nothing is started or written")
     s.add_argument("--ignore-hold", action="store_true",

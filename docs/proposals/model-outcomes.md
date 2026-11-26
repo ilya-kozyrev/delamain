@@ -48,7 +48,8 @@ The initial telemetry probe is `~/agent-hub/model-outcomes/coordinator/telemetry
 ## Storage, lifecycle and schema
 
 Extend `meta.json` only with immutable `outcome_schema=1`, `task_id` (UUID), taxonomy, assignment source,
-`continuation_of` and optional `review_target_task_id`. Keep mutable outcomes out of meta to avoid late CI/reviewer
+`continuation_of`, optional `review_target_task_id`, canonical `repository_key`, expected review/CI applicability,
+`parent_task_id`, `usage_in_parent` and `usage_boundary`. Keep mutable outcomes out of meta to avoid late CI/reviewer
 writers racing `agent send`. Canonical evidence is append-only JSONL at `<stage>/task-outcomes/<task_id>.jsonl`;
 it survives role-directory archival/reuse (existing archival: `bin/agent:887-889`). No transcript text is copied.
 
@@ -61,22 +62,34 @@ line; a subsequent writer truncates only that torn tail under lock before append
 
 | Event / writer / moment | Required payload or nullable observations |
 |---|---|
-| `task_started` / spawn, before child launch | Taxonomy + source; stage/role; brief path/hash; continuation/target; requested engine/model/effort. |
+| `task_started` / spawn, before child launch | Taxonomy + source; stage/role; brief path/hash; canonical repository key; expected review/CI applicability; continuation/target/helper links and usage inclusion/boundary; requested engine/model/effort. |
 | `run_started` / launcher, each invocation | Existing run ID, session ID when known, spawn/resume, engine, requested model, effort, log byte offset. Init appends `run_identity` with actual session/resolved model. |
 | `run_ended` / exit-note, every termination | End time, exit code, CLI result, termination reason, reported status, usage, turns/unit, cost/basis, evidence completeness. |
 | `run_observed_dead` / death observer | Observed-at time, process-death evidence, available partial usage; actual end time/exit code remain null. |
 | `review_observed` / exit-note or hub import | Reviewer's task/run, target UUID, artifact/head, review round, verdict, findings counts/IDs and provenance. |
 | `ci_observed` / await completion adapter | Target UUID, canonical repository/item/head, pipeline/suite identity and attempt, history coverage, status and provider times. |
-| `task_closed` / exit-note, death observer or hub override | `success|failure|cancelled`, evidence path, closure time, linked artifact IDs, review/CI applicability. |
+| `artifact_observed` / hub, even after closure | Target UUID, artifact IDs, review/CI applicability; unknown remains distinct from not_required. |
+| `task_closed` / hub override only | `success|failure|cancelled`, evidence path, closure time, linked artifact IDs, review/CI applicability. |
 
-`task_closed` is automatic from the agent's reported terminal status: DONE/REVIEWED/MERGED mean success;
-abnormal EXIT/STOP mean failure, with `source=auto_status`. BLOCKED/QUESTION and limit exhaustion leave the
-contract open. A clean process exit alone is not acceptance; a delivered review can succeed with a rejecting verdict.
-There is no mandatory per-task hub closing step. `agent outcome ROLE --file FILE` validates/imports typed review,
-CI, closure or correction events; `--task-id` addresses archived agents. It resolves role to UUID once and rejects
-mismatched targets. A manual closure has `source=hub`, supersedes the previous closure and takes precedence over
-automatic evidence. A resume or continuation reopens the contract, retains old evidence and needs a fresh closure.
-Persist a provisional start even when launch fails; retain failure evidence rather than losing a task before init.
+Automatic closure is a read-only projection of the current run's terminal evidence, never a second automatic
+`task_closed` write: reported DONE/REVIEWED/MERGED mean success; abnormal EXIT/STOP mean failure, with projected
+`source=auto_status`. `run_observed_dead` also projects failure when recovery/stop provides abnormal terminal evidence;
+actual end time and exit code stay null. BLOCKED/QUESTION and limit exhaustion leave the contract open. A clean process
+exit alone does not close an executor; a delivered rejecting review can succeed. Current-run BLOCKED/QUESTION wins
+over a wrapper's fallback REVIEWED. Save journal day/byte position at run start so a same-minute prior DONE cannot
+close the next run. Stop, wrapper exit and recovery share the terminal transition and distinguish LIMIT from failure.
+There is no mandatory per-task hub closing step. `agent outcome ROLE --file FILE` imports typed review, CI, artifact,
+closure or correction events; `--task-id` addresses archived agents and rejects mismatched targets. Only the hub writes
+`task_closed` with `source=hub`; it binds to a run and overrides its automatic projection. A resume or continuation
+reopens the contract and retains old evidence. A crash immediately after run_ended cannot lose automatic closure.
+Expected review/CI applicability comes from launch flags filled from the brief/project rule (`required|not_required|unknown`);
+never infer not_required from DONE or a missing artifact. Later artifact/review/CI observations attach evidence without
+reclosing the task or changing its closure time. Persist provisional starts and failure evidence even before init.
+
+`repository_key` is the resolved common Git database identity, shared by linked worktrees, with an explicit target
+checkout when reviewer cwd is a hub/report directory. Unknown/non-Git targets stay null; exclude unknown or ambiguous
+repositories from model comparisons. Separate clones conservatively remain separate local keys rather than guessing
+from prose, stage names or unverified forge URLs.
 
 Capture immutable task/run IDs and log offset in the exit wrapper: an old wrapper must never finish a newer resume.
 Reconcile missing run-end events under the existing agent lock on status/resume; run-end recording is independent
@@ -93,7 +106,11 @@ A start without a matching end remains incomplete; retro is read-only and does n
   partial log, or changed provider semantics => incomplete/null delta, preserve raw data and show a warning.
 - Comparable normalized `tokens_total` = input including cache + output. Claude input includes fresh + cache-read +
   cache-create; Codex input already includes cached input. Reasoning tokens are an output subset, never added twice.
-  Cache counters stay separate. Cost is reported Claude USD only; Codex cost=null/basis=`unavailable`, never zero or
+  Cache counters stay separate. Separately measured helpers carry `parent_task_id` and `usage_in_parent=included|excluded|unknown`;
+`usage_boundary=own_only|includes_helpers|unknown` defines the parent's provider-counter boundary. Aggregate the contract
+with helper inclusion explicitly deduplicated. Unknown helper inclusion/boundary makes contract spend incomplete for
+the recommendation gate, even if all visible runs have counters. Linked reviews remain a separate quality/cost slice.
+Cost is reported Claude USD only; Codex cost=null/basis=`unavailable`, never zero or
   a fitted estimate. Keep native usage scopes explicit; do not count linked reviewers/helpers twice in task totals.
 - `turns` = sum Claude result `num_turns`, or count Codex `turn.started`; `turn_unit` names that engine-specific unit.
   Missing result turns remain unknown. These are not cross-engine efficiency equivalents; old `agents.csv` retains
@@ -111,7 +128,8 @@ A start without a matching end remains incomplete; retro is read-only and does n
 Add `REVIEW_OUTCOME: {"schema_version":1,"target_task_id":"…","head":"…","round":1,
 "findings":{"high":0,"medium":0,"low":0},"finding_ids":[]}` immediately before the existing VERDICT line,
 in both report and final answer. The parser reads the full report/result, not the journal's truncated quotation
-(`bin/agent:1570-1571`). Require nonnegative integer counts, distinct IDs with severity, matching head/target, and
+(`bin/agent:1570-1571`). Require nonnegative integer counts, distinct IDs with severity, matching head and target (including JSON null for an
+engine-only author), and
 agreement between copies. Missing, malformed or contradictory lines yield null plus diagnostics, never zero.
 Each nonempty finding entry is `{"id":"F1","severity":"high"}`; counts must equal entries by severity.
 Verdict aliases (`APPROVE`, `merge`, `merge after fixes`, `changes requested`) normalize with raw text retained.
@@ -121,7 +139,8 @@ rechecks retain IDs, genuinely new defects get new IDs. Executor accepted findin
 its linked reviews; absent or pending adjudication makes that accepted aggregate incomplete. Reported counts stay
 available separately without a mandatory adjudication flow. Unreviewed tasks have null, not zero.
 Reviewer cells show reported and accepted findings separately: zero findings/APPROVE is not reviewer accuracy.
-External reviewer skills import the same event through the hub; missing usage is explicit, not fabricated.
+Unlinked reviews retain reviewer task/run, verified head and reported counts in reviewer cells; executor attribution
+requires a confirmed target link, never a fabricated UUID. External reviewer skills import the same event through the hub; missing usage is explicit, not fabricated.
 
 Await gets optional proposed `--outcome-task UUID --ci-item URL` binding, inherited stage plus immutable task ID.
 On completion it calls `bin/ci_outcomes.py`: GitHub/GitLab adapters use their installed authenticated CLIs to fetch
@@ -133,7 +152,9 @@ Define first-run green **per artifact's first eligible CI attempt**, not the fir
 GitLab uses earliest push/MR pipeline attached to that item from its creation; GitHub uses the first required-check
 suite on the earliest item head with eligible runs (group workflows on that head; retain run IDs and attempts).
 Exclude scheduled/manual/deploy/merge-train runs. Persist ordered history identities and the required-check set;
-if no trustworthy required-check set/history is available, the result is unknown. Failed required job/check makes
+if no trustworthy required-check set/history is available, the result is unknown. Separate immutable attempt identity
+from observation version/state identity: identical state retries are idempotent independent of observation time/writer;
+pending→success appends a new state version and reduces to one attempt, not a conflict or two samples. Failed required job/check makes
 first-run=false permanently, even if rerun in the same pipeline becomes green. True requires all required checks
 succeed on attempt 1 and complete history; skipped/neutral/cancelled/missing check or lost retry history is unknown.
 Record the earliest attempt when first observed, and retain it across later heads and observations. A late waiter
@@ -145,14 +166,17 @@ This deliberately differs from existing first-time-right, which also includes re
 
 Read `<stage>/task-outcomes/*.jsonl`, reduce events as of the report cutoff, and materialize `task-outcomes.csv`.
 Freeze input event prefixes/hashes in the audit output so late updates cannot rewrite an old report. Reopened tasks
-are pending as of cutoff. Completion cohort is latest closure in [since, until), including lifetime run totals;
+are pending as of cutoff. Descriptive completion cohorts are snapshots of latest closure in [since, until), including
+lifetime run totals; combining/comparing periods must recompute unique root task IDs at a common cutoff rather than
+sum snapshot rows. Event visibility uses recorded_at <= cutoff: a late correction with earlier occurred_at cannot
+rewrite an already frozen report. Recommendation cohorts use comparable assigned tasks with equal observation windows;
 show pending/cancelled/missing-closure counts alongside it. Existing start-window `agents.csv` remains unchanged.
 Read legacy metadata/logs into descriptive `unknown` rows without writing back. Do not also count those agents as
 new tasks. Deduplicate continuation chains, archived UUIDs, session counters, reviewer events and CI observations.
 
 `model-outcomes.csv` and `measure.md` contain a class × engine/model/effort table, split by task kind and change class:
 `n`, successful/known closures, median turns (unit), median tokens, total/median reported USD, reviewed-task coverage,
-accepted findings/task, first-run CI passed/known-applicable, and missing counts for every metric. Null is “unknown”,
+reported findings/task (first primary report per artifact), accepted findings/task separately, first-run CI passed/known-applicable, and missing counts for every metric. Null is “unknown”,
 N/A is distinct, rates show numerator/denominator. Costs say “reported Claude cost”, not subscription spend.
 Add namespaced `model_outcomes.*` metrics and `outcome_schema_version=1` to metrics.json while preserving its current
 schema and keys (`bin/retro:1184-1188`); compare baselines only with identical outcome schema/cohort/unit definitions.
@@ -160,19 +184,27 @@ Do not reuse `review_fields().class_`: that is an audit-classification field (`b
 
 A candidate is a **suggested owner-approved trial**, not a causal claim or a config edit. Fixed v1 gate:
 1. Compare executor cells only, within the same repository, difficulty, change class and task kind/window; at least
-   five independent completed contracts **in each cell**, all explicitly classified before launch, none mixed.
+   five independent completed contracts **in each cell**, all explicitly classified before launch. Keep the full assigned
+   cohort with equal follow-up time alongside completed samples, including BLOCKED/QUESTION/open outcomes. Compare
+   completion share and demonstrate that unknown/open outcomes cannot reverse the apparent advantage. Report handoff
+   share by original assignment; mixed continuation chains remain one contract with full spend and final outcome in
+   the original-assignment row. Excluding mixed tasks from direct model efficiency cells cannot hide initial failures.
 2. Each comparison needs known closure and complete tokens for every task, at least 80% known applicable review/CI
    outcomes, and at least five observed values per applicable quality metric in each cell. Report excluded counts.
-3. Candidate success share and first-run CI share must not be lower; accepted high-severity findings must not rise;
-   mean accepted findings/task must not rise. If review/CI is explicitly N/A for the whole stratum, omit that gate
+3. Candidate success share and first-run CI share must not be lower; reported high-severity findings must not rise;
+   mean reported findings/task must not rise. In v1 use reported high/total from the first primary review per artifact
+   at matched review coverage; rechecks of the same finding are not new defects. Accepted/adjudicated counts stay separate
+   and optional, never a requirement for this gate. If review/CI is explicitly N/A for the whole stratum, omit that gate
    and name the limitation; missing evidence cannot masquerade as N/A. Do not compare different applicability mixes.
 4. Require at least **20% lower median tokens**, or at least **20% lower median reported cost** when both cells are
-   fully priced on the same basis. Never compare Claude dollars with Codex null. Turns alone cannot trigger a change.
+   fully priced on the same basis. Never compare Claude dollars with Codex null. Turns alone cannot trigger a change. Direction is from the current assignment to a candidate, not both pair orders.
+   When measured tokens and same-basis cost conflict, present one owner choice with both deltas instead of two opposite
+   recommendations. Include original-assignment handoff/completion shares and unknown-outcome sensitivity.
 5. Below these gates print “insufficient evidence (n/coverage)” with descriptive numbers. Reviewer cells remain
    descriptive: recommendation needs validated defect-detection quality, which counts/verdict alone cannot supply.
 
 Proposal template: “Consider a bounded trial of B instead of A for <class/repo/risk>. A/B: n=…, success=…/…,
-median tokens=…/… (…% difference), known cost=…/…, accepted findings/task=…/…, first-CI=…/…;
+median tokens=…/… (…% difference), known cost=…/…, reported findings/task=…/… (accepted separately), first-CI=…/…;
 coverage=…, period=…. Observational association; difficulty selection and reviewer mix may explain it.
 Owner decision required; no model, effort, engine or hub rule was changed.” Include source row IDs and sample IDs.
 The 5-sample/20% gate prioritizes trial suggestions, not statistical significance. The retro skill interprets the

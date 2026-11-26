@@ -17,6 +17,8 @@ See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints
 
 ## Task identity
 - Launch with `--task-class <mechanical|bounded|judgement> --task-kind executor --change-class <docs|code|risky|custom>`.
+  State expected review/CI applicability (`required|not_required|unknown`) and pass their launch flags. For separately
+  measured helpers name `--parent-task-id` and whether usage is included in parent counters; declare `--usage-boundary`.
   Classify the brief before choosing a model; one spawn is one task contract, resumes preserve its UUID and class.
   For reassignment use `--continuation-of <original task UUID>`; for a new independent task use a fresh spawn.
 

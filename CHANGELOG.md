@@ -9,7 +9,8 @@
   Detached successors inherit the requested family, and thread resumes warn when their recorded model is stale.
   The built-in reviewer falls back to Claude with a reason when Codex or a listed Astra is unavailable.
 - Capture per-task outcomes with stable UUIDs, explicit difficulty/kind/change class and append-only run evidence
-  across spawn, resume, exit and kill recovery. Automatic status closure can be overridden by `agent outcome`;
+  across spawn, resume, exit and kill recovery. Capture expected review/CI applicability, canonical worktree repository
+  identity and helper-accounting links; artifacts can attach after closure without reclosing. Terminal evidence projects automatic closure; only `agent outcome` writes explicit hub closure overrides;
   BLOCKED/QUESTION and usage limits remain open. Claude invocation usage/session cost deltas and Codex cumulative
   usage deltas retain nullable counters and engine-specific turn units (Codex cost stays unknown). Reviewer start
   lines link author tasks and structured `REVIEW_OUTCOME` findings; hub adjudication is optional. CI first-attempt

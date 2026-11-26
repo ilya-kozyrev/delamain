@@ -331,15 +331,25 @@ log offset, usage and exit evidence. A killed wrapper is reconciled under the ag
 The writer locks, fsyncs, warns/repairs only a torn tail and rejects complete corrupt lines. Telemetry errors warn
 without changing process/journal semantics. Old meta.json stays readable; no backfill or model-based class inference.
 
-`task_closed` has `source=auto_status`: reported DONE/REVIEWED/MERGED → success; abnormal EXIT/STOP → failure.
-BLOCKED/QUESTION and limit exhaustion remain open. Process exit 0 alone does not close an executor contract.
-A review may succeed with a rejecting verdict. A resume/continuation reopens the contract without deleting evidence.
+Automatic closure is a read-only projection (`bin/task_outcomes.py:project_closure`) of terminal run evidence with
+`source=auto_status`: DONE/REVIEWED/MERGED → success, abnormal EXIT/STOP → failure; BLOCKED/QUESTION and limits stay open.
+Only the hub writes explicit `task_closed`. A single durable run_ended is sufficient; no second automatic write can
+be lost. Current-run journal offsets prevent a previous same-minute DONE from leaking into a resume. A new run reopens
+the contract; a hub correction bound to the current run wins over its automatic outcome.
+
+Before launch, pass `--review-applicability required|not_required|unknown` and `--ci-applicability` from the brief/project
+rule. Unknown is the default. `artifact_observed` can later bind artifact IDs/applicability, including after closure,
+without reclosing. `repository_key` uses the resolved common Git database; linked worktrees share it. Use
+`--target-repo PATH` when cwd is a hub/report directory; non-Git/ambiguous targets stay null and are ineligible for
+comparisons. Separately measured helpers pass `--parent-task-id UUID --usage-in-parent included|excluded|unknown`;
+`--usage-boundary own_only|includes_helpers|unknown` defines the provider counters. Unknown inclusion/boundary makes
+contract spend incomplete for recommendations; PR 2 deduplicates included helpers when aggregating.
 
 `agent outcome ROLE --file evidence.json` (or `agent outcome --task-id UUID --file evidence.json` for archived tasks)
 imports a JSON object with `type`, typed `data`, optional `event_id`, `run_id`, `supersedes` and `reason`. Optional
-`task_id` must match. Supported imports: `review_observed`, `ci_observed`, `task_closed`, or an explicit typed correction; `bin/task_outcomes.py:validate`
-defines their required fields. Hub imports have `source=hub`; manual closure automatically supersedes the latest
-closure and wins over automatic status. Corrections name an existing event ID and a reason. For example:
+`task_id` must match. Supported imports: `review_observed`, `ci_observed`, `artifact_observed`, `task_closed`, or an explicit typed correction; `bin/task_outcomes.py:validate`
+defines their required fields. Hub imports have `source=hub`; manual closure binds to the current run, supersedes a previous explicit
+closure and wins over the automatic projection. Corrections name an existing event ID and a reason. For example:
 
 ```json
 {"type":"task_closed","event_id":"owner-acceptance-1","data":{"outcome":"success","closed_at":"2026-11-26T10:00:00+00:00","evidence_path":"work/result-REPORT.md","artifact_ids":[],"review_applicability":"unknown","ci_applicability":"unknown"}}

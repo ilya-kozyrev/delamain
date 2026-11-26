@@ -12,8 +12,11 @@ from pathlib import Path
 
 CLASSES = ("mechanical", "bounded", "judgement", "unknown")
 KINDS = ("executor", "review")
+APPLICABILITY = ("required", "not_required", "unknown")
+USAGE_IN_PARENT = ("included", "excluded", "unknown")
+USAGE_BOUNDARIES = ("own_only", "includes_helpers", "unknown")
 TYPES = {"task_started", "run_started", "run_identity", "run_ended", "run_observed_dead",
-         "review_observed", "ci_observed", "task_closed"}
+         "review_observed", "ci_observed", "artifact_observed", "task_closed"}
 
 
 def now():
@@ -61,13 +64,15 @@ def validate(ev):
         raise ValueError("event data must be an object")
     required = {
         "task_started": ("task_class", "task_kind", "change_class", "assignment_source", "stage", "role",
-                         "brief_path", "brief_sha256", "continuation_of", "review_target_task_id", "engine", "requested_model", "effort"),
+                         "brief_path", "brief_sha256", "continuation_of", "review_target_task_id", "engine", "requested_model", "effort",
+                         "repository_key", "review_applicability", "ci_applicability", "parent_task_id", "usage_in_parent", "usage_boundary"),
         "run_started": ("session_id", "kind", "engine", "requested_model", "effort", "log_offset", "resume_reason"),
         "run_identity": ("session_id", "resolved_model"),
         "run_ended": ("ended_at", "exit_code", "cli_result", "termination_reason", "reported_status", "usage", "complete"),
         "run_observed_dead": ("observed_at", "ended_at", "exit_code", "evidence", "usage", "complete"),
         "review_observed": ("reviewer_task_id", "reviewer_run_id", "target_task_id", "head", "round", "verdict", "findings", "finding_ids", "diagnostics"),
         "ci_observed": ("target_task_id", "repository", "item", "head", "status", "history_coverage"),
+        "artifact_observed": ("target_task_id", "artifact_ids", "review_applicability", "ci_applicability"),
         "task_closed": ("outcome", "closed_at", "evidence_path", "artifact_ids", "review_applicability", "ci_applicability"),
     }[ev["type"]]
     if any(k not in data for k in required):
@@ -76,12 +81,24 @@ def validate(ev):
         if data["task_class"] not in CLASSES or data["task_kind"] not in KINDS:
             raise ValueError("invalid taxonomy")
         change_class(data["change_class"])
-        for key in ("continuation_of", "review_target_task_id"):
+        for key in ("continuation_of", "review_target_task_id", "parent_task_id"):
             if data[key] is not None:
                 task_uuid(data[key])
+        if data["usage_in_parent"] not in USAGE_IN_PARENT or data["usage_boundary"] not in USAGE_BOUNDARIES:
+            raise ValueError("invalid helper accounting boundary")
+        if data["repository_key"] is not None and not isinstance(data["repository_key"], str):
+            raise ValueError("repository_key must be a canonical key or null")
+    if ev["type"] in ("task_started", "artifact_observed", "task_closed"):
+        if any(data[k] not in APPLICABILITY for k in ("review_applicability", "ci_applicability")):
+            raise ValueError("invalid review/CI applicability")
+    if ev["type"] in ("artifact_observed", "task_closed"):
+        if not isinstance(data["artifact_ids"], list) or any(not isinstance(x, str) or not x for x in data["artifact_ids"]):
+            raise ValueError("artifact_ids must be nonempty identifiers in a list")
+    if ev["type"] == "task_closed" and ev["source"] != "hub":
+        raise ValueError("task_closed is reserved for explicit hub evidence")
     if ev["type"] == "task_closed" and data["outcome"] not in ("success", "failure", "cancelled"):
         raise ValueError("invalid task outcome")
-    if ev["type"] in ("review_observed", "ci_observed"):
+    if ev["type"] in ("review_observed", "ci_observed", "artifact_observed"):
         if data["target_task_id"] is not None:
             task_uuid(data["target_task_id"])
         if ev["type"] == "review_observed" and data["findings"] is not None:
@@ -155,7 +172,8 @@ def emit(stage_dir, meta, run_id, kind, data, source="agent", **extra):
 def start_task(stage_dir, meta):
     brief = Path(meta["brief"])
     data = {k: meta.get(k) for k in ("task_class", "task_kind", "change_class", "assignment_source", "stage", "role",
-                                    "continuation_of", "review_target_task_id", "engine", "effort")}
+                                    "continuation_of", "review_target_task_id", "engine", "effort", "repository_key",
+                                    "review_applicability", "ci_applicability", "parent_task_id", "usage_in_parent", "usage_boundary")}
     data.update(brief_path=str(brief), brief_sha256=hashlib.sha256(brief.read_bytes()).hexdigest(),
                 requested_model=meta.get("requested_model", meta.get("model")))
     emit(stage_dir, meta, None, "task_started", data)
@@ -310,10 +328,40 @@ def review(meta, run_id, final, report):
     return data
 
 
-def close(stage_dir, meta, run_id, status, evidence):
-    if status not in ("DONE", "REVIEWED", "MERGED", "EXIT", "STOP"):
-        return
-    emit(stage_dir, meta, run_id, "task_closed",
-         dict(outcome="success" if status in ("DONE", "REVIEWED", "MERGED") else "failure",
-              reported_status=status, closed_at=now(), evidence_path=evidence, artifact_ids=[],
-              review_applicability="unknown", ci_applicability="unknown"), source="auto_status")
+def project_closure(events):
+    """Current task state; terminal evidence is the atomic automatic closure.
+
+    A new invocation reopens the contract. Hub evidence binds to a run and wins within that run;
+    artifact/review/CI observations may arrive later without changing closure time.
+    """
+    start = next((e for e in reversed(events) if e["type"] == "run_started"), None)
+    if start is None:
+        return None
+    run_id = start["run_id"]
+    manual = next((e for e in reversed(events) if e["type"] == "task_closed" and e["source"] == "hub" and e["run_id"] == run_id), None)
+    if manual:
+        return manual["data"] | dict(source="hub", run_id=run_id, evidence_event_id=manual["event_id"])
+    terminal = next((e for e in reversed(events) if e["type"] in ("run_ended", "run_observed_dead") and e["run_id"] == run_id), None)
+    if terminal is None:
+        return None
+    data = terminal["data"]
+    status = data.get("reported_status")
+    if data.get("termination_reason") == "limit" or status not in ("DONE", "REVIEWED", "MERGED", "EXIT", "STOP"):
+        return None
+    return dict(outcome="success" if status in ("DONE", "REVIEWED", "MERGED") else "failure",
+                reported_status=status, source="auto_status", run_id=run_id, evidence_event_id=terminal["event_id"],
+                closed_at=data.get("ended_at") or data.get("observed_at"))
+
+
+def repository_key(cwd):
+    """Local canonical Git database identity: linked worktrees share it. No guessing for non-Git cwd."""
+    import subprocess
+    try:
+        result = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=cwd, capture_output=True, text=True, timeout=5)
+        if result.returncode:
+            return None
+        common = Path(result.stdout.strip())
+        common = common if common.is_absolute() else Path(cwd) / common
+        return "git-common-dir:" + str(common.resolve())
+    except (OSError, subprocess.TimeoutExpired):
+        return None

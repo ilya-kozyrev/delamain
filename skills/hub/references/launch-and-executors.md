@@ -55,9 +55,11 @@ Before every spawn, pass `--task-class mechanical|bounded|judgement` from the br
 and `--change-class docs|code|risky|custom`. Difficulty is independent of the chosen model and change risk.
 Omission records unknown with a warning; `hub reviewer` emits review/judgement and links an author's task UUID.
 A new independent contract gets a new spawn; a repair/reassignment uses `--continuation-of UUID`.
-DONE/REVIEWED/MERGED automatically close successfully; abnormal EXIT/STOP close as failures. BLOCKED/QUESTION and
+Terminal run evidence projects DONE/REVIEWED/MERGED as success and abnormal EXIT/STOP as failure; only the hub writes task_closed. BLOCKED/QUESTION and
 limit exhaustion leave tasks open. Resume reopens the contract. The hub may override via `agent outcome`; no manual
-closing checklist or per-finding adjudication is required. For a repair resume, pass `agent send --resume-reason
+closing checklist or per-finding adjudication is required. Pass expected `--review-applicability`/`--ci-applicability`
+(`required|not_required|unknown`), `--target-repo PATH` for a target outside cwd, and helper `--parent-task-id` with
+`--usage-in-parent`/`--usage-boundary` when separately measured. Unknown applicability/inclusion stays unknown. For a repair resume, pass `agent send --resume-reason
 review_fix|ci_fix R "…"`. File formats and nullable counters: [task outcomes](../../../docs/reference.md#task-outcomes).
 
 ## Reviews

@@ -213,10 +213,10 @@ class Lifecycle(unittest.TestCase):
         rows = self.wait("explicit")
         meta = self.meta("explicit")
         self.assertEqual(meta["task_class"], "bounded")
-        self.assertCountEqual([e["type"] for e in rows], ["task_started", "run_started", "run_identity", "run_ended", "task_closed"])
-        closure = next(e for e in rows if e["type"] == "task_closed")
+        self.assertCountEqual([e["type"] for e in rows], ["task_started", "run_started", "run_identity", "run_ended"])
+        closure = out.project_closure(rows)
         self.assertEqual(closure["source"], "auto_status")
-        self.assertEqual(closure["data"]["reported_status"], "DONE")
+        self.assertEqual(closure["reported_status"], "DONE")
         # Explicit snapshots survive a mutable effort change; resumes keep the task UUID.
         mp = self.stage / "agents/explicit/meta.json"
         meta["effort"] = "medium"
@@ -227,7 +227,8 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual([e["data"]["effort"] for e in starts], ["high", "medium"])
         self.assertEqual(starts[-1]["data"]["resume_reason"], "review_fix")
         self.assertEqual(self.meta("explicit")["task_id"], meta["task_id"])
-        self.assertEqual(len([e for e in rows if e["type"] == "task_closed"]), 1)
+        self.assertFalse(any(e["type"] == "task_closed" for e in rows))
+        self.assertIsNone(out.project_closure(rows))
         old_count = len(rows)
         # A stale wrapper may neither end nor close the latest run (nor replay its unread queue).
         self.command("exit-note", "explicit", "--code", "1", env=dict(AGENT_RUN_ID=starts[0]["run_id"], AGENT_TASK_ID=meta["task_id"]))
@@ -258,22 +259,27 @@ class Lifecycle(unittest.TestCase):
             role = "status-" + word.lower()
             self.spawn(role, "--task-class", "mechanical", env=dict(FAKE_FINAL=word + " fixture"))
             rows = self.wait(role)
-            closures = [e for e in rows if e["type"] == "task_closed"]
+            closure = out.project_closure(rows)
+            self.assertFalse(any(e["type"] == "task_closed" for e in rows))
             if word in ("BLOCKED", "QUESTION", "PROGRESS"):
-                self.assertEqual(closures, [])
+                self.assertIsNone(closure)
             else:
-                self.assertEqual(closures[-1]["data"]["outcome"], "success" if word in ("DONE", "REVIEWED", "MERGED") else "failure")
-        old = next(e for e in self.rows("status-done") if e["type"] == "task_closed")
+                self.assertEqual(closure["outcome"], "success" if word in ("DONE", "REVIEWED", "MERGED") else "failure")
         file = self.work / "override.json"
-        data = old["data"] | dict(outcome="failure")
+        data = dict(outcome="failure", closed_at=out.now(), evidence_path="fixture", artifact_ids=[],
+                    review_applicability="unknown", ci_applicability="unknown")
         file.write_text(json.dumps(dict(type="task_closed", event_id="owner-override", data=data)))
         self.command("outcome", "status-done", "--file", str(file))
         latest = self.rows("status-done")[-1]
         self.assertEqual(latest["source"], "hub")
-        self.assertEqual(latest["supersedes"], old["event_id"])
+        self.assertEqual(out.project_closure(self.rows("status-done"))["outcome"], "failure")
+        self.assertNotIn("supersedes", latest)
         count_before = len(self.rows("status-done"))
         self.command("outcome", "--task-id", self.meta("status-done")["task_id"], "--file", str(file))
         self.assertEqual(len(self.rows("status-done")), count_before)
+        file.write_text(json.dumps(dict(type="task_closed", event_id="second-override", data=data | dict(outcome="success"))))
+        self.command("outcome", "status-done", "--file", str(file))
+        self.assertEqual(self.rows("status-done")[-1]["supersedes"], "owner-override")
         file.write_text(json.dumps(dict(type="task_closed", task_id=str(uuid.uuid4()), data=data)))
         self.command("outcome", "status-done", "--file", str(file), ok=False)
 
@@ -290,15 +296,15 @@ class Lifecycle(unittest.TestCase):
         self.command("status", "kill")
         self.assertEqual(len(self.rows("kill")), len(rows))
         self.command("send", "kill", "recover", "--resume-reason", "recovery", env=dict(FAKE_FINAL="DONE recovered"))
-        self.assertEqual([e for e in self.wait("kill") if e["type"] == "task_closed"][-1]["data"]["outcome"], "success")
+        self.assertEqual(out.project_closure(self.wait("kill"))["outcome"], "success")
         r = self.command("spawn", "--role", "initfail", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
                          "--model", "haiku", "--task-class", "bounded", env=dict(FAKE_CLAUDE="die"), ok=False)
         self.assertIn("exited", r.stderr)
         archived = list((self.stage / "agents").glob("*initfail*"))
         meta = json.loads((archived[0] / "meta.json").read_text())
         rows = out.read(out.path(self.stage, meta["task_id"]))[0]
-        self.assertEqual(rows[-1]["type"], "task_closed")
-        self.assertEqual(rows[-1]["data"]["outcome"], "failure")
+        self.assertEqual(out.project_closure(rows)["outcome"], "failure")
+        self.assertFalse(any(e["type"] == "task_closed" for e in rows))
         self.assertEqual([e for e in rows if e["type"] == "run_ended"][0]["data"]["termination_reason"], "init_failure")
         started = time.monotonic()
         self.command("send", "kill", "resume that fails before init", env=dict(FAKE_CLAUDE="die", AGENT_INIT_TIMEOUT="8"), ok=False)
@@ -338,14 +344,119 @@ class Lifecycle(unittest.TestCase):
         extra = dict(is_error=True, subtype="error_during_execution", result="You've hit your usage limit")
         self.spawn("limited", "--task-class", "bounded", env=dict(FAKE_FINAL="DONE old text", FAKE_CLAUDE_RESULT_EXTRA=json.dumps(extra)))
         rows = self.wait("limited")
-        self.assertFalse(any(e["type"] == "task_closed" for e in rows))
+        self.assertIsNone(out.project_closure(rows))
         self.assertEqual(next(e for e in rows if e["type"] == "run_ended")["data"]["termination_reason"], "limit")
         self.spawn("journalonly", "--task-class", "bounded", env=dict(FAKE_FINAL="report written", FAKE_SHELL='"$HUB_BIN/jlog" "DONE fixture report"'))
         rows = self.wait("journalonly")
-        self.assertEqual(next(e for e in rows if e["type"] == "task_closed")["data"]["reported_status"], "DONE")
+        self.assertEqual(out.project_closure(rows)["reported_status"], "DONE")
         # An explicit executor kind wins over a review-looking role name.
         self.spawn("review-executor", "--task-class", "bounded", "--task-kind", "executor", env=dict(FAKE_FINAL="report written"))
-        self.assertFalse(any(e["type"] == "task_closed" for e in self.wait("review-executor")))
+        self.assertIsNone(out.project_closure(self.wait("review-executor")))
+
+    def test_f03_expected_applicability_and_late_artifact(self):
+        self.spawn("applicability", "--task-class", "bounded", "--review-applicability", "required", "--ci-applicability", "not_required",
+                   env=dict(FAKE_FINAL="DONE fixture"))
+        rows = self.wait("applicability")
+        self.assertEqual(rows[0]["data"]["review_applicability"], "required")
+        self.assertEqual(rows[0]["data"]["ci_applicability"], "not_required")
+        before = out.project_closure(rows)
+        file = self.work / "artifact.json"
+        target = self.meta("applicability")["task_id"]
+        file.write_text(json.dumps(dict(type="artifact_observed", data=dict(target_task_id=target, artifact_ids=["fixture:pr:1"],
+                                                                           review_applicability="required", ci_applicability="not_required"))))
+        self.command("outcome", "applicability", "--file", str(file))
+        self.assertEqual(out.project_closure(self.rows("applicability")), before)
+        file.write_text(json.dumps(dict(type="artifact_observed", data=dict(target_task_id=str(uuid.uuid4()), artifact_ids=["fixture:pr:1"],
+                                                                           review_applicability="required", ci_applicability="not_required"))))
+        self.command("outcome", "applicability", "--file", str(file), ok=False)
+        self.spawn("applicability-unknown", "--task-class", "bounded")
+        self.wait("applicability-unknown")
+        self.assertEqual(self.rows("applicability-unknown")[0]["data"]["ci_applicability"], "unknown")
+
+    def test_f04_current_run_status_and_blocked_reviewer(self):
+        loader = importlib.machinery.SourceFileLoader("outcome_agent_fixture", str(BIN / "agent"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        agent = importlib.util.module_from_spec(spec)
+        loader.exec_module(agent)
+        stamp = hc.now()
+        file = hc.journal_path("stage-a", stamp.date())
+        hc.journal_append("stage-a", "same-minute", "DONE old run")
+        run = dict(at=stamp.isoformat(), journal_day=stamp.date().isoformat(), journal_offset=file.stat().st_size)
+        self.assertIsNone(agent.reported_status("stage-a", dict(tag="same-minute"), run, "neutral answer"))
+        hc.journal_append("stage-a", "same-minute", "DONE new run")
+        self.assertEqual(agent.reported_status("stage-a", dict(tag="same-minute"), run, "neutral answer"), "DONE")
+        self.spawn("review-blocked", "--task-class", "judgement", "--task-kind", "review", env=dict(FAKE_FINAL="BLOCKED missing evidence"))
+        rows = self.wait("review-blocked")
+        self.assertIsNone(out.project_closure(rows))
+        self.assertEqual(next(e for e in rows if e["type"] == "run_ended")["data"]["reported_status"], "BLOCKED")
+        journal = file.read_text()
+        self.assertIn("[review-blocked] BLOCKED review-blocked", journal)
+        self.assertNotIn("[review-blocked] REVIEWED", journal)
+
+    def test_f05_active_stop_and_hub_precedence(self):
+        self.spawn("stop-active", "--task-class", "mechanical", env=dict(FAKE_HOLD="60"))
+        self.assertIsNone(out.project_closure(self.rows("stop-active")))
+        self.command("stop", "stop-active")
+        closure = out.project_closure(self.rows("stop-active"))
+        self.assertEqual((closure["outcome"], closure["reported_status"]), ("failure", "STOP"))
+        self.spawn("stop-overridden", "--task-class", "mechanical", env=dict(FAKE_HOLD="60"))
+        file = self.work / "cancel.json"
+        file.write_text(json.dumps(dict(type="task_closed", data=dict(outcome="cancelled", closed_at=out.now(),
+                             evidence_path="fixture", artifact_ids=[], review_applicability="unknown", ci_applicability="unknown"))))
+        self.command("outcome", "stop-overridden", "--file", str(file))
+        self.command("stop", "stop-overridden")
+        closure = out.project_closure(self.rows("stop-overridden"))
+        self.assertEqual((closure["outcome"], closure["source"]), ("cancelled", "hub"))
+
+    def test_f06_repository_key_across_worktrees(self):
+        repo = self.work / "repo"
+        linked = self.work / "linked"
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "fixture"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "worktree", "add", "-b", "fixture-linked", str(linked)], check=True, capture_output=True)
+        self.assertEqual(out.repository_key(repo), out.repository_key(linked))
+        self.assertIsNotNone(out.repository_key(repo))
+        self.assertIsNone(out.repository_key(self.work))
+        self.spawn("repo-target", "--task-class", "judgement", "--target-repo", str(linked))
+        self.wait("repo-target")
+        self.assertEqual(self.rows("repo-target")[0]["data"]["repository_key"], out.repository_key(repo))
+
+    def test_f07_terminal_projection_survives_missing_second_write(self):
+        rows = self.rows("status-done")
+        automatic = [e for e in rows if e["type"] != "task_closed"]
+        before = json.dumps(automatic)
+        self.assertEqual(out.project_closure(automatic)["outcome"], "success")
+        self.assertEqual(json.dumps(automatic), before)  # the projection never repairs/writes evidence
+        next_run = dict(automatic[1], run_id="new-run", event_id="new-run:start")
+        self.assertIsNone(out.project_closure(automatic + [next_run]))
+        neutral = [dict(e, data=e["data"] | dict(reported_status=None)) if e["type"] == "run_ended" else e for e in automatic]
+        self.assertIsNone(out.project_closure(neutral))
+
+    def test_f10_helper_links_and_accounting_boundary(self):
+        parent = self.meta("status-done")["task_id"]
+        self.spawn("helper", "--task-class", "mechanical", "--parent-task-id", parent, "--usage-in-parent", "excluded", "--usage-boundary", "own_only")
+        self.wait("helper")
+        data = self.rows("helper")[0]["data"]
+        self.assertEqual((data["parent_task_id"], data["usage_in_parent"], data["usage_boundary"]), (parent, "excluded", "own_only"))
+        self.assertEqual(self.rows("repo-target")[0]["data"]["usage_boundary"], "unknown")
+        self.command("spawn", "--role", "bad-helper", "--cwd", str(self.work), "--brief", str(self.work / "brief.md"),
+                     "--model", "haiku", "--usage-in-parent", "maybe", ok=False)
+
+    def test_f11_unlinked_review_keeps_reported_findings(self):
+        obj = dict(schema_version=1, target_task_id=None, head="abc", round=1, findings=dict(high=2, medium=0, low=0),
+                   finding_ids=[dict(id="F1", severity="high"), dict(id="F2", severity="high")])
+        final = "REVIEW_OUTCOME: " + json.dumps(obj) + "\nVERDICT: changes requested"
+        report = self.stage / "coordinator/work/unlinked-REPORT.md"
+        report.write_text(final)
+        self.spawn("unlinked", "--task-class", "judgement", "--task-kind", "review", "--review-head", "abc", env=dict(FAKE_FINAL=final))
+        rows = self.wait("unlinked")
+        observed = next(e for e in rows if e["type"] == "review_observed")
+        self.assertEqual(observed["data"]["findings"]["high"], 2)
+        self.assertIsNone(observed["data"]["target_task_id"])
+        self.assertEqual(out.project_closure(rows)["outcome"], "success")
+        bad = out.review(dict(task_id=self.meta("unlinked")["task_id"], review_head="different"), "run", final, final)
+        self.assertIsNone(bad["findings"])
+        self.assertTrue(bad["diagnostics"])
 
     def test_fixture_export(self):
         extra = dict(usage=dict(input_tokens=62, output_tokens=15783, cache_creation_input_tokens=135901,
