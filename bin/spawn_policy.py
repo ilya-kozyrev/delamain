@@ -32,10 +32,11 @@ def pattern_matches(key: str, names: list) -> bool:
 
 
 def reason_model_matches(key: str, names: list, codex_model: Optional[str]) -> bool:
-    if key.lower() in model_catalog.FAMILIES:
-        return key.lower() == model_catalog.codex_family(codex_model)
-    if key.lower().startswith("gpt-") and not any(ch in key for ch in "*?["):
-        return key.lower() == (codex_model or "").lower()
+    if codex_model:
+        if key.lower() in model_catalog.FAMILIES:
+            return key.lower() == model_catalog.codex_family(codex_model)
+        if key.lower().startswith("gpt-") and not any(ch in key for ch in "*?["):
+            return key.lower() == codex_model.lower()
     return pattern_matches(key, names)
 
 

@@ -760,7 +760,8 @@ def pace_advice(stage: str, engine: str, model_names: list, effort: str, task_cl
     Returns a note for the journal start line when the launch goes ahead over the hard-stop case, else ""."""
     if limit_pace.mode() == "off":
         return ""
-    adv = limit_pace.advise(engine, model_names[-1], effort, stage, limit_pace.read_all(), task_class, reason,
+    model = model_names[-1] if engine == "codex" else " ".join(model_names)
+    adv = limit_pace.advise(engine, model, effort, stage, limit_pace.read_all(), task_class, reason,
                             limit_pace.stage_lock(stage, cwd))
     if adv.lines:
         print("limit pace — before this launch:\n" + "\n".join("  " + ln for ln in adv.lines))

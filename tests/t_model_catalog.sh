@@ -60,6 +60,10 @@ AGENT_HUB_REASON_MODELS='["sol"]' dry --model gpt-9-sol-preview; check $? 0 'a f
 AGENT_HUB_REASON_MODELS='["gpt-6.10-sol"]' dry --model sol; check $? 2 'reason pin matches resolved ID'
 AGENT_HUB_REASON_MODELS='["gpt-6.1-sol"]' dry --model sol; check $? 0 'reason pin does not match a different version'
 AGENT_HUB_REASON_MODELS='["gpt-6.1-sol"]' dry --model gpt-6.1-sol-preview; check $? 0 'reason pin is not a substring match'
+CLAUDE_BIN="$T/fake_claude.py" AGENT_HUB_REASON_MODELS='["sol"]' AGENT_HUB_MODEL_MAP='sol=claude-sonnet-5-5' \
+    "$B/agent" spawn --engine claude --role catalog --cwd "$P" --brief "$P/brief.md" --model sol --dry-run >"$out" 2>"$err"
+check $? 2 'Claude custom aliases keep their existing reason matching'
+grep -Fq '(AGENT_HUB_REASON_MODELS: sol)' "$err"; check $? 0 'Claude refusal identifies the policy'
 unset AGENT_HUB_REASON_POLICY
 
 spawn --model sol; check $? 0 'resolved family launches the configured CLI'
