@@ -373,7 +373,7 @@ rm $REPO/.agent-hub/config.json
 # ---- --stage on every hub subcommand (reviewer and home had none), HUB_STAGE as the fallback
 rm -f $R/config.json
 rv --for code --stage web > $P/st1.out 2> $P/st1.err; check $? 0 "hub reviewer --for code --stage S is accepted"
-grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --stage web --task-kind review --task-class judgement --change-class unknown --brief <BRIEF>$' $P/st1.out; check $? 0 "…and the agent spawn line it prints carries --stage"
+grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --stage web --task-kind review --task-class judgement --change-class code --brief <BRIEF>$' $P/st1.out; check $? 0 "…and the agent spawn line it prints carries --stage"
 check "$(grep -vc 'author unknown' $P/st1.err)" 0 "…with nothing on stderr but the unknown-author line"
 rv --for code > $P/st2.out 2>&1; grep -q -- '--stage' $P/st2.out; check $? 1 "negative: without a stage the printed line is unchanged"
 check "$(HUB_STAGE=web2 rv | grep -c -- '--stage web2 ')" 1 "HUB_STAGE is the fallback"
@@ -391,7 +391,7 @@ grep -q 'starts stage web' $P/st6.out; check $? 0 "…the stage it names"
 # ---- a printed --engine is the reviewer policy's choice: the line carries --reason, so spawning it does not warn
 mkdir -p $P/w; printf '# Brief: r\n\nbody\n' > $P/w/b.md; echo '{"AGENT_HUB_ENGINE": "claude"}' > $R/config.json
 line=$(AGENT_HUB_REVIEWERS="$(mklist '{"engine": "codex", "model": "gpt-fixture"}' agent)" rv --author claude --for code --stage web 2>/dev/null | sed -n 's/^start: //p')
-case "$line" in *" --engine codex "*"--reason 'reviewer policy: claude author -> codex reviewer' --task-kind review --task-class judgement --change-class unknown --brief <BRIEF>") a=0;; *) a=1;; esac
+case "$line" in *" --engine codex "*"--reason 'reviewer policy: claude author -> codex reviewer' --task-kind review --task-class judgement --change-class code --brief <BRIEF>") a=0;; *) a=1;; esac
 check $a 0 "a Codex reviewer line for a Claude author carries --reason naming both engines"
 line=${line//<BRIEF>/$P/w/b.md}; mkdir -p $R/web/coordinator/work
 (eval "HUB_STAGE=web CODEX_BIN=$T/fake_codex.py AGENT_HUB_LIMIT_PACE=off AGENT_HUB_REASON_POLICY=refuse $B/$line --dry-run") > $P/pl.out 2> $P/pl.err
