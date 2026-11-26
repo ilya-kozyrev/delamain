@@ -42,7 +42,9 @@ cfg "[$A, $S, $G]"; check "$(chosen --for code --second)" argon "the first other
 cfg "[$A, $G, $S]"; check "$(chosen --for code --second)" agent "an ordinary available entry before the second entry is the second opinion"
 cfg "[$A, $G]"; check "$(chosen --for code --second)" agent "no second entries at all: the next ordinary entry is the second opinion"
 cfg "[$A, $G]"; rv --second > $P/ord.out 2>/dev/null; grep -q '^reviewer: agent (agent sonnet/high) — second opinion, the primary is skill-a$' $P/ord.out; check $? 0 "…an agent entry prints its agent spawn line"
-grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model sonnet --effort high --task-kind review --task-class judgement --change-class unknown --brief <BRIEF>$' $P/ord.out; check $? 0 "…as it does without --second"
+grep -q '^start: agent spawn --role review-agent --cwd <REPO> --model sonnet --effort high --task-kind review --task-class judgement --change-class unknown --secondary-review --brief <BRIEF>$' $P/ord.out; check $? 0 "…and persists the second-opinion marker"
+cfg "[$G]"; rv > $P/primary.out 2>/dev/null
+grep -qE '^start: agent spawn .*--secondary-review' $P/primary.out; check $? 1 "the primary start line has no secondary marker"
 cfg "[$S, $A, $G]"
 check "$(chosen --for docs --second)" agent "a class the second entry does not serve: it is skipped, the next one is the second opinion"
 cfg "[$A, {\"name\": \"argon\", \"kind\": \"skill\", \"skill\": \"x\", \"second\": true, \"until\": \"2000-01-01\"}, $G]"

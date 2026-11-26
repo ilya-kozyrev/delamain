@@ -348,13 +348,14 @@ class Evidence:
                 included = child_meta["usage_in_parent"]
                 if child in seen or included == "unknown" or (included == "included" and meta["usage_boundary"] == "own_only"):
                     complete = False
-                elif included == "excluded":
-                    pending.append(child)
+                    continue
+                seen.add(child)
+                pending.append(child)
+                if included == "excluded":
                     measured = contract_runs({child: active(self.events[child], cutoff)})
                     if not measured or child in self.ambiguous:
                         complete = False
                     runs.extend(measured)
-                    seen.add(child)
         return runs, complete
 
     def reduce(self, root, tasks, cutoff):
