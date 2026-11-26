@@ -105,6 +105,10 @@ check $? 1 'an explicit family entry is unavailable with an unreadable catalog'
 CODEX_BIN="$P/no-codex" "$B/hub" reviewer --author claude/opus >"$out" 2>"$err"
 check $? 0 'the built-in reviewer falls back with no CLI even with a usable catalog'
 grep -Fq 'codex not found' "$err"; check $? 0 'fallback explains the missing CLI'
+printf '{"models":[{"slug":"gpt-6.10-sol","visibility":"list"}]}\n' > "$missing/models_cache.json"
+CODEX_HOME="$missing" "$B/hub" reviewer --author claude/opus >"$out" 2>"$err"
+check $? 0 'the installed CLI falls back when its catalog has no listed Astra'
+grep -Fq 'has no listed model for family' "$err"; check $? 0 'fallback distinguishes a missing family from an unreadable catalog'
 "$B/hub" reviewer --author claude/opus >"$out" 2>"$err"
 check $? 0 'installed CLI and listed Astra choose Codex'
 grep -Fq 'agent gpt-6.2-astra/high' "$out"; check $? 0 'the built-in Codex reviewer resolves the latest Astra'
