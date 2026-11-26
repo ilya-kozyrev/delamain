@@ -107,7 +107,8 @@ def reset(label):
     put(stage / "roles.json", {})
     return stage
 
-def cohort(label, new_n=5, missing=False, mixed=False, pending=False, high=False, ci_false=False, equal_tokens=False):
+def cohort(label, new_n=5, missing=False, mixed=False, pending=False, uninitialized=False,
+           high=False, ci_false=False, equal_tokens=False):
     stage = reset(label)
     ids = {}
     for model, n in (("old", 5), ("new", new_n)):
@@ -128,6 +129,8 @@ def cohort(label, new_n=5, missing=False, mixed=False, pending=False, high=False
     if pending:
         tid = start(stage, "new-blocked", "new")
         launch(stage, tid, "new", 0, end="BLOCKED", tokens=None)
+    if uninitialized:
+        start(stage, "new-no-init", "new")
     return stage, ids
 
 stage, ids = cohort("positive")
@@ -184,6 +187,7 @@ print("Retro cutoff replay ignores a backdated late override and recomputes base
 for label, kwargs in (
     ("four", dict(new_n=4)), ("missing-quality", dict(missing=True)),
     ("mixed-model", dict(mixed=True)), ("open-assignment", dict(pending=True)),
+    ("uninitialized-assignment", dict(uninitialized=True)),
     ("higher-high-findings", dict(high=True)), ("worse-first-ci", dict(ci_false=True)),
     ("less-than-20-percent", dict(equal_tokens=True)),
 ):
@@ -200,7 +204,10 @@ for label, kwargs in (
     if label == "open-assignment":
         assigned = next(r for r in metrics["model_outcomes"]["assigned"] if r["model"] == "new")
         assert assigned["full"]["pending"] == 1 and assigned["full"]["success_bounds"] == [5 / 6, 1]
-print("Retro negative: four samples, missing CI, mixed handoff, open contract, worse quality and small savings give no trial")
+    if label == "uninitialized-assignment":
+        assigned = next(r for r in metrics["model_outcomes"]["assigned"] if r["model"] == "requested:new")
+        assert assigned["full"]["pending"] == 1 and assigned["unresolved_in_stratum"] == 1
+print("Retro negative: four samples, missing CI, mixed handoff, open or unresolved assignments, worse quality and small savings give no trial")
 
 stage, ids = cohort("artifacts")
 tid = ids[("new", 0)][0]

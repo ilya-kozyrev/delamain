@@ -231,7 +231,7 @@ def supervise(args, cmd: list, log: Path, stage: str, tag: str, on: dict) -> int
     except OSError as e:
         print(f"await: could not write the journal: {e}", file=sys.stderr)
         return 1
-    if args.outcome_task and word != "CANCELLED":
+    if getattr(args, "outcome_task", None) and word != "CANCELLED":
         try:
             import ci_outcomes
             data = ci_outcomes.observe(hc.root() / stage, args.outcome_task, args.ci_item)

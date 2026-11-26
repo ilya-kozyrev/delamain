@@ -173,7 +173,9 @@ assert observed["first_run_green"] is False and observed["first_head"] == "old",
 assert [p["id"] for p in observed["history"]] == [1, 2]
 print("GitLab late wait: first push pipeline's failed job remains false after a green retry; web pipeline ignored")
 
-fixture(gitlab | {page(f"{pipe}/1/jobs?include_retried=true"): [optional, retry]})
+successful_first = gl_job(2, "tests", "success")
+fixture(gitlab | {page(f"{pipe}/1/jobs?include_retried=true"): [optional, successful_first],
+                  page(f"{pipe}/1/jobs"): [optional, successful_first]})
 observed = ci_outcomes.observe(stage, new_task(), gl_url)
 assert observed["first_run_green"] is True, observed
 fixture(gitlab | {page(f"{pipe}/1/jobs?include_retried=true"): [first, optional]})
