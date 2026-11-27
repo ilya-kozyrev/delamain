@@ -113,15 +113,15 @@ absent. `Reset all` clears all of these; real fires, waves and data are kept.
 Fires (`capture-response.js`): each captured plot gets at least three hot spots on its lower floors, drawn as additive
 light from windows onto the street and nearby facades, never on roofs. The glow flickers from incommensurate sines plus
 low-passed noise (about 20 %, nothing large faster than 3 Hz); embers rise from window level under a budget; the plume
-base is warm. Walls and streets in front occlude it, and fire light is looked up once per fire (at most four lookups a
-frame). Reduced motion: steady glow, no embers. Tests: `fire-smoke.test.mjs`, `fire-*-headless.cjs`.
+base is warm. Walls and streets in front occlude it, and fire light is looked up once per light source (each burning wall or
+vacant plot, at most four lookups a frame). Reduced motion: steady glow, no embers. Tests: `fire-smoke.test.mjs`, `fire-*-headless.cjs`.
 
 Taxi landings (`runtime.js`, `lighting.js`): descent cone over the last second, touchdown flash, soft bloom, light column,
 two rings, sparks, and a stronger arrival light on the receiving walls (per-building ceiling, total wall light capped at
 2.5) with a pulse up its windows. Patrol landings are about half as strong; simultaneous effects are capped. Tests:
 `lighting.test.cjs`.
 
-Hub height (`hubs.js`, `growth.js`, `main.js`): an open hub's house scales 1.5x to 2.4x with context (ten steps, capped at
+Hub height (`hubs.js`, `growth.js`, `main.js`): an open hub's house scales 1.5x to 2.4x with context (ten heights, capped at
 0.9 of the owner's tower); everything standing on its roof follows. A new height is accepted at most every 10 s and
 eased over 3 s (instant with reduced motion). Stepped landmarks and ground pads do not scale.
 
