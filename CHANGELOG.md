@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## 1.1.0 — 2026-11-08
-
 - **Work in a district lights it from the main tower outwards.** A project with working agents gets more light with each level (1, 2, 3 and more agents), nearest the tower first: the scene's windows give way to a full grid over its facades, 14/32/58 % lit, warm and neon, each with its own soft halo; scattered lights of their own colours along its roads; both trade places now and then; a soft pool of light around the tower grows with the level; roof twinkles, rising light motes and short streaks along its own streets; the glow breathes slowly. The ground ring is gone. Reduced motion shows the same strength, steady. Empty, unseated or closed projects show nothing.
 
 - **Territory growth as a gradual recolouring.** Plots that changed owner since the previous day cross-fade from the old owner's tint to the new one over about 25 s, plot by plot from the border inward, instead of a wave; reduced motion switches at once. The test panel's «Район растёт» replays it on built border plots and «Сброс всего» undoes it.
@@ -54,6 +52,87 @@
 - **A taxi flies one arc.** It climbs and comes down along its route instead of rising, cruising, stopping over the pad and sinking: a landing no longer hangs for 4-8 s. The arc keeps clear of the buildings under it; where a taller neighbour stands at the pad it falls back to a short vertical approach. A taxi leans into turns and swings round to a new side, and its cargo turns with it. The landing effect is half as strong and smaller. Taxis are 1.65x larger: in flight each has a stronger trail, a halo and an outline in its sprite's own colour, and parked it sits in a slow ring on its pad.
 
 - **A question or blocker stands on its hub's sign,** in the tower's colour, with thick lines and a minimum size from afar; other signs keep off its place.
+
+## 1.0.29 — 2026-11-26
+
+- **Codex model families follow the CLI catalog.** Use `luna`, `terra`, `sol` or `astra` in spawns,
+  defaults, aliases and reviewers to pick the newest listed version of that family. Spawn records the requested
+  alias and resolved ID. Full IDs stay pinned and warn when a newer version is listed, unless acknowledged in
+  `AGENT_HUB_MODEL_PINS`. Start and takeover digests also warn about stale pins and catalogs older than seven days.
+  Detached successors inherit the requested family, and thread resumes warn when their recorded model is stale.
+  The built-in reviewer falls back to Claude with a reason when Codex or a listed Astra is unavailable.
+- Capture per-task outcomes with stable UUIDs, explicit difficulty/kind/change class and append-only run evidence
+  across spawn, resume, exit and kill recovery. Capture expected review/CI applicability, canonical worktree repository
+  identity and helper-accounting links; artifacts can attach after closure without reclosing. Terminal evidence projects automatic closure; only `agent outcome` writes explicit hub closure overrides;
+  BLOCKED/QUESTION and usage limits remain open. Claude invocation usage/session cost deltas and Codex cumulative
+  usage deltas retain nullable counters and engine-specific turn units (Codex cost stays unknown). Reviewer start
+  lines link author tasks and structured `REVIEW_OUTCOME` findings; hub adjudication is optional. CI first-attempt
+  evidence and retro model comparisons remain planned for the second implementation PR.
+- Preserve reported completion when a run loses its exit wrapper, and record a single journal EXIT for a resume
+  that fails before init. Codex reviewer launch lines carry the target checkout, and hub corrections can address
+  linked review findings on the reviewer's task.
+
+## 1.0.28 — 2026-11-22
+
+- **Reproducible hub retrospectives.** `retro plan` prepares a window and bounded reader/lessons/efficiency/
+  verification briefs; `retro measure` writes source-linked quantitative and A–D delivery scorecards, CSVs and
+  flat metrics for comparison with the previous audit. The `retro` skill ties evidence extraction, classification,
+  independent verification and the next `CHECK-NEXT.md` together. Audited homes stay read-only; missing data
+  stays unknown, and local forge exports are optional without network calls. Registered headless hubs have a
+  single dollar source, retaining a larger transcript estimate after a resume. Forge joins compare complete
+  project paths, and explicit review references take precedence over numeric reviewer tags. Inferred executor
+  endings and ambiguous owner-message copies remain reviewable.
+- **A run the usage limit stopped says LIMIT and when it resets.** In one 5-hour-limit window 24 agents ended as
+  `EXIT <role>: success, error …` with "hit your limit" only inside the quoted text, so the hub could not tell a limit
+  from a failure or plan the resume. The exit line is now `EXIT <role>: LIMIT, resets 6:20pm (Europe/Moscow); code 1, …`
+  (`LIMIT, reset unknown` without a time) for Claude's limit result and Codex's "usage limit" failed turn; `EXIT` stays
+  the first word, so wake patterns are unchanged.
+- **The watchdog wakes a stalled hub once.** A hub that finished a step and launched nothing was woken by nobody: 18
+  stalls of 1.5 h or more in the week to 21.11 (321 h), 10 of them pushed by the owner by hand. Now, by day (outside
+  `AGENT_HUB_NIGHT`), a hub silent over 2 h while nothing of its stage runs (no agent, `await`, waiter or alarm of its
+  session on any stage, grilling, blocking owner question or `watchdog quiet`; a dead turn is not a stall) is woken once
+  per stall episode (until work of the stage runs again) with
+  `nothing runs in <stage>: continue the plan, or watchdog quiet --reason …, or roles retire hub`; a hub that cannot be woken (Desktop, a terminal or
+  unconfirmed Codex host) gets one `nothing runs` notification instead; the hub's own headless run rewritten by that wake is no work. A pure `jwait --until/--for` alarm now marks itself (`<caller>.alarm.json`) so
+  the stall rule sees it; R3 ignores that file. A dormant `claude --bg` hub is nudged once before the dormant stop.
+- **The watchdog stops waking a hub into a wall and stops repeating itself to the owner's phone.** 08–21.11: ~190
+  wakes into dead turns and ~170 `wake failed` notifications (core-d hub-35: 14 wakes and 14 notifications on one line
+  during an account verification block). Now a hub whose last turn hit the usage limit is not woken, nor the owner
+  notified, before the reset its error names ("resets 6:20pm (Europe/Moscow)") plus 5 min; an account error
+  (`verification_required`, `authentication_failed`, `oauth_org_not_allowed`) is never woken and the owner gets one
+  `account blocked` per episode. `wake failed` reaches the owner once per episode (the journal and the log keep every
+  attempt). A hub that cannot be woken (Desktop) is notified on the first attempt, then only when more lines wait and at
+  most every 4 h (test-speedup hub-1: 20 hourly notifications in a night). "jwait does not match" counts only lines at
+  least 3 min old: all 84 such messages were lines still inside the live waiter's settle.
+- **Lessons: verdicts are counted as hubs write them, no heading-only rule is promoted, and a stuck promotion reaches
+  the journal.** The 2026-11-21 audit found > 30 verdicts the parser missed: the word right after the dash
+  (`hub-5, 2026-11-11 — helped: …`), the shift right after it (`helped — hub-49 05.11: …`, all such lines counted as
+  one shift), and every lesson after the first on a multi-lesson line (`L-MC-018 helped (…). L-MC-019 helped …`); a
+  `hurt by vagueness` after the dash never retired its lesson. All are read now (`hurt when skipped`, like `ignored`,
+  still counts for nothing). 8 of 22 promoted lines were a heading without the instruction, because merge-coord and
+  phase-e write `Правило:` / `- Rule:` instead of `- lesson:`: those are read as the rule, and an entry with no rule
+  line is not promoted (the takeover names it). A promotion left waiting — no rule text, or the line does not fit —
+  is journaled as one `@hub lessons need action` line at each takeover (13 digest warnings in two stages had
+  no reaction), and the `## Promoted lessons` cap is 4 KiB instead of 2 KiB (core-d and dolya filled 2 KiB at their
+  first promotion).
+- **An automatic handoff never starts a headless hub the owner cannot see.** On 21.11 `claude --bg` refused and
+  `hub succeed` fell back to a headless `agent spawn` hub that was not listed in Claude Desktop or Remote Control; the
+  owner, on Remote Control, could not find or reach it (Q-AUDIT-010; the same was decided in Q-AUDIT-002). Now, when the
+  background successor cannot start, and on `--fallback` when it did not take over (it is stopped, history kept), the
+  predecessor stays the hub, journals one `BLOCKED auto-handoff: @owner …` line with the reason and the exact command to
+  retry, notifies the owner once through the watchdog's channels (`delamain: <stage> — handoff blocked`) and exits 1.
+  A headless successor starts only with `--headless` or as the Codex engine's detached successor. The reason is the
+  CLI's own message, and a refused folder is the one the CLI names: the 21.11 refusal was «Added folder not trusted:
+  <hub home>» (the `--add-dir` folder), reported then as the project repository being untrusted.
+- **`await --at HH:MM|ISO --label L`: an alarm that outlives the hub.** `jwait --until` is a process of the hub session
+  and dies with it, so a merge window (05:00) was missed twice by a dead hub and a stage built its own detached alarm
+  script whose line the watchdog did not treat as a prompt. Now the existing `await` supervisor, started without a
+  COMMAND, sleeps to the time (jwait's own deadline parser) and journals `@hub ALARM L`, signed `<tag>-await` like every
+  await line: the watchdog wakes a dead hub at its next tick. A killed alarm journals CANCELLED and wakes nobody; `--at`
+  with a COMMAND, `--ok/--on/--link/--timeout`, no `--label`, or a past ISO time is refused. The time left is measured
+  by timestamps, so a DST change or the repeated hour neither refuses a future alarm nor cuts its supervisor's limit
+  short. An alarm does not survive a reboot and does not fire while the machine sleeps (after waking it fires late).
+  `jwait --until` stays for a hub that is alive anyway.
 
 ## 1.0.27 — 2026-11-08
 

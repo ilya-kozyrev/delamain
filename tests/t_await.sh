@@ -403,4 +403,77 @@ $B/await --help | grep -q -- 'ci_wait --mr 12 --on'; check $? 1 "negative: the h
 $B/await --help | grep -q -- '--on 2=TIMEOUT -- python -m scripts.ci_wait'; check $? 0 "…positive control: the right example is there"
 $B/await true > $O/u5.out 2>&1; check $? 2 "no -- command"
 ( unset HUB_TAG; $B/await --wait -- true > $O/u6.out 2>&1 ); check $? 2 "no tag"
+# 8. `await --at`: an alarm that outlives its caller (a hub that dies must still be woken at the time: jwait --until is a
+# process of the hub session)
+in_s(){ python3 -c "import datetime as d,sys;print((d.datetime.now(d.timezone.utc)+d.timedelta(seconds=$1)).strftime('%H:%M:%S'))"; }
+: > $J
+( bash -c "$B/await --at $(utc_iso_s 5) --label 'merge window' > $O/at1.out 2>&1" )   # the calling shell has exited
+grep -q '^await: started supervisor pid [0-9]* for "merge window"; log ' $O/at1.out; check $? 0 "--at starts a detached supervisor and returns"
+check "$(lines ALARM)" 0 "negative: nothing is journaled before the time"
+waitline 'ALARM merge window'; check $? 0 "the alarm is journaled after the calling shell has exited"
+sleep 1
+check "$(grep -c '' $J)" 1 "exactly one line"
+grep -q '^- [0-9:]* \[hub-1-await\] @hub ALARM merge window (exit 0, ' $J; check $? 0 "line: signed <tag>-await, @hub, the word ALARM, the label"
+# the hub's own digest jwait delivers it (the line is `<tag>-await`, not its sub-tag)
+$B/jwait --journal --tag hub-1 --tag hub --hub-events --settle 1 --for 5s --since 00:00 > $O/at2.out 2>&1
+check "$(grep -c '@hub ALARM merge window' $O/at2.out)" 1 "the hub's jwait delivers the ALARM line"
+# a time in the past today is tomorrow (jwait's parser): the alarm is armed, not refused; kill it -> CANCELLED, no wake
+: > $J
+out=$($B/await --at "$(in_s -60)" --label "tomorrow" 2>&1); check $? 0 "--at HH:MM:SS a minute ago means tomorrow, as in jwait --until"
+pid=$(echo "$out" | sed -n 's/^await: started supervisor pid \([0-9]*\).*/\1/p')
+sleep 1; check "$(grep -c '' $J)" 0 "negative: an armed alarm writes nothing"
+kill "$pid"; waitline 'CANCELLED tomorrow'; check $? 0 "a killed alarm journals CANCELLED"
+grep -q 'CANCELLED tomorrow (await interrupted by signal 15, ' $J; check $? 0 "…as any superseded wait"
+grep -q '@hub' $J; check $? 1 "…without @hub: it wakes nobody"
+check "$(grep -c ALARM $J)" 0 "…and no ALARM line"
+# --at with --wait: attached, prints the line, exit 0
+# Absolute time avoids tomorrow rollover when a loaded host starts the CLI after the target second.
+: > $J; bounded 20 $B/await --wait --at "$(utc_iso_s 5)" --label attached > $O/at3.out 2>&1; check $? 0 "--at --wait exits 0 when the alarm fired"
+grep -q '^@hub ALARM attached (exit 0, ' $O/at3.out; check $? 0 "…and prints the ALARM line"
+# refusals
+n0=$(grep -c '' $J)
+$B/await --at 23:59 --label x -- true > $O/at4.out 2>&1; check $? 2 "--at with a COMMAND is refused"
+grep -q 'alarm without a COMMAND' $O/at4.out; check $? 0 "…with a clear message"
+$B/await --at 2020-01-01T10:00:00 --label old > $O/at5.out 2>&1; check $? 2 "--at an ISO time in the past is refused"
+grep -q 'is in the past' $O/at5.out; check $? 0 "…with a clear message"
+$B/await --at 23:59 > $O/at6.out 2>&1; check $? 2 "--at without --label is refused"
+$B/await --at 23:59 --label x --ok PASSED > $O/at7.out 2>&1; check $? 2 "--at with --ok is refused (the word is ALARM)"
+$B/await --at soon --label x > $O/at8.out 2>&1; check $? 2 "--at with an unparsable time is refused"
+check "$(grep -c '' $J)" "$n0" "refusals journal nothing"
+# 8a. the time left is measured by timestamps, not wall clocks (DST change, repeated hour; explicit ISO offsets)
+cat > $O/dst.py <<'PY2'
+import datetime as dt, importlib.machinery, importlib.util, sys, types
+path = sys.argv[1]
+loader = importlib.machinery.SourceFileLoader("await_mod", path)
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("await_mod", loader)); loader.exec_module(mod)
+def probe(name, now_iso, at):
+    now = dt.datetime.fromisoformat(now_iso).astimezone(mod.hc.TZ)
+    mod.hc.now = lambda: now
+    args = types.SimpleNamespace(at=at, label="x", ok="DONE", on=[], link=None, timeout=mod.DEFAULT_TIMEOUT)
+    try:
+        cmd = mod.alarm_command(args, [])
+        print(f"{name}: left={round(float(cmd[-1]) - now.timestamp())} limit={args.timeout}")
+    except mod.hc.UsageError as e:
+        print(f"{name}: refused {e}")
+# Europe/Berlin, clocks go back 25.10.2026 03:00 CEST -> 02:00 CET
+probe("back", "2026-10-25T01:30:00+02:00", "03:30")                      # 3 h away (wall clocks say 2 h)
+probe("repeat-future", "2026-10-25T02:45:00+02:00", "2026-10-25T02:15:00+01:00")   # 30 min away, wall time earlier
+probe("repeat-past", "2026-10-25T02:45:00+01:00", "2026-10-25T02:50:00+02:00")     # 55 min ago, wall time later
+probe("repeat-now-past", "2026-10-25T02:45:00+01:00", "2026-10-25T02:15:00+01:00")  # 30 min ago
+# clocks go forward 29.03.2026 02:00 CET -> 03:00 CEST
+probe("forward", "2026-03-29T01:30:00+01:00", "03:30")                   # 1 h away (wall clocks say 2 h)
+probe("plain", "2026-06-01T10:00:00+02:00", "11:30")                     # control: no change, 1.5 h
+PY2
+dst=$(AGENT_HUB_TZ=Europe/Berlin python3 -I $O/dst.py $B/await 2>&1)
+check "$(echo "$dst" | grep '^plain:')" "plain: left=5400 limit=5700s" "control: no DST change, wall clock and timestamps agree"
+check "$(echo "$dst" | grep '^back:')" "back: left=10800 limit=11100s" "clocks go back: a 03:30 alarm set at 01:30 waits 3 h and its supervisor limit covers it"
+check "$(echo "$dst" | grep '^repeat-future:')" "repeat-future: left=1800 limit=2100s" "repeated hour: a future ISO time with an earlier wall time is accepted"
+check "$(echo "$dst" | grep -c '^repeat-past: refused ')" 1 "repeated hour: a past ISO time with a later wall time is refused"
+check "$(echo "$dst" | grep -c '^repeat-now-past: refused ')" 1 "…and the plain past one"
+check "$(echo "$dst" | grep '^forward:')" "forward: left=3600 limit=3900s" "clocks go forward: 01:30 to 03:30 waits 1 h, not 2"
+$B/await --help | grep -q -- '--at HH:MM'; check $? 0 "--help describes --at"
+$B/await --help | grep -q -- 'jwait --until'; check $? 0 "…and when to use jwait --until instead"
+$B/await --help | grep -q 'does not survive a reboot'; check $? 0 "…and that it does not survive a reboot"
+$B/await --help | grep -q 'does not fire while the machine sleeps'; check $? 0 "…nor fire while the machine sleeps (the sleeper re-checks the absolute time on waking)"
+
 exit $fail

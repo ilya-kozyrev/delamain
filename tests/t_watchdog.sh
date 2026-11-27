@@ -127,6 +127,8 @@ prompt(){  # NAME LINE WANT-RUNS TEXT: a line a minute old, one tick
 prompt spdone "[exec-1] DONE work/x-REPORT.md" 2 "a DONE line a minute old wakes the hub at the first tick"
 prompt spfail "[exec-1] @hub tests FAILED on main" 2 "a FAILED line (jwait.HELD_WAKE_RE) a minute old wakes it"
 prompt spawait "[hub-3-await] @hub PASSED gh-ci-wait 7 (exit 0, 80s)" 2 "an await verdict a minute old wakes it, whatever its --ok word"
+prompt spalarm "[hub-3-await] @hub ALARM merge window (exit 0, 14m, log x.log)" 2 "an \`await --at\` alarm line (ALARM is no status word, the -await tag makes it a prompt line) wakes a hub that died meanwhile"
+prompt spalarmx "[exec-1] @hub-3 ALARM merge window" 1 "negative: the word ALARM from another tag is a plain line, only the -await tag makes it a prompt"
 prompt spowner "[owner] @hub-3 смотри Q-1" 2 "a line of the owner a minute old wakes it"
 prompt spplain "[exec-1] @hub-3 please look at this" 1 "negative: a plain line a minute old does not wake"
 prompt spheld "[sh-peer-hub-4] @hub fyi my side is merged" 1 "negative: a held line a minute old does not wake"
@@ -595,7 +597,7 @@ bo 45;  check "$(resumed)" 3 "backoff: …the third at +45 min (30 min after the
 bo 104; check "$(resumed)" 3 "backoff: …none at +104 min"
 bo 105; check "$(resumed)" 4 "backoff: …the fourth at +105 min (60 min after the third)"
 check "$(count 'wake of hub-4 failed' "$(J sbo)")" 4 "backoff: every failed attempt is journaled"
-check "$(count 'delamain: sbo — wake failed' "$R/notify.log")" 4 "backoff: …and the owner notified each time"
+check "$(count 'delamain: sbo — wake failed' "$R/notify.log")" 1 "backoff: …and the owner notified once per episode"
 # the hub shows activity after a wake: the episode is over, a later silence starts a new one at once
 FX_NOW=$(utc_iso 106) FX transcript $B81 0 ok                           # entries at +103, +104 min
 bo 110; check "$(state_val stages sbo hub episode)" "" "backoff: activity after the wake resets the episode"

@@ -80,4 +80,5 @@ for i in range(int(os.environ.get("FAKE_TURNS", "0"))):
 last = [l for l in prompt.splitlines() if l.strip()][-1] if prompt.strip() else ""
 final = os.environ.get("FAKE_FINAL") or ("echo: " + last[:80])
 emit({"type": "assistant", "message": {"id": f"m{time.time()}", "content": [{"type": "text", "text": final}]}, "session_id": sid})
-emit({"type": "result", "subtype": "success", "num_turns": 1, "session_id": sid, "is_error": False, "result": final})
+emit({"type": "result", "subtype": "success", "num_turns": 1, "session_id": sid, "is_error": False, "result": final,
+      **json.loads(os.environ.get("FAKE_CLAUDE_RESULT_EXTRA", "{}"))})

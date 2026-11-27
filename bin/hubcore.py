@@ -109,7 +109,8 @@ PROJECT_KEYS += ("AGENT_HUB_SPAWN_MCP",)
 # Commit provenance (bin/provenance.py): a repository whose git must not see the hooks shim turns it off for its agents.
 PROJECT_KEYS += ("AGENT_HUB_PROVENANCE",)
 BOOL_KEYS += ("AGENT_HUB_PROVENANCE",)
-HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX")
+HUB_WIDE_KEYS += ("AGENT_HUB_REASON_MODELS", "AGENT_HUB_REASON_POLICY", "AGENT_HUB_RESUME_MAX_CTX",
+                  "AGENT_HUB_MODEL_PINS")
 # The scan guard (hooks/scan_guard.py) protects the machine's owner from macOS privacy prompts: a cloned repository must
 # not switch it off, so it is the hub home's (and the environment's) to set.
 HUB_WIDE_KEYS += ("AGENT_HUB_SCAN_GUARD", "AGENT_HUB_SCAN_ESCAPE")
@@ -133,7 +134,7 @@ BOOL_KEYS += ("AGENT_HUB_WATCHDOG", "AGENT_HUB_WATCHDOG_NIGHT_QUEUE", "AGENT_HUB
 # setting_json() parses it (the environment variable holds the same JSON text).
 JSON_KEYS = ("AGENT_HUB_CONTEXT_BLOCK_TOOLS", "AGENT_HUB_DELEGATION_LEVELS", "AGENT_HUB_DELEGATION_RULES",
              "AGENT_HUB_EFFORT_RULES", "AGENT_HUB_CI_STATUS_DENY", "AGENT_HUB_CI_STATUS_ALLOW", "AGENT_HUB_REVIEWERS")
-JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_HUB_REASON_MODELS",
+JSON_KEYS += ("AGENT_HUB_CODEX_MODEL_MAP", "AGENT_HUB_EFFORT_DEFAULTS", "AGENT_HUB_REASON_MODELS", "AGENT_HUB_MODEL_PINS",
               "AGENT_HUB_NOTIFY_CMD")
 # Classes of action a standing permission covers only when it names them (bin/ask; {"class": ["stem", …]}). Hub home
 # only: a cloned repository must not loosen what needs the owner's explicit word.

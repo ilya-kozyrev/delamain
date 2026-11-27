@@ -5,8 +5,9 @@ The reference is $FX_NOW (an ISO time in the hub time zone, UTC in the tests) or
 counted from it, so a test that injects the watchdog's clock (AGENT_HUB_WATCHDOG_NOW) builds the same world.
 
   jline STAGE MINUTES "[tag] text"        append `- HH:MM [tag] text` to the journal of that day, stamped MINUTES ago
-  transcript SID MINUTES ok|error|error-user   a Claude transcript whose last turn record is a normal answer, an API
-                                          error, or an API error followed by a user record; file mtime MINUTES ago
+  transcript SID MINUTES ok|error|error-user [ERROR [TEXT]]   a Claude transcript whose last turn record is a normal
+                                          answer, an API error (`rate_limit`/"API Error" unless ERROR/TEXT are given), or an
+                                          API error followed by a user record; file mtime MINUTES ago
   job SID CWD                             ~/.claude/jobs/<sid8>/state.json (the daemon's saved options of a bg session)
   rows FILE [ID SID KIND STATUS CWD [PID]] the rows `claude agents --json` prints (none when only FILE is given); the pid
                                           is a process that has exited unless PID is given (the watchdog waits for it to exit)
@@ -65,7 +66,8 @@ def main(argv: list) -> int:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(f"- {t:%H:%M} {text}\n")
     elif cmd == "transcript":
-        sid, minutes, last = args
+        sid, minutes, last, *err = args
+        err_kind, err_text = (err + ["rate_limit", "API Error"][len(err):])[:2]
         path = claude_home() / "projects" / "p" / f"{sid}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         base = {"isSidechain": False, "cwd": os.environ.get("FX_CWD", "/tmp"), "sessionId": sid}
@@ -75,9 +77,9 @@ def main(argv: list) -> int:
                      message={"role": "assistant", "model": "claude-opus-5-5", "content": [{"type": "text", "text": "on it"}]},
                      effort="high")]
         if last in ("error", "error-user"):
-            recs.append(dict(base, type="assistant", timestamp=stamp(minutes), error="rate_limit", isApiErrorMessage=True,
+            recs.append(dict(base, type="assistant", timestamp=stamp(minutes), error=err_kind, isApiErrorMessage=True,
                              apiErrorStatus=429, message={"role": "assistant", "model": "<synthetic>",
-                                                          "content": [{"type": "text", "text": "API Error"}]}))
+                                                          "content": [{"type": "text", "text": err_text}]}))
         if last == "error-user":
             recs.append(dict(base, type="user", timestamp=stamp(float(minutes) - 1), message={"role": "user", "content": "retry"}))
         path.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")

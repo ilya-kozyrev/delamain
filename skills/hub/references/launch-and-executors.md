@@ -49,6 +49,19 @@ itself: one line with the reason, and `ask decided` (*Planning a stage* in `SKIL
   worktree whose commits it takes into its own branch before it pushes. For Claude, `agent spawn` lifts its 10-minute wait ceiling
   (`AGENT_HUB_BG_WAIT_CEILING_MS`); Codex uses its own native subagent lifecycle. `agent-top` lists the sub-agents of registered sessions as `<role>/<id>`, read-only.
 
+## Task classification and completion
+
+Before every spawn, pass `--task-class mechanical|bounded|judgement` from the brief, plus `--task-kind executor|review`
+and `--change-class docs|code|risky|custom`. Difficulty is independent of the chosen model and change risk.
+Omission records unknown with a warning; `hub reviewer` emits review/judgement and links an author's task UUID.
+A new independent contract gets a new spawn; a repair/reassignment uses `--continuation-of UUID`.
+Terminal run evidence projects DONE/REVIEWED/MERGED as success and abnormal EXIT/STOP as failure; only the hub writes task_closed. BLOCKED/QUESTION and
+limit exhaustion leave tasks open. Resume reopens the contract. The hub may override via `agent outcome`; no manual
+closing checklist or per-finding adjudication is required. Pass expected `--review-applicability`/`--ci-applicability`
+(`required|not_required|unknown`), `--target-repo PATH` for a target outside cwd, and helper `--parent-task-id` with
+`--usage-in-parent`/`--usage-boundary` when separately measured. Unknown applicability/inclusion stays unknown. For a repair resume, pass `agent send --resume-reason
+review_fix|ci_fix R "…"`. File formats and nullable counters: [task outcomes](../../../docs/reference.md#task-outcomes).
+
 ## Reviews
 
 For Sol-authored code, choose a judgement reviewer: Claude Opus/Fable at high effort when its limits allow,
@@ -71,7 +84,8 @@ change — a Claude hub then gives a Codex-written change a Codex reviewer — a
 code** before acting on it — a review is a colleague's opinion. Classes, the config, the skill reviewer contract:
 `<plugin-root>/docs/reviewers.md`.
 For a Codex reviewer use the printed `--sandbox workspace-write` with `--cwd` in the stage's `coordinator/work`
-under the hub home (create it first); without a stage fill `<HUB_WORK>` with a directory there. Put the absolute
+under the hub home (create it first). Without a stage fill `<HUB_WORK>` with a directory there.
+Fill `--target-repo <REPO>` with the reviewed checkout. Put the absolute
 repository path, base and head in the brief for reading. Keep the repository outside the hub home and reviewer cwd,
 and never add it as a writable root. A review role receives only its cwd, with temporary-directory writes excluded;
 home config and other agents' inboxes remain read-only: report and journal writes work, repository writes are denied. `read-only`
@@ -97,7 +111,7 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   changes explicit and keep ready work moving; forecast and five-hour context do not schedule work after reset.
 - Work that commits, pushes or waits (a merge steward, a rehearsal, a CI wait — see "Choosing how to launch work") is
   a headless agent, not an in-session sub-agent:
-  `agent spawn [--engine claude|codex, only to deviate from AGENT_HUB_ENGINE, with --reason] --role R --cwd DIR [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`.
+  `agent spawn [--engine claude|codex, only to deviate from AGENT_HUB_ENGINE, with --reason] --role R --cwd DIR --task-class CLASS --task-kind executor --change-class code [--model MODEL] [--effort high] --brief FILE [--worktree [BRANCH]]`.
   It survives the hub's handoff and any hub can talk to it. The executor's tag is `hub-<N>-<role>` (a sub-tag
   `hub-<N>/…` would be filtered out of your own `jwait`; `agent spawn` refuses it). A run that ends abnormally leaves
   `EXIT <role>: …` in the journal under its tag; one that ends normally without a status word of its own, `ENDED <role>: …`
@@ -127,7 +141,7 @@ Sol reviewer for Sol-authored work, bring that entry into line with the approved
   pushed, merged) and `agent worktrees --prune --dry-run` shows the finished ones, which `--prune` then removes (never
   one with unpushed or uncommitted work, or in use).
 - Model and effort: choose per agent. Claude supports `opus|sonnet|haiku|fable` aliases and optional
-  `AGENT_HUB_MODEL_MAP` pins. Codex supports available model ids and optional `AGENT_HUB_CODEX_MODEL_MAP` aliases;
+  `AGENT_HUB_MODEL_MAP` pins. Codex supports `luna|terra|sol|astra`, full IDs and custom `AGENT_HUB_CODEX_MODEL_MAP` aliases;
   omit the model to use `AGENT_HUB_CODEX_DEFAULT_MODEL` or the CLI configuration. Choose effort supported by that model. Every Claude alias takes `--effort`, `haiku` included (Haiku 5.5 from Claude
   Code 2.1.296 has the setting; Haiku 4.5 ignores the flag).
 
@@ -236,6 +250,12 @@ Added with the CI-wait tool; the core `SKILL.md` carries the short form.
    `gh-ci-wait N --require 'NAME' …` (never `gh pr checks --watch`: it exits 0 on a cancelled check; see *Waiting for CI* in `docs/launch-modes.md`).
 4. `kill <supervisor pid>` (printed by `await`) stops a wait and journals `CANCELLED <label>` without `@hub`: no wake;
    a missing line after the deadline means the supervisor was SIGKILLed — read the log path from the start message.
+5. An alarm that must fire even if the hub dies: `await --at HH:MM|ISO --label "merge window"` (no COMMAND; the time is
+   `jwait --until`'s, a past clock time is tomorrow, a past ISO date is refused). The supervisor sleeps to the time and
+   journals `@hub ALARM <label>` signed `<tag>-await`, which the watchdog treats as a prompt line: a dead hub is woken
+   at the next tick. `jwait --until` is a process of the hub session and dies with it, so use it only while the hub
+   is alive anyway; `kill <pid>` of an `--at` supervisor journals CANCELLED and wakes nobody. It does not survive a reboot
+   (set it again) and does not fire while the machine sleeps: after waking, the live sleeper fires it late.
 
 ## Optional modules
 

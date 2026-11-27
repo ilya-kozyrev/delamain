@@ -1,0 +1,14 @@
+{
+  "models": [
+    {"slug": "gpt-6.1-sol", "visibility": "list", "priority": 1},
+    {"slug": "gpt-6.2-sol", "visibility": "list", "priority": 30},
+    {"slug": "gpt-6.10-sol", "visibility": "list", "priority": 40},
+    {"slug": "gpt-7-sol", "visibility": "hide", "priority": 0},
+    {"slug": "gpt-8-sol-preview", "visibility": "list", "priority": 0},
+    {"slug": "gpt-6-astra", "visibility": "list", "priority": 1},
+    {"slug": "gpt-6.2-astra", "visibility": "list", "priority": 30},
+    {"slug": "gpt-6.0-terra", "visibility": "list", "priority": 60},
+    {"slug": "gpt-6-terra", "visibility": "list", "priority": 5},
+    {"slug": "gpt-6-luna", "visibility": "hide", "priority": 1}
+  ]
+}

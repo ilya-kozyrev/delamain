@@ -15,8 +15,12 @@ Rules, per stage and tick (docs/monitoring.md has the long form):
   R2  an open question past its due time that has a default → one `[watchdog] @hub OVERDUE Q-…` line
   R3  the hub is silent, lines addressed to it have waited >= 15 min (or a night-queue item waits inside
       AGENT_HUB_NIGHT) and no `jwait` of its own runs → wake it; a prompt line (a status word, an await verdict, the
-      owner) wakes an idle hub at the next tick; a line wakes the hub once (delivered when the hub acts after the wake)
-  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it
+      owner) wakes an idle hub at the next tick; a line wakes the hub once (delivered when the hub acts after the wake).
+      Stall: nothing waits, nothing of the stage runs (no agent, await, waiter or alarm of the hub's session, grilling,
+      blocking question), the hub silent > 2 h, outside AGENT_HUB_NIGHT → woken once until work runs again (a Desktop or
+      Codex hub: one notification)
+  R4  a Claude API error or a confirmed idle Codex app's terminal overload >= 15 min ago → wake it; a usage limit not
+      before the reset its error names + 5 min, an account error never (the owner is notified once per episode)
   R5  AGENT_HUB_SPAWN_HOLD_LOAD set and the 1-minute load per core above it → <state>/spawn-hold.json, which `agent
       spawn` warns about or refuses on (AGENT_HUB_SPAWN_HOLD); removed again below 80 % of the threshold
   R6  an engine's plan week crosses to "ahead of pace" or "runs out before the reset" (bin/limit_pace.py) → one
@@ -336,7 +340,8 @@ def notify_message(stage: str, kind: str, silent_min: int = 0, lines: int = 0) -
     if kind == "silent":
         tail = f"hub silent {silent_min} min" + (f", {lines} lines waiting" if lines else "")
     else:
-        tail = {"turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck"}[kind]
+        tail = {"stall": "nothing runs", "turn": "last turn failed", "wake-failed": "wake failed", "stuck": "handoff stuck",
+                "account": "account blocked", "blocked": "handoff blocked"}[kind]
     return f"delamain: {stage} — {tail}"
 
 
@@ -464,9 +469,58 @@ def dead_turn(path):
             continue
         if o.get("type") == "assistant" and o.get("isApiErrorMessage") is True:
             err = re.sub(r"[^\w .:-]", "", str(o.get("error") or "api error"))[:40] or "api error"
-            return parse_ts(o.get("timestamp")) or mtime_of(path), err
+            content = (o.get("message") or {}).get("content") if isinstance(o.get("message"), dict) else None
+            text = " ".join(str(c.get("text") or "") for c in content if isinstance(c, dict)) if isinstance(content, list) else ""
+            return parse_ts(o.get("timestamp")) or mtime_of(path), err, text[:300]
         return None
     return None
+
+
+# An API error a wake cannot cure: the account itself is blocked (the owner acts), or the usage limit has not reset yet
+ACCOUNT_ERRORS = frozenset({"verification_required", "authentication_failed", "oauth_org_not_allowed"})
+LIMIT_SLACK = dt.timedelta(minutes=5)  # a rate-limited hub is woken this long after the reset its error names
+RESET_RE = re.compile(r"\bresets\s+(?:([A-Z][a-z]{2})\w*\s+(\d{1,2}),?\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*([ap]m)"
+                      r"(?:\s*\(([\w/+-]+)\))?", re.I)
+
+
+def limit_reset(at: dt.datetime, text: str):
+    """The reset a `rate_limit` error names ("You've hit your 5-hour limit · resets 6:20pm (Europe/Moscow)"): the first
+    such time after the error, in the zone it names (else the hub's). None when the text names none."""
+    m = RESET_RE.search(text or "")
+    if not m:
+        return None
+    mon, day, hh, mm, ampm, zone = m.groups()
+    tz = hc.TZ
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(zone)
+        except Exception:  # noqa: BLE001 — an unknown zone name: the hub's own
+            pass
+    hour = int(hh) % 12 + (12 if ampm.lower() == "pm" else 0)
+    local = at.astimezone(tz)
+    try:
+        if mon:
+            month = dt.datetime.strptime(mon[:3].title(), "%b").month
+            t = local.replace(month=month, day=int(day), hour=hour, minute=int(mm or 0), second=0, microsecond=0)
+            if t < local - dt.timedelta(days=1):
+                t = t.replace(year=t.year + 1)
+            return t
+        t = local.replace(hour=hour, minute=int(mm or 0), second=0, microsecond=0)
+    except ValueError:
+        return None
+    return t if t > local else t + dt.timedelta(days=1)
+
+
+def dead_hold(dead):
+    """Why a dead turn must not be woken: ("account", None) for an error of the account, ("limit", until) for a usage
+    limit until 5 min after its reset; None when a wake may cure it (a server error, a limit with no reset named)."""
+    if not dead:
+        return None
+    if dead[1] in ACCOUNT_ERRORS:
+        return "account", None
+    reset = limit_reset(dead[0], dead[2]) if dead[1] == "rate_limit" and len(dead) > 2 else None
+    return ("limit", reset + LIMIT_SLACK) if reset else None
 
 
 def running_row(rows, sid: str):
@@ -601,6 +655,8 @@ def claude_rows(tick: Tick):
 # ---------------------------------------------------------------- what waits for the hub
 
 HELD_WAKE_AFTER = dt.timedelta(minutes=30)  # jwait's stream deadline (29m) and its settle
+MISMATCH_AFTER = dt.timedelta(minutes=3)  # a live jwait saves a line as seen after its settle (20 s) + the stamp's minute
+NOTIFY_AGAIN = dt.timedelta(hours=4)  # a hub that cannot be woken: the least time between two notifications of an episode
 
 
 def prompt_line(flt, tag: str, text: str) -> bool:
@@ -970,12 +1026,17 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     if not (lines or night or codex or (maybe_dead and now - maybe_dead[0] >= tick.wake_after)):
         if not maybe_dead:  # a young API-error record may still belong to an episode that is going on
             hs["episode"] = None  # nothing waits: the dearer questions (is it busy, which host) are not asked
-            rule_dormant(tick, stage, rec)
+            hs.pop("blocked", None)
+            if not rule_stall(tick, stage, hs, rec):
+                rule_dormant(tick, stage, rec)
         return
     o = observe(tick, stage, rec)
     ep = hs.get("episode")
     acted = parse_ts((ep or {}).get("acted_at"))
     raw_dead = o["dead"] if flag("AGENT_HUB_WATCHDOG_API_ERROR") else None
+    hold = dead_hold(raw_dead)
+    if not (hold and hold[0] == "account"):
+        hs.pop("blocked", None)  # seen without an account error: a later block is a new episode, whatever this tick does
     if acted and o["last"] and o["last"] > acted and not (raw_dead and raw_dead[0] > acted):
         # the hub showed activity after the last action: that episode is over, and the lines that wake carried were
         # delivered: they never wake it again (a hub that answered them without its digest jwait leaves them unseen).
@@ -988,7 +1049,8 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     silent = o["busy"] is not True and (now - last >= tick.wake_after or (o["busy"] is False and any(ln[4] for ln in lines)))
     dead = raw_dead if raw_dead and now - raw_dead[0] >= tick.wake_after else None
     armed = live_waiter(tick, stage, rec)
-    unmatched = [ln for ln in lines if ln[3] != "held"]  # a held line waits in a live jwait by design (HELD_MAX)
+    # a held line waits in a live jwait by design (HELD_MAX); a young one may be in the waiter's settle, not yet seen
+    unmatched = [ln for ln in lines if ln[3] != "held" and now - ln[0] >= MISMATCH_AFTER]
     if armed and unmatched and not dead and (tick.dry or hs.get("mismatch") != unmatched[0][1]):
         hs["mismatch"] = unmatched[0][1]
         tick.journal(stage, f"{tag}'s jwait does not match {len(unmatched)} lines addressed to it, waiting since "
@@ -997,15 +1059,39 @@ def rule_hub(tick: Tick, stage: str, st: dict, rec: dict) -> None:
     if not (silent and not armed and (dead or lines or night)):  # a live own jwait is woken by its own match: a stop would kill it
         if ep and not (lines or night or raw_dead):
             hs["episode"] = None
+        if codex and not (lines or night or raw_dead):
+            rule_stall(tick, stage, hs, rec, o)  # a Codex hub never takes the "nothing waits" path above
+        return
+    if hold and (hold[0] == "account" or now < hold[1]):
+        # a wake cannot cure it: no wake, no "wake failed"; an account block is told to the owner once. A usage limit
+        # past its reset is no hold: the wake after it is verified like any other
+        if ep and ep.get("result") == "pending" and not tick.dry:
+            ep["result"] = f"held: {raw_dead[1]}"
+        if hold[0] == "account":
+            if not hs.get("blocked"):
+                tick.say(stage, "R4", f"{tag}'s last turn ended on {raw_dead[1]}: not woken, the account needs the owner")
+                tick.journal(stage, f"{tag} is not woken: its last turn ended on {raw_dead[1]} (the account needs the owner)")
+                tick.notify(stage, "R4", notify_message(stage, "account"))
+                if not tick.dry:
+                    hs["blocked"] = iso(now)
+            return
+        if hs.get("held") != iso(hold[1]):
+            tick.say(stage, "R4", f"{tag} hit the usage limit: not woken before {hold[1].astimezone(hc.TZ):%H:%M}")
+            if not tick.dry:
+                hs["held"] = iso(hold[1])
         return
     if ep is None:
         ep = hs["episode"] = {"start": iso(now), "attempts": 0, "acted_at": None, "next_try_at": None,
                               "result": None, "since": iso(lines[0][0]) if lines else None}
     if ep.get("result") == "pending" and acted and not tick.dry and now - acted >= dt.timedelta(seconds=VERIFY_AFTER_S):
         ep["result"] = "failed: no activity of the hub after the wake"
-        tick.journal(stage, f"wake of {tag} failed (no activity of the hub within {VERIFY_AFTER_S // 60} min); owner notified")
+        first = not ep.get("fail_notified")
+        tick.journal(stage, f"wake of {tag} failed (no activity of the hub within {VERIFY_AFTER_S // 60} min)"
+                            + ("; owner notified" if first else ""))
         tick.say(stage, "R3", f"wake of {tag} showed no activity")
-        tick.notify(stage, "R3", notify_message(stage, "wake-failed"))
+        if first:  # once per episode: every later failure is in the log and the journal only
+            ep["fail_notified"] = True
+            tick.notify(stage, "R3", notify_message(stage, "wake-failed"))
     nxt = parse_ts(ep.get("next_try_at"))
     if nxt and now < nxt:
         return
@@ -1029,7 +1115,12 @@ def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, de
         kind = "turn" if dead and not lines and not night else "silent"
         why = o["why"] or ("busy state unknown" if o["busy"] is None else f"{o['host']} host")
         tick.say(stage, "R4" if dead else "R3", f"{tag} ({o['host']}) is not woken: {why}")
-        tick.notify(stage, "R4" if dead else "R3", notify_message(stage, kind, silent_min, len(lines)))
+        told = parse_ts(ep.get("notified_at"))
+        # the owner is told on the first attempt, then only when more lines wait, and at most every NOTIFY_AGAIN
+        if told is None or (len(lines) > int(ep.get("notified_lines") or 0) and now - told >= NOTIFY_AGAIN):
+            tick.notify(stage, "R4" if dead else "R3", notify_message(stage, kind, silent_min, len(lines)))
+            if not tick.dry:
+                ep.update(notified_at=iso(now), notified_lines=len(lines))
         if not tick.dry:
             ep["result"] = "notified"
         return
@@ -1045,11 +1136,123 @@ def do_act(tick: Tick, stage: str, rec: dict, o: dict, ep: dict, lines: list, de
             # only the lines the wake quoted (wake_text): one past WAKE_LINES keeps its right to a later wake
             ep["woke"] = {**(ep.get("woke") or {}), **{line_id(ln[0], ln[1]): iso(ln[0]) for ln in lines[:WAKE_LINES]}}
     else:
+        first = not ep.get("fail_notified")
         tick.say(stage, rule, f"wake of {tag} failed ({res['how']}): {res['detail']}", argv=res["how"])
-        tick.journal(stage, f"wake of {tag} failed ({res['how']}, {res['detail']}); owner notified")
-        tick.notify(stage, rule, notify_message(stage, "wake-failed"))
+        tick.journal(stage, f"wake of {tag} failed ({res['how']}, {res['detail']})" + ("; owner notified" if first else ""))
+        if first:  # once per episode: every later failure is in the log and the journal only
+            tick.notify(stage, rule, notify_message(stage, "wake-failed"))
         if not tick.dry:
+            ep["fail_notified"] = True
             ep["result"] = f"failed: {res['detail'][:120]}"
+
+
+STALL_AFTER = dt.timedelta(hours=2)  # a hub silent this long while nothing of its stage runs has stalled
+
+
+def stall_blocker(tick: Tick, stage: str, rec: dict):
+    """What keeps a silent hub's stage from being stalled (None: nothing): a waiter or an alarm of the hub, an agent or an
+    `await` of the stage, an open owner question that blocks something."""
+    jw = tool("jwait")
+    if live_waiter(tick, stage, rec) or any(jw.armed_live(c, stage, at=tick.now, reap=not tick.dry, kind="alarm")
+                                            for c in callers_of(rec)) or session_waiter(tick, rec):
+        return "a waiter or an alarm of the hub"
+    busy = jw.stage_busy(stage)
+    if busy:
+        return busy[0]
+    import grilling
+    if grilling.active_stage(stage):
+        return "a grilling with the owner"
+    ask = tool("ask")
+    if any(e.kind_letter == "Q" and e.state == "open" and (e.fields.get("blocks") or "").strip().lower() not in ask.NO_VALUE
+           for e in ask.load(stage)[1]):
+        return "an open owner question"
+    return None
+
+
+def session_waiter(tick: Tick, rec: dict) -> bool:
+    """Whether a live waiter or alarm of the hub's own session waits on any stage (its armed or alarm file names the
+    session as `host_session`): a hub of stage A may wait on stage B's journal."""
+    ids = [x for x in (rec.get("session"), rec.get("cli_session_id")) if x]
+    jw = tool("jwait")
+    for path in glob.glob(str(hc.root() / ".jwait-state" / "*" / "*.json")):
+        if not path.endswith((".armed.json", ".alarm.json")):
+            continue
+        try:
+            w = json.loads(Path(path).read_text(encoding="utf-8"))
+            late = tick.now - dt.datetime.fromisoformat(w["deadline"]) > dt.timedelta(seconds=jw.ARMED_GRACE_S)
+            if not late and any(same_session(str(w.get("host_session") or ""), x) for x in ids) \
+                    and jw.pid_runs_jwait(int(w["pid"])) is not False:
+                return True
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return False
+
+
+def ran_since(stage: str, t, hub_meta=None) -> bool:
+    """Whether work of the stage started or ended after `t`: an agent's meta.json or an `await` log written since. The
+    meta of the hub's own headless run (`hub_meta`) is no work: `agent send` rewrites it when the watchdog wakes the hub."""
+    if t is None:
+        return False
+    own = str(Path(hub_meta["dir"]) / "meta.json") if hub_meta else None
+    paths = glob.glob(str(hc.root() / stage / "agents" / "*" / "meta.json")) + glob.glob(str(hc.work_dir(stage) / "await" / "*.log"))
+    return any((mtime_of(p) or t) > t for p in paths if p != own)
+
+
+def rule_stall(tick: Tick, stage: str, hs: dict, rec: dict, o=None) -> bool:
+    """A hub that finished a step and launched nothing: nothing waits for it (rule_hub), it is no dead turn, nothing of
+    the stage runs (stall_blocker), it has been silent STALL_AFTER and it is day (outside AGENT_HUB_NIGHT). It is woken
+    once per stall episode; a hub that cannot be woken gets one notification instead (at most every NOTIFY_AGAIN). The
+    episode ends when work of the stage ran after the wake (an answer of the hub alone does not end it) or the stage is
+    made quiet. `o` is rule_hub's observation of a Codex hub; woken or notified is decided by the hub's actual transport, not its engine. True when it acted."""
+    stall = hs.get("stall") if isinstance(hs.get("stall"), dict) else None
+    meta = hc.detached(stage, rec)
+    if stall and ran_since(stage, parse_ts(stall.get("done")), meta):
+        hs.pop("stall", None)  # checked before the silence: a short run between two long silences ends the episode
+    sid = rec.get("cli_session_id") or rec.get("session") or ""
+    path = session_effort.find_transcript((meta or {}).get("session_id") or sid) if o is None else None
+    if path is None and not meta and not (o and o["last"]):
+        return False  # no transcript and no run log: the hub's silence cannot be told, so it is not called a stall
+    seen = newest(mtime_of(path) if path else None, mtime_of(Path(meta["dir"]) / "log.jsonl") if meta else None,
+                  o and o["last"], parse_ts(rec.get("set_at")))
+    if seen is None or tick.now - seen < STALL_AFTER:
+        return False  # the cheap question first: a hub that wrote within the window is not asked anything dearer
+    if stall_blocker(tick, stage, rec):
+        hs.pop("stall", None)
+        return False
+    if (hs.get("stall") or {}).get("done") or tool("nightq").in_night(tick.now.replace(tzinfo=None)):
+        return False
+    o = o or observe(tick, stage, rec)
+    last = newest(o["last"], parse_ts(rec.get("set_at")))
+    if o["busy"] is True or o["dead"] or last is None or tick.now - last < STALL_AFTER:
+        return False
+    pid = (o["row"] or {}).get("pid")
+    procs = read_procs() if pid else None
+    if procs and own_waiters(pid, procs, kinds=("armed", "alarm")):
+        return False  # a waiter of any stage below the hub's own process: a stop and resume would end it
+    tag, silent = rec.get("tag") or "hub", minutes(tick.now - last)
+    if not tick.dry:
+        hs["stall"] = {"since": iso(last), "done": iso(tick.now)}
+    if o["transport"] == "notify" or o["busy"] is not False:
+        why = o["why"] or ("busy state unknown" if o["busy"] is None else f"{o['host']} host")
+        tick.say(stage, "R3", f"nothing runs and {tag} ({o['host']}) has been silent {silent} min; not woken: {why}")
+        told = parse_ts(hs.get("stall_told"))
+        if told is None or tick.now - told >= NOTIFY_AGAIN:
+            tick.notify(stage, "R3", notify_message(stage, "stall", silent))
+            if not tick.dry:
+                hs["stall_told"] = iso(tick.now)
+        return True
+    text = (f"{autopilot.WATCHDOG_MARKER} {stage}: nothing runs in {stage}: continue the plan, or `watchdog quiet "
+            f"--reason …`, or `roles retire hub`.")
+    res = wake_hub(tick, stage, rec, o, text)
+    if res["ok"]:
+        tick.say(stage, "R3", f"{'would wake' if tick.dry else 'woke'} {tag} ({res['how']}): nothing runs, silent {silent} min",
+                 argv=res["how"])
+        tick.journal(stage, f"woke {tag} ({res['how']}): nothing runs in the stage, silent {silent} min")
+    else:
+        tick.say(stage, "R3", f"stall wake of {tag} failed ({res['how']}): {res['detail']}", argv=res["how"])
+        tick.journal(stage, f"stall wake of {tag} failed ({res['how']}, {res['detail']}); owner notified")
+        tick.notify(stage, "R3", notify_message(stage, "wake-failed"))
+    return True
 
 
 def rule_r6(tick: Tick, stage: str) -> None:
@@ -1090,6 +1293,8 @@ def run_stage(tick: Tick, stage: str) -> None:
         except OSError:
             pass
     elif marker and not expired:
+        if isinstance(st.get("hub"), dict):
+            st["hub"].pop("stall", None)  # `watchdog quiet` answers a stall: a stall after it is a new episode
         return
     rule_r6(tick, stage)
     pend = pending_handoff(stage)
@@ -1609,13 +1814,13 @@ LSP_RE = re.compile(r"language-server|(?<![a-z])(?:lsp|pyright|pylsp|gopls|rust-
 MCP_RE = re.compile(r"(?<![a-z])mcp(?![a-z])", re.I)
 
 
-def own_waiters(pid, procs: dict) -> set:
+def own_waiters(pid, procs: dict, kinds=("armed",)) -> set:
     """Pids of the journal waiters (`jwait --journal`, its armed files <root>/.jwait-state/<stage>/<caller>.armed.json of
     any stage) that run below the session `pid` and still run a jwait: the session's own waiter. A file that cannot be
     read names nobody."""
     below = {p for p, _ in descendants(pid, procs)}
     out = set()
-    for path in glob.glob(str(hc.root() / ".jwait-state" / "*" / "*.armed.json")):
+    for path in [p for k in kinds for p in glob.glob(str(hc.root() / ".jwait-state" / "*" / f"*.{k}.json"))]:
         try:
             p = int(json.loads(Path(path).read_text(encoding="utf-8"))["pid"])
         except (OSError, ValueError, KeyError, TypeError):

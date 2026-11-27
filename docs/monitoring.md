@@ -109,7 +109,8 @@ can be woken.
 | R1 | An agent whose process is gone without a result. | The existing line `EXIT <role>: killed (no result)`, written once. |
 | R2 | An open owner question past its due time that has a default. | One journal line `[watchdog] @hub OVERDUE Q-… (due …) default: …` per question and due date; a new due date re-arms it. |
 | R3 | The hub is silent (not busy, no activity for 15 min), lines addressed to it have waited 15 min (or a night-queue item has, inside `AGENT_HUB_NIGHT`), and no `jwait` of its own runs; a prompt line (below) wakes a hub known to be idle at the next tick. | Wakes the hub. |
-| R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. | Wakes the same session/thread, whether or not anything waits. |
+| R3 stall | Nothing waits for the hub and none of its stage runs: no agent, no `await`, no live `jwait` or alarm (`jwait --until/--for` without a source) of the hub's session on any stage, no grilling with the owner in progress, no open owner question that blocks something, no `watchdog quiet`, no dead turn; the hub has been silent over 2 h, outside `AGENT_HUB_NIGHT` (23:00–08:00 by default). | Wakes the hub once per stall episode: `nothing runs in <stage>: continue the plan, or watchdog quiet --reason …, or roles retire hub`; a hub that cannot be woken: one notification `nothing runs, hub silent N min` (at most every 4 h); a Codex hub is woken or notified by its transport like any hub (a confirmed idle `codex-app` hub with `codex-queue` is woken once). The episode ends when work of the stage ran after the wake (an agent or an `await` started or ended; an answer of the hub alone, or the rewritten metadata of the hub's own headless run, does not end it) or the stage is made quiet. |
+| R4 | A Claude hub whose last turn ended on an API error, or a confirmed idle Codex app hub whose last own turn ended with explicit `server_overloaded`, 15 min ago or more. A usage limit is not woken before the reset its error names plus 5 min; an account error (`verification_required`, `authentication_failed`, `oauth_org_not_allowed`) is never woken. | Wakes the same session/thread, whether or not anything waits; an account error notifies `account blocked` once per episode instead. |
 | R5 | The machine, only when `AGENT_HUB_SPAWN_HOLD_LOAD` is set: the 1-minute load average per core above it. | Writes `<state dir>/spawn-hold.json`; see the load hold below. |
 | R6 | Each engine's plan week ([limit pace](reference.md#limit-pace)), for a stage with a hub that is not quiet. | One journal line `[pace] @hub LIMIT …` per forecast crossing, stage, window and level; the owner is notified once per window projected to run out. Forecast context only: each launch compares fresh remaining weekly quota. |
 | R7 | The machine: the `claude --bg` session of a hub that is retired in this home (`roles retire hub`, or replaced by a successor) and live nowhere on the machine, quiet for `AGENT_HUB_WATCHDOG_WAKE_AFTER` (at least 15 min) and idle. | `claude stop <id>`; a busy or working one is reported once a day in the watchdog's log; see the reaping of retired hubs below. Also a dormant hub idle 2 h (below). |
@@ -118,7 +119,8 @@ can be woken.
 that no `jwait` of the hub has consumed (`.jwait-state/<caller>.json`, under its tag or its session id), stamped after
 the hub took over. "No `jwait` of its own" is the file `.jwait-state/<stage>/<caller>.armed.json`, which `jwait --journal` writes
 while it waits; a file whose process is gone is ignored and deleted. When a live waiter exists but lines still wait, the
-watchdog does not wake: it writes one journal line (no status word, no `@`) saying that the waiter does not match them.
+watchdog does not wake: it writes one journal line (no status word, no `@`) saying that the waiter does not match them;
+only lines at least 3 minutes old count, as a younger one may still sit in the waiter's settle, not yet saved as seen.
 A held line (another stage's hub, see `jwait`'s `HELD`) is not a mismatch: a live waiter delivers it within 30 minutes by
 design. The pacer's `[pace]` lines never wake a hub (R3 leaves them out): they are context for the next launch.
 A prompt line does not wait: one that carries a status word of the digest (`hubcore.STATUS_WORDS` with
@@ -214,9 +216,11 @@ requires that consumer to be installed and validated; fixture protocol controls 
   expired marker is removed by the next tick. The `hub takeover` digest shows an active marker.
 - **One wake per episode.** An episode starts when the hub needs waking and ends when it shows activity after the last
   action, or nothing waits any more. The first wake is at once; later attempts wait 15, 30, 60, 120, 240 minutes
-  (`AGENT_HUB_WATCHDOG_WAKE_AFTER` doubled each time, up to `AGENT_HUB_WATCHDOG_BACKOFF_MAX`, 4h); notifications follow
-  the same schedule. A wake after which the hub shows no activity for 5 minutes counts as failed: a journal line, a
-  notification `wake failed`. A failed wake has no other fallback and no successor.
+  (`AGENT_HUB_WATCHDOG_WAKE_AFTER` doubled each time, up to `AGENT_HUB_WATCHDOG_BACKOFF_MAX`, 4h). A wake after which
+  the hub shows no activity for 5 minutes counts as failed: a journal line on every attempt, the notification `wake
+  failed` on the first one of the episode only. A hub that cannot be woken (Desktop, terminal, unknown) is notified on
+  the first attempt, then only when more lines wait and at least 4 h after the last notice; the log keeps every
+  attempt. A failed wake has no other fallback and no successor.
 - **A pending handoff.** A stage whose `auto-handoff.json` has a pending successor that has not taken over is skipped.
   When that record is older than `AGENT_HUB_SUCCESSOR_TIMEOUT` plus the wake time, the owner is notified once
   (`handoff stuck`) and nothing is started.
@@ -368,7 +372,7 @@ The spawn refusal uses the verified weekly quota rules in the reference, not the
 ### What leaves the machine
 
 A notification carries the stage name, minutes, counts and an event word, for example `delamain: payments — hub silent 47
-min, 3 lines waiting`; the other events are `last turn failed`, `wake failed` and `handoff stuck`, and R6's
+min, 3 lines waiting`; the other events are `nothing runs`, `last turn failed`, `wake failed`, `account blocked` and `handoff stuck`, and R6's
 `delamain: Codex plan week projected to run out before its reset` (the engine's name, no stage). Never line text,
 question text, session ids, tags or paths. Channels: the local one (macOS `osascript`, elsewhere `notify-send` when
 present; `AGENT_HUB_NOTIFY_LOCAL`, on by default) and a remote one you configure, `AGENT_HUB_NOTIFY_CMD`, a JSON argv

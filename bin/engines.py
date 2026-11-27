@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import hubcore as hc
+import model_catalog
 
 # App-only transport/attribution markers must never leak into detached CLI workers.
 CODEX_APP_ENV = ("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_APP_TOOLS_PIPE_PATH")
@@ -54,6 +55,9 @@ def codex_bin(cwd=None):
     return found
 
 
+_MODEL_MAP_WARNED = set()
+
+
 def model_map(cwd=None):
     raw = hc.setting("AGENT_HUB_CODEX_MODEL_MAP", cwd=cwd)
     if not raw:
@@ -65,16 +69,30 @@ def model_map(cwd=None):
                                            for k, v in data.items()):
             raise ValueError
     except (ValueError, TypeError):
-        raise hc.UsageError("AGENT_HUB_CODEX_MODEL_MAP must map safe aliases to model IDs") from None
+        raise hc.UsageError("AGENT_HUB_CODEX_MODEL_MAP must map safe aliases to model IDs or families") from None
+    for key in list(data):
+        if model_catalog.codex_family(key):
+            if key not in _MODEL_MAP_WARNED:
+                hc.warn(f"AGENT_HUB_CODEX_MODEL_MAP: {key!r} is reserved; ignoring its mapping")
+                _MODEL_MAP_WARNED.add(key)
+            del data[key]
     return data
 
 
-def model_problem(model, cwd=None):
+def model_problem(model, cwd=None, aliases=None):
     if not isinstance(model, str) or not hc.MODEL_VALUE_RE.fullmatch(model):
         return "a model ID or configured alias (letters, digits and . _ : @ [ ] / - only)"
-    if model in hc.MODEL_ALIASES and model not in model_map(cwd):
+    if model in hc.MODEL_ALIASES and model not in (model_map(cwd) if aliases is None else aliases):
         return f"{model!r} is a Claude alias; configure AGENT_HUB_CODEX_MODEL_MAP or pass a Codex model ID"
     return None
+
+
+def resolve_codex_model(model, cwd=None):
+    target = model_catalog.map_model(model, model_map(cwd))
+    catalog = model_catalog.Catalog()
+    for warning in catalog.pin_warnings([target], cwd):
+        print(warning, file=sys.stderr)
+    return catalog.resolve(target)
 
 
 def permission_policy(mode=None, sandbox=None, cwd=None):
@@ -157,6 +175,8 @@ REVIEW_ROLE_RE = re.compile(r"(?<![a-z])review(?:er)?s?(?![a-z])", re.IGNORECASE
 
 
 def is_review_role(meta):
+    if meta.get("task_kind") in ("executor", "review"):
+        return meta["task_kind"] == "review"
     return any(REVIEW_ROLE_RE.search(str(meta.get(k) or "")) for k in ("role", "tag"))
 
 

@@ -33,6 +33,7 @@ from typing import Optional
 
 import engines
 import hubcore as hc
+import model_catalog
 
 ENGINES = ("claude", "codex")
 ENGINE_NAME = {"claude": "Claude", "codex": "Codex"}
@@ -356,6 +357,9 @@ def assess(engine: str, window: str, samples: list, now: float) -> Pace:
 
 def classify(model: str) -> str:
     m = (model or "").lower()
+    family = model_catalog.codex_family(m)
+    if family:
+        return {"luna": "mechanical", "terra": "bounded", "sol": "bounded", "astra": "judgement"}[family]
     if any(k in m for k in ("haiku", "luna", "mini", "nano")):
         return "mechanical"
     if any(k in m for k in ("opus", "fable", "astra")):
@@ -532,7 +536,7 @@ def advise(engine: str, model: str, effort: Optional[str], stage: str, paces: di
     p = paces.get(engine, {}).get("7d") or Pace(engine, "7d")
     q = paces.get(other(engine), {}).get("7d") or Pace(other(engine), "7d")
     adv.pace = p
-    cls = task_class or classify(model)
+    cls = (None if task_class == "unknown" else task_class) or classify(model)
     five = paces.get(engine, {}).get("5h")
     if five is not None and five.level == "exhaust":
         adv.lines.append(describe(five) + "; consider this window when choosing the engine for this launch")

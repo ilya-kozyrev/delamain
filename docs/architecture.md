@@ -121,7 +121,7 @@ PreToolUse hook imports it on every Bash call.
 | Hook | Event | Acts |
 |---|---|---|
 | `board_locks` | PreToolUse, Bash | In every session on the machine, but only on merges and pushes to protected branches and on commands a `lock-rules.json` names. |
-| `handoff_size` | PreToolUse, Write or Edit of `HANDOFF-*.md` (≤ 15 KB) and of `hub-rules.md` (its `## Promoted lessons` section ≤ 2 KiB) | Only in the hub home, in a repository with `.agent-hub/`, or under a directory of `AGENT_HUB_SCOPE_DIRS`. |
+| `handoff_size` | PreToolUse, Write or Edit of `HANDOFF-*.md` (≤ 15 KB) and of `hub-rules.md` (its `## Promoted lessons` section ≤ 4 KiB) | Only in the hub home, in a repository with `.agent-hub/`, or under a directory of `AGENT_HUB_SCOPE_DIRS`. |
 | `questions` | SessionStart | The same places, and in hub agents (`HUB_TAG` set by `agent spawn`). |
 | `session_cards` | PreToolUse of Desktop's `start_session` / `hand_off_to_session`; SessionStart | Only in a session registered as the `hub` role of a stage; a non-hub, or a registry that cannot be read, is never blocked. |
 | `subagent_journal` | SubagentStart, SubagentStop (async) | Only for a session registered in a stage's role registry: one `SUB start` / `SUB end` line in that stage's journal ([launch modes](launch-modes.md#journal-lines-from-sub-agents)); it never blocks a sub-agent. |
@@ -166,7 +166,8 @@ handoffs; procedure and rules in `skills/handoff/references/lessons.md`):
 
 The status is derived from the verdicts when `hub takeover` reads the file: `helped` from two different shifts and no `hurt`
 is promotable, and the same takeover promotes it: one line in `## Promoted lessons` of the stage `hub-rules.md`, status
-`promoted`. Any `hurt` retires it.
+`promoted`; an entry without a rule line (`- lesson:`, `- rule:`, `Rule:`, `Правило:`) or one that would take the section
+over 4 KiB stays promotable and is journaled to the hub. Any `hurt` retires it.
 
 **Question register entry** (`questions.md`, kept by `ask`):
 

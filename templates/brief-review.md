@@ -3,6 +3,7 @@
 <!-- Self-contained brief for a reviewer — an `agent` reviewer (`hub reviewer` prints its `agent spawn` line) or a
 reviewer skill; docs/reviewers.md has the contract. The reviewer has not seen the conversation: everything it needs
 is here. Fill every <…>; delete the "Round N" section for a first review.
+When policy selects Codex for judgement, use the `astra` family at high effort.
 The hub writes this brief and launches the reviewer, never the author of the change: an author's brief steers the
 reviewer to what the author already checked. For money, masking and permissions narrow "Look hardest at" to that
 risk and leave style out. -->
@@ -13,6 +14,8 @@ one line per file or area that matters. Name the decisions the owner already too
 "do not reopen" for the reviewer too.>
 
 ## The change
+- Target task UUID: `<author task_id from meta.json, or null for an engine-only author>`
+- Review round: `<positive integer>`
 - Repository: `<absolute path of a checkout that has the head commit>`
 - Base: `<base sha>`   Head: `<head ref or sha>`
 - Diff: `git diff <base sha>..<head sha>`; the commits: `git log --oneline <base sha>..<head sha>`
@@ -52,6 +55,12 @@ production, permissions) say here which risk the review is narrowed to, and leav
 A reviewer launched by `agent spawn` writes the review (findings first, then one verdict line) to the report path its
 footer names and ends its final answer with the same verdict line; only an in-session sub-agent returns the review as
 its final text, for the caller to save to `<review file>`.
+
+Immediately before VERDICT, put this exact structured line in both the report and final answer (identical copies):
+`REVIEW_OUTCOME: {"schema_version":1,"target_task_id":"<UUID>","head":"<reviewed head SHA>","round":1,"findings":{"high":0,"medium":0,"low":0},"finding_ids":[]}`
+Use JSON null for an unlinked target. Each finding has a stable ID and severity, e.g.
+`{"id":"F1","severity":"medium"}`; counts must equal entries by severity. Keep IDs for rechecks; use new IDs for
+new defects. These are reported findings; hub adjudication is optional. Missing or malformed evidence stays unknown.
 
 `VERDICT: merge` | `VERDICT: merge after fixes` (every high and medium finding is fixable without a redesign) |
 `VERDICT: changes requested`

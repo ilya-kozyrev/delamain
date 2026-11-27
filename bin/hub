@@ -162,11 +162,12 @@ effort (--effort, AGENT_HUB_SUCCESSOR_EFFORT, else the effort this hub runs at n
 succeed exits 1 and starts nothing) and the prompt "/delamain:hub take over stage … [agent-hub auto-handoff k/N]" (the marker keeps the name used before the rename for
 one release), reads its id and Remote Control link,
 journals both and prints the `jwait` command that waits for the successor's start line (AGENT_HUB_SUCCESSOR_TIMEOUT).
-When the background session cannot start (CLI not logged in, the main checkout untrusted) it says so loudly (WARNING, in
-the output and the journal: the successor is not listed in Claude Desktop) and starts a headless hub
-with `agent spawn --cwd <main checkout> --worktree <stage>-hub-<n+1>` instead; bypassPermissions without its accepted disclaimer
-becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: journals the background session's log
-tail, stops it and starts the headless hub from the same handoff. Only the registered hub may run it
+When the background session cannot start (CLI not logged in, a folder the CLI does not trust) nothing headless starts in
+its place: this hub stays, one `BLOCKED auto-handoff: @owner …` journal line carries the CLI's own message and the command
+to retry, the owner is notified once (the watchdog's channels), exit 1. A headless hub (`agent spawn --cwd <main checkout>
+--worktree <stage>-hub-<n+1>`) starts only with --headless. bypassPermissions without its accepted disclaimer
+becomes auto (acceptEdits for Haiku). --fallback, after the jwait's ALARM: stops the background session (history kept)
+and reports the same way, with its log tail. Only the registered hub may run it
 ($CLAUDE_CODE_SESSION_ID, else $HUB_TAG; exit 2 otherwise; a sub-agent of the hub shares its session id and passes —
 the hub never delegates it), only with AGENT_HUB_AUTO_HANDOFF on (exit 2; --force for the owner by hand), one
 successor per shift: a second call while one is
@@ -255,6 +256,7 @@ import grill_session  # noqa: E402
 import hubhome  # noqa: E402
 import provenance  # noqa: E402
 import reviewers  # noqa: E402
+import model_catalog  # noqa: E402
 import session_effort  # noqa: E402
 import subagents  # noqa: E402
 
@@ -457,33 +459,74 @@ def outside_markup(text: str) -> list:
 # `L-001/L-005`, `L-001/002`) and the verdict word. Without a lesson id it is about the entry it sits under.
 LESSON_VERDICT_RE = re.compile(r"^\s*[-*]\s*verdict\b(.*)$", re.IGNORECASE)
 LESSON_IDS_RE = re.compile(r"\b(L-(?:[A-Z]+-)?)(\d{1,6})((?:/(?:L-(?:[A-Z]+-)?)?\d{1,6})*)\b")
-LESSON_WORD_RE = re.compile(r"\b(helped|hurt|no effect|confounded)\b", re.IGNORECASE)
+LESSON_WORDS = r"helped|hurt|no effect|confounded"
+LESSON_WORD_RE = re.compile(rf"\b({LESSON_WORDS})\b", re.IGNORECASE)
+LESSON_NOT_APPLIED_RE = re.compile(r"\b(?:ignored|skipped|not applied)\b", re.IGNORECASE)
+# One clause of a multi-lesson line: `L-MC-018 helped (…). L-MC-019 helped …`, `…; L-036 helped — …`, `L-005: helped`,
+# `L-004, L-011 no effect`, each at the start of the text or after `.`, `;` or `)`, outside parentheses (`(compare: L-002
+# hurt)` is evidence); the rest of the clause decides: `L-MC-018 hurt when skipped —`, `hurt (not applied)` or
+# `L-002 hurt-then-helped` give no verdict, `hurt (a retry helped recover)` is a hurt. A quote in the evidence
+# (`— the log says "Done. L-002 hurt"`, «…», “…”) is not searched.
+LESSON_CLAUSE_RE = re.compile(
+    rf"(?:^|(?<=[.;)])\s)\s*((?:{LESSON_ID_PAT}(?:/(?:L-(?:[A-Z]+-)?)?\d{{1,6}})*(?:,\s*)?)+):?\s+({LESSON_WORDS})\b",
+    re.IGNORECASE)
 LESSON_SHIFT_RE = re.compile(r"\bhub-\d+\b", re.IGNORECASE)
 LESSON_DATE_RE = re.compile(r"\b\d{4}-\d\d-\d\d\b|(?<![\d.])\d{1,2}\.\d\d(?![\d.])")
 LESSON_PROMOTE_AT = 2   # `helped` from this many different shifts (and no `hurt`) makes a lesson promotable
-LESSON_TEXT_RE = re.compile(r"^- lesson:(.*)$")
-PROMOTED_MAX_BYTES = 2048   # the cap hooks/handoff_size.py puts on hand edits of `## Promoted lessons`
+# The rule text of an entry: `- lesson:`, `- rule:`, `Rule:`, `Правило:`, `- Do:`, `- **Apply:**` at the start of a line,
+# or `Правило:` / `Rule:` after a sentence of a prose paragraph (merge-coord); it runs to the end of its paragraph.
+LESSON_TEXT_RE = re.compile(r"^(?:[-*]\s*)?\**(?:lesson|rule|правило|do|apply)\**\s*:\**(.*)$", re.IGNORECASE)
+LESSON_TEXT_MID_RE = re.compile(r"(?<=[.!?…»)])\s+(?:Правило|Rule):(.*)$")
+LESSON_EVIDENCE_RE = re.compile(r"(?<=[.!?…»);])\s+\**(?:Evidence|Доказательств\w*)\b[^:.]{0,40}:.*$",
+                                re.IGNORECASE)   # `…бэкапа. Evidence: jobs …`, not `fill in Evidence: with the link`
+LESSON_EVIDENCE_LINE_RE = re.compile(r"^[\s*-]*(?:Evidence|Доказательств\w*)\b[^:.]{0,40}:", re.IGNORECASE)
+PROMOTED_MAX_BYTES = 4096   # the cap hooks/handoff_size.py puts on hand edits of `## Promoted lessons`
 PROMOTED_HEAD_RE = re.compile(r"##[ \t]+Promoted lessons\b", re.IGNORECASE)
 
 
-def lesson_verdict(rest: str):
-    """([lesson ids], word, shift) of the text after `- verdict`, or None when the line gives no usable verdict. Used
-    shapes: `: hub-35 2026-10-25 helped — …`, `: helped (hub-31, 23.10) — …`, ` (hub-5, 27.10): helped — …`,
-    ` (L-002, hub-20 26.10): helped — …`, ` (hub-19): L-MC-003 helped — …`, `L-001/002 helped`. Only the head before the
-    first spaced dash is read, so the evidence cannot vote. Two different words (`hurt-then-helped`) or `ignored`
-    (the lesson was not applied) give no verdict: a guess either way would retire or promote a rule."""
-    head = re.split(r"\s[—–-]\s", rest, maxsplit=1)[0]
-    found = list(LESSON_WORD_RE.finditer(head))
-    words = {m.group(1).lower() for m in found}
-    if len(words) != 1 or re.search(r"\bignored\b", head, re.IGNORECASE):
-        return None
+def lesson_ids(text: str) -> list:
+    """The lesson ids of `text`: `L-002`, `L-001/L-005`, `L-001/002`, `L-034, L-036`."""
     ids = []
-    for m in LESSON_IDS_RE.finditer(head[:found[0].start()]):   # an id after the word is a reference, not the target
+    for m in LESSON_IDS_RE.finditer(text):
         ids.append(m.group(1) + m.group(2))
-        for tail in m.group(3).split("/")[1:]:
-            ids.append(tail if tail.startswith("L-") else m.group(1) + tail)
-    shift = LESSON_SHIFT_RE.search(head) or LESSON_DATE_RE.search(head)
-    return ids, words.pop(), shift.group(0).lower() if shift else "?"   # no shift named: all such verdicts count as one
+        ids += [t if t.startswith("L-") else m.group(1) + t for t in m.group(3).split("/")[1:]]
+    return ids
+
+
+def lesson_verdicts(rest: str) -> list:
+    """[([lesson ids], word, shift)] of the text after `- verdict`; [] when the line gives no usable verdict. Used shapes:
+    `: hub-35 2026-10-25 helped — …`, `: helped (hub-31, 23.10) — …`, ` (hub-5, 27.10): helped — …`,
+    ` (L-002, hub-20 26.10): helped — …`, ` (hub-19): L-MC-003 helped — …`, `L-001/002 helped`, the word right after the
+    dash (`: hub-5, 2026-11-11 — helped: …`, ` (L-001): hub-2, 2026-11-12 — hurt by vagueness: …`), the shift right
+    after it (`: helped — hub-49 05.11: …`), and one clause per lesson (` (hub-27, 08–11.11): L-MC-018 helped (…).
+    L-MC-019 helped (…)`, `…; L-036 helped — …`). Only the head before the first spaced dash is read, or the words
+    right after that dash, so the evidence cannot vote. Two different words (`hurt-then-helped`) or `ignored` /
+    `skipped` (the lesson was not applied) give no verdict: a guess either way would retire or promote a rule."""
+    parts = re.split(r"\s[—–-]\s", rest, maxsplit=1)
+    head, tail = parts[0], parts[1] if len(parts) > 1 else ""
+    shift = (LESSON_SHIFT_RE.search(head)   # then `— hub-49 05.11: …` (only a date or a time before the colon, not
+             or re.match(r"\s*(hub-\d+)(?:,?\s+[\d.:–-]+)*\s*:", tail, re.IGNORECASE)   # `— hub-49 said: …`)
+             or LESSON_DATE_RE.search(head))
+    shift = (shift.group(1) if shift.re.groups else shift.group(0)).lower() if shift else "?"   # none: all count as one
+    found, target = list(LESSON_WORD_RE.finditer(head)), head
+    if found:
+        target = head[:found[0].start()]   # an id after the word is a reference, not the target
+    elif m := re.match(rf"\s*({LESSON_WORDS})\b([^:—–]*)", tail, re.IGNORECASE):
+        found = [m] + list(LESSON_WORD_RE.finditer(m.group(2)))   # `hub-5, 2026-11-11 — helped: …`: it opens the part
+        head += " " + m.group(2)                                       # after the dash; `— hurt then helped:` is two words
+    out, words = [], {m.group(1).lower() for m in found}
+    if len(words) == 1 and not LESSON_NOT_APPLIED_RE.search(head):
+        out.append((lesson_ids(target), words.pop(), shift))
+    body = re.sub(r"^\s*(?:\([^)]*\))?\s*:?", "", rest)   # `(hub-27, 08–11.11): L-MC-018 helped …`: the first clause
+    # a quote in the evidence (`the log says "Done. L-002 hurt"`) starts no clause; it is blanked, offsets kept, only for
+    # finding where clauses start: a found clause's qualifier is read whole (`hurt ("not applied")` is not applied)
+    masked = re.sub(r'"[^"]*"|«[^»]*»|“[^”]*”', lambda q: " " * len(q.group(0)), body)
+    for m in LESSON_CLAUSE_RE.finditer(masked):
+        depth = masked[:m.start(1)].count("(") - masked[:m.start(1)].count(")")
+        clause = re.split(r"\s[—–]\s|[.;]\s|\)\s+(?=L-)", body[m.end(2):], maxsplit=1)[0]
+        if depth <= 0 and not LESSON_NOT_APPLIED_RE.search(clause) and not LESSON_WORD_RE.search(clause.split("(")[0]):
+            out.append((lesson_ids(m.group(1)), m.group(2).lower(), shift))
+    return out
 
 
 def lessons_entries(stage: str, text: str = None):
@@ -500,7 +543,9 @@ def lessons_entries(stage: str, text: str = None):
         return None
     out, shifts, current, in_lesson = [], {}, None, False   # shifts: id -> {word: {shift}}
     for lineno, line in outside_markup(text):
-        if in_lesson and line[:1].isspace() and line.strip() and not re.match(r"\s*[-*]\s", line):   # a wrapped `- lesson:`
+        listed = re.match(r"\s*[-*]\s", line)
+        evidence = LESSON_EVIDENCE_LINE_RE.match(line)   # an `Evidence:` line is never part of a rule
+        if in_lesson and line.strip() and not listed and not evidence and not line.startswith("#"):   # the rule goes on
             out[-1][5] += " " + line.strip()
             continue
         in_lesson = False
@@ -511,11 +556,14 @@ def lessons_entries(stage: str, text: str = None):
             current = None
         elif out and current and not out[-1][2] and (m := LESSON_STATUS_RE.match(line)):
             out[-1][2], out[-1][4] = m.group(1).lower(), lineno
-        elif out and current and not out[-1][5] and (m := LESSON_TEXT_RE.match(line)):
+        elif out and current and not out[-1][5] and (m := LESSON_TEXT_RE.match(line)
+                                                      or not listed and not evidence
+                                                      and LESSON_TEXT_MID_RE.search(LESSON_EVIDENCE_RE.sub("", line))):
             out[-1][5], in_lesson = m.group(1).strip(), True
-        elif (m := LESSON_VERDICT_RE.match(line)) and (v := lesson_verdict(m.group(1))):
-            for lid in v[0] or ([current] if current else []):
-                shifts.setdefault(lid, {}).setdefault(v[1], set()).add(v[2])
+        elif m := LESSON_VERDICT_RE.match(line):
+            for ids, word, shift in lesson_verdicts(m.group(1)):
+                for lid in ids or ([current] if current else []):
+                    shifts.setdefault(lid, {}).setdefault(word, set()).add(shift)
     result = []
     for lid, cue, written, head_line, status_line, lesson in out:
         status = written
@@ -523,6 +571,7 @@ def lessons_entries(stage: str, text: str = None):
         helped, hurt = len(by_word.get("helped", ())), len(by_word.get("hurt", ()))
         if status not in ("promoted", "retired"):   # a hand-written promotion stays; a later `hurt` is for the hub to act on
             status = "retired" if hurt else "promotable" if helped >= LESSON_PROMOTE_AT else status
+        lesson = LESSON_EVIDENCE_RE.sub("", lesson).strip()   # `… Evidence: jobs 486305/…` closes a prose rule
         result.append((lid, cue, status, helped, hurt, written, head_line, status_line, lesson))
     return result
 
@@ -607,6 +656,9 @@ def planned_promotion(stage: str, tag: str, snap: tuple, rules_path: Path) -> tu
     lines, done, left = text.splitlines(keepends=True), [], []
     status = f"- status: promoted: hub-rules.md {hc.now():%Y-%m-%d} {tag} (hub takeover)\n"
     for e in (e for e in entries if e[2] == "promotable"):
+        if not e[8]:   # the heading is the cue, not the instruction: a line without it carries the problem, not the fix
+            left.append(f"{e[0]} (no rule text: add a `- lesson:` line, the instruction, under {e[0]} in lessons.md)")
+            continue
         b = promoted_bounds(rules)   # already there (a hand edit, a write of lessons.md that failed): no second line
         listed = b and re.search(rf"\({re.escape(e[0])}, lessons\.md(?:, auto)?\)", rules[b[1]:b[2]])
         candidate = rules if listed else with_promoted_rule(rules, lesson_rule(e))
@@ -1118,8 +1170,38 @@ def pace_digest(stage: str) -> str:
         return f"Limit pace: unavailable ({type(e).__name__})"
 
 
+def model_warnings(stage: str, cwd=None, session=None):
+    catalog = model_catalog.Catalog()
+    models = []
+    if session and session == hc.session_id() and hc.host_engine() == "codex":
+        models.append(autopilot.codex_context(session).get("model") or os.environ.get("AGENT_HUB_CODEX_MODEL"))
+    models.extend(hc.setting(key, cwd=cwd) for key in ("AGENT_HUB_CODEX_DEFAULT_MODEL", "AGENT_HUB_SUCCESSOR_MODEL"))
+    reason_models = hc.setting_json("AGENT_HUB_REASON_MODELS", [], cwd=cwd)
+    if isinstance(reason_models, str):
+        reason_models = [reason_models]
+    if isinstance(reason_models, list):
+        models.extend(model for model in reason_models if isinstance(model, str))
+    effort_defaults = hc.setting_json("AGENT_HUB_EFFORT_DEFAULTS", {}, cwd=cwd)
+    if isinstance(effort_defaults, dict):
+        models.extend(effort_defaults)
+    try:
+        models.extend(engines.model_map(cwd).values())
+        # Inspect configured entries without running quota or availability checks.
+        models.extend(reviewers.load(cwd).codex_models())
+    except hc.UsageError as e:
+        yield str(e)
+    for directory in hc.config_dirs(stage, cwd):
+        try:
+            models.extend(model_catalog.mentioned_pins((directory / "hub-rules.md").read_text(encoding="utf-8")))
+        except (OSError, UnicodeError):
+            continue
+    if warning := catalog.age_warning():
+        yield warning
+    yield from catalog.pin_warnings(models, cwd)
+
+
 def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: list = (), warns: list = (),
-           goal: str = "") -> str:
+           goal: str = "", cwd=None, session=None) -> str:
     tag = f"hub-{n}"
     # the first jwait replays everything since the predecessor wrote the handoff
     since = dt.datetime.fromtimestamp(handoff.stat().st_mtime, hc.TZ) if handoff else None
@@ -1131,6 +1213,7 @@ def digest(stage: str, n: int, name: str, handoff: Path, steps: list, notes: lis
         (f"Goal of stage {stage}: {goal}" if goal else "", 300, ""),
         ("ATTENTION:\n" + "\n".join(notes) if notes else "", 500, ""),
         ("\n".join(f"ATTENTION: {w}" for w in warns), 900, ""),
+        ("\n".join(model_warnings(stage, cwd, session)), 900, ""),
         (hub_notes_line(stage), 300, ""),
         (lessons_digest_line(stage), 560 + len(str(lessons_path(stage)).encode("utf-8")), ""),  # 560 bytes of text, then the path
         (watchdog_digest(stage), 400, "watchdog status"),
@@ -1809,10 +1892,16 @@ def _cmd_takeover(a) -> int:
               short="journal")
 
     if not a.dry_run:
+        if left:   # the digest alone was read and ignored 13 times (audit 2026-11-21): the journal reaches the audit too
+            try:   # signed by the plugin, not by `tag`: the hub's own jwait leaves its own lines out
+                hc.journal_append(stage, autopilot.SERVICE_TAG, "@hub lessons need action — the takeover could not settle them (lessons.md "
+                                              "§ Promoting a lesson): " + "; ".join(left))
+            except (OSError, hc.Failure, hc.UsageError) as err:
+                print(f"ATTENTION: cannot journal the lessons left: {err}")
         if a.project is not None or a.no_project:
             hc.record_stage_project(stage, a.project)  # the next hub may start outside git
     print()
-    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal))
+    print(digest(stage, n, name, handoff, plan.done, notes, warns, goal, getattr(a, "project", None), cli))
     return 0
 
 
@@ -2202,6 +2291,8 @@ def cmd_reviewer(a) -> int:
     loaded = reviewers.load(author=author)
     for problem in loaded.problems:
         hc.warn(problem)
+    for warning in loaded.model_warnings():
+        print(warning, file=sys.stderr)
     primary = None
     if a.second:  # the primary is what the plain walk would choose; `chosen` is the second opinion
         verdicts, primary, chosen = reviewers.walk_second(loaded, a.for_class, every=a.all, author=author)
@@ -2209,7 +2300,8 @@ def cmd_reviewer(a) -> int:
         verdicts, chosen = reviewers.walk(loaded, a.for_class, every=a.all, author=author)
     source = {"env": "the environment", "project": "the repository's .agent-hub/config.json",
               "home": "the hub home's config.json", "default": "the built-in default"}[loaded.origin]
-    start = reviewers.start_line(chosen.entry, a.stage, author.engine if author else host) if chosen else None
+    start = reviewers.start_line(chosen.entry, a.stage, author.engine if author else host,
+                                 a.for_class, author.task_id if author else None) if chosen else None
     if a.json:
         print(json.dumps({"class": a.for_class[:reviewers.SHOWN] if a.for_class else None, "source": loaded.origin,
                           "author": author.as_dict() if author else None, "assumed_author_engine": None if author else host,
@@ -2672,8 +2764,8 @@ def main(argv: list) -> int:
     sc.add_argument("--desktop-worktree", action="store_true", help="native worktree only when explicitly requested by the owner")
     sc.add_argument("--branch", help="desktop worktree starting branch, only when explicitly requested and existing")
     sc.add_argument("--headless", action="store_true", help="start a headless hub (agent spawn); from Codex Desktop requires home owner opt-in")
-    sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it "
-                                                            "and start a headless one")
+    sc.add_argument("--fallback", action="store_true", help="the background successor did not take over: stop it, "
+                                                            "keep this hub and tell the owner")
     sc.add_argument("--why", help="with --fallback: the reason for the journal")
     sc.add_argument("--again", action="store_true", help="the recorded successor did not take over and is not running: "
                                                          "drop its record and start a new one")

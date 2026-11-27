@@ -360,9 +360,9 @@ successor:
 - **Phone or browser:** open the link, or find the session by name in the Claude app's Code section (Remote Control).
 - **Terminal:** `claude attach <id>`; `claude agents` lists background sessions.
 
-If the background session cannot start (the CLI is not logged in, the directory is not trusted) or does not take over
-in 10 minutes, the successor is a headless hub instead: ask it things with `agent send hub-<n> "…"` and read its
-answers in the journal and `ask list`. After 10 automatic handoffs in a row (`AGENT_HUB_AUTO_HANDOFF_CHAIN`) the hub
+If the background session cannot start (the CLI is not logged in, a folder is not trusted) or does not take over
+in 10 minutes, nothing invisible starts in its place: the old hub stays, writes you one `@owner` line in the journal
+with the CLI's own reason and the command to retry, notifies you once and waits. After 10 automatic handoffs in a row (`AGENT_HUB_AUTO_HANDOFF_CHAIN`) the hub
 writes its handoff and waits for you; anything you type to the hub resets that count.
 
 ## When you are needed

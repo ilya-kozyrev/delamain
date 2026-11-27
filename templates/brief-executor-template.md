@@ -15,6 +15,13 @@ brief-executor-advanced.md. -->
 <Agreed user/business result or its source in the plan/register; inherit it without reopening.
 See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints and detailed specs.>
 
+## Task identity
+- Launch with `--task-class <mechanical|bounded|judgement> --task-kind executor --change-class <docs|code|risky|custom>`.
+  State expected review/CI applicability (`required|not_required|unknown`) and pass their launch flags. For separately
+  measured helpers name `--parent-task-id` and whether usage is included in parent counters; declare `--usage-boundary`.
+  Classify the brief before choosing a model; one spawn is one task contract, resumes preserve its UUID and class.
+  For reassignment use `--continuation-of <original task UUID>`; for a new independent task use a fresh spawn.
+
 ## Steps
 1. <Step> — done when <a check: a command, a number, a test>.
 2. <…>
@@ -24,6 +31,7 @@ See skills/hub/SKILL.md, "Planning a stage". Preserve owner-supplied constraints
 
 ## Tools
 MCP servers needed? (none by default) <A browser check, docs lookup, a GitLab/DB server: name it, and launch with `--mcp inherit` or `--mcp FILE`.>
+Codex model if required: <`luna`, `terra`, `sol` or `astra`, with effort and any reason for deviating from stage policy>.
 Sub-agents (Claude): the footer allows read-only digests and quick bounded pieces in a worktree; <name any piece you
 expect to go to one, or "none">.
 

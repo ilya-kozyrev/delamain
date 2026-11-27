@@ -73,16 +73,17 @@ start: load skill `my-review-skill`; give it the brief file, the repository, the
 
 $ hub reviewer --for docs        # the skill serves code and risky only
 reviewer: agent (agent opus/high)
-start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --brief <BRIEF>
+start: agent spawn --role review-agent --cwd <REPO> --model opus --effort high --task-kind review --task-class judgement --change-class docs --brief <BRIEF>
 
 $ AGENT_HUB_ENGINE=codex hub reviewer --for code --stage web
-reviewer: agent (agent gpt-6-astra/high)
-start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --engine codex --sandbox workspace-write --model gpt-6-astra --effort high --stage web --reason 'reviewer policy: claude author -> codex reviewer' --brief <BRIEF>
+reviewer: agent (agent <latest-listed-astra-id>/high)
+start: agent spawn --role review-agent --cwd <HUB_HOME>/web/coordinator/work --target-repo <REPO> --engine codex --sandbox workspace-write --model astra --effort high --stage web --reason 'reviewer policy: codex author -> codex reviewer' --task-kind review --task-class judgement --change-class code --brief <BRIEF>
 ```
 
 For a Claude `agent` reviewer the hub fills `<REPO>` (a checkout holding the head commit) and `<BRIEF>` (the brief
 file). For a Codex `agent` reviewer it prints `--sandbox workspace-write` and `--cwd` pointing to the stage's
-`coordinator/work` under the hub home. Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
+`coordinator/work` under the hub home. Fill `--target-repo <REPO>` with the checkout holding the head commit.
+Without a stage, replace `<HUB_WORK>` with a directory under the hub home.
 Create that directory before spawning, and put the absolute repository path, base and head in the brief for reading.
 The reviewer receives only its cwd as a writable root; wider explicit roots are refused, and temporary-directory
 writes are excluded. Home configuration and other agents' inboxes stay read-only. Keep the repository outside the
@@ -133,8 +134,10 @@ entry in or out by the author's engine — "a Claude reviewer only for a Codex a
 guessing the host. The variables are also the place for the rule above ("a different model from the author").
 
 **The built-in default** (no valid list) follows the author as well: for a Codex author it is a Claude reviewer
-(`opus`), for a Claude author a Codex reviewer (`gpt-6-astra`, read-only) when the `codex` CLI is installed (`CODEX_BIN`),
-otherwise Claude as before. Without `--author` it stays the host engine's.
+(`opus`), for a Claude author a Codex reviewer when the CLI is installed (`CODEX_BIN`) and the configured model is
+usable. A family such as the default `astra` must be listed in the catalog. A full ID can be used without a catalog.
+If the availability check fails, the built-in default uses Claude and prints the reason. Without `--author` the
+host engine supplies the initial choice, with the same availability checks for Codex.
 
 **A check should be forgiving about missing limit data.** Limits choose the engine for a launch; they rule an engine out
 only when it is practically exhausted. A check that sees no observation, or one too old to trust, should report the
@@ -189,8 +192,10 @@ different from the model your executors write with, or list a reviewer skill tha
 For Sol-authored work, prefer Claude Opus/Fable at high when its quota permits, then Codex Astra at high. Do not
 substitute an older Sol merely to change the model id. Reviewer engines are independent of the implementation
 engine. Put limited reviewers first with a trusted `check`, followed by the fallback; the built-in Codex agent
-reviewer uses `gpt-6-astra` rather than inheriting a Sol implementation default. `AGENT_HUB_REVIEW_MODEL` and explicit
-entries still override that default. Check actual CLI model availability before launching the printed command.
+reviewer defaults to `astra`. `AGENT_HUB_REVIEW_MODEL` and explicit entries can supply a family or a full ID. The
+reviewer output shows the resolved ID and the start command keeps the family so spawn can read the current catalog.
+An unresolved family makes the entry unavailable. A stale full ID stays usable and prints the same warning as spawn.
+See [Codex model selection](codex.md#spawn-message-and-resume).
 
 ## The brief
 
@@ -311,3 +316,22 @@ most twice (a real review needed one or two resumes).
 
 **Cost.** One review of a real change took 6–12 minutes and 6–13 % of a Pro week's Argon quota, so roughly eight to fifteen
 reviews a week: a second opinion for changes where a miss is expensive, not a review of every change.
+
+## Structured outcome evidence
+
+Reviewer start lines pass `--task-kind review --task-class judgement` and record a valid `--for` identifier as
+`--change-class`. Omission records `unknown`. An invalid identifier also records `unknown` and emits a warning.
+A role-based `--author` links its `task_id` via `--review-target-task-id`. An engine-only author stays
+unlinked. Fill the reviewed head and target in [the brief](../templates/brief-review.md); optionally pass
+`--review-head SHA` for an expected-head check. Immediately before VERDICT in both full report and final answer:
+
+```text
+REVIEW_OUTCOME: {"schema_version":1,"target_task_id":"<UUID>","head":"<SHA>","round":1,"findings":{"high":0,"medium":1,"low":0},"finding_ids":[{"id":"F1","severity":"medium"}]}
+VERDICT: merge after fixes
+```
+
+Use null for an unlinked target. IDs must be distinct; severity counts must match their entries, and the copies must
+agree. Rechecks retain IDs; new defects get new IDs. Missing/malformed evidence stays null with diagnostics.
+V1 records reviewer-reported findings; per-finding hub adjudication is optional. Retro PR 2 labels absent adjudication
+"reported, not adjudicated". A rejecting verdict does not mean the reviewer failed its task. Full schema and hub
+imports: [task outcomes](reference.md#task-outcomes).
